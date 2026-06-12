@@ -3,13 +3,17 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Solar Project Tracker API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: projects
+    description: Solar project operations
+  - name: scans
+    description: Scan operations
 paths:
   /healthz:
     get:
@@ -24,13 +28,397 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /projects:
+    get:
+      operationId: listProjects
+      tags: [projects]
+      summary: List solar projects
+      parameters:
+        - name: startDate
+          in: query
+          required: false
+          schema:
+            type: string
+            description: ISO date string (YYYY-MM-DD)
+        - name: endDate
+          in: query
+          required: false
+          schema:
+            type: string
+            description: ISO date string (YYYY-MM-DD)
+        - name: country
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [AU, NZ, ALL]
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of solar projects
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Project"
+    post:
+      operationId: createProject
+      tags: [projects]
+      summary: Manually add a project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+
+  /projects/{id}:
+    get:
+      operationId: getProject
+      tags: [projects]
+      summary: Get a single project
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Project detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "404":
+          description: Not found
+    patch:
+      operationId: updateProject
+      tags: [projects]
+      summary: Update a project
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectUpdate"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "404":
+          description: Not found
+    delete:
+      operationId: deleteProject
+      tags: [projects]
+      summary: Delete a project
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+
+  /projects/stats:
+    get:
+      operationId: getProjectStats
+      tags: [projects]
+      summary: Aggregate stats for the current project list
+      parameters:
+        - name: startDate
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: endDate
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Stats summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectStats"
+
+  /projects/export:
+    get:
+      operationId: exportProjects
+      tags: [projects]
+      summary: Export projects as CSV
+      parameters:
+        - name: startDate
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: endDate
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: country
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: CSV file
+          content:
+            text/csv:
+              schema:
+                type: string
+
+  /scans:
+    get:
+      operationId: listScans
+      tags: [scans]
+      summary: List scan history
+      responses:
+        "200":
+          description: Scan history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScanRun"
+    post:
+      operationId: triggerScan
+      tags: [scans]
+      summary: Trigger a new scan of all sources
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScanInput"
+      responses:
+        "202":
+          description: Scan started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanRun"
+
+  /scans/{id}:
+    get:
+      operationId: getScan
+      tags: [scans]
+      summary: Get scan run status and results
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Scan run detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanRun"
+        "404":
+          description: Not found
+
 components:
   schemas:
     HealthStatus:
       type: object
+      required: [status]
       properties:
         status:
           type: string
-      required:
-        - status
 
+    Project:
+      type: object
+      required: [id, name, country, status, announcedDate, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: ["string", "null"]
+        capacityMw:
+          type: ["number", "null"]
+        developer:
+          type: ["string", "null"]
+        epc:
+          type: ["string", "null"]
+        location:
+          type: ["string", "null"]
+        country:
+          type: string
+          enum: [AU, NZ]
+        status:
+          type: string
+          enum: [announced, under_development]
+        sourceUrl:
+          type: ["string", "null"]
+        sourceName:
+          type: ["string", "null"]
+        contactName:
+          type: ["string", "null"]
+        contactEmail:
+          type: ["string", "null"]
+        contactPhone:
+          type: ["string", "null"]
+        announcedDate:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    ProjectInput:
+      type: object
+      required: [name, country, status, announcedDate]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        capacityMw:
+          type: number
+        developer:
+          type: string
+        epc:
+          type: string
+        location:
+          type: string
+        country:
+          type: string
+          enum: [AU, NZ]
+        status:
+          type: string
+          enum: [announced, under_development]
+        sourceUrl:
+          type: string
+        sourceName:
+          type: string
+        contactName:
+          type: string
+        contactEmail:
+          type: string
+        contactPhone:
+          type: string
+        announcedDate:
+          type: string
+
+    ProjectUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        capacityMw:
+          type: number
+        developer:
+          type: string
+        epc:
+          type: string
+        location:
+          type: string
+        country:
+          type: string
+          enum: [AU, NZ]
+        status:
+          type: string
+          enum: [announced, under_development]
+        sourceUrl:
+          type: string
+        sourceName:
+          type: string
+        contactName:
+          type: string
+        contactEmail:
+          type: string
+        contactPhone:
+          type: string
+        announcedDate:
+          type: string
+
+    ProjectStats:
+      type: object
+      required: [total, byCountry, byStatus, totalCapacityMw, recentCount]
+      properties:
+        total:
+          type: integer
+        byCountry:
+          type: object
+          additionalProperties:
+            type: integer
+        byStatus:
+          type: object
+          additionalProperties:
+            type: integer
+        totalCapacityMw:
+          type: number
+        recentCount:
+          type: integer
+          description: Projects announced in the last 7 days
+
+    ScanRun:
+      type: object
+      required: [id, status, startedAt, sourcesScanned, projectsFound]
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+          enum: [running, completed, failed]
+        startedAt:
+          type: string
+        completedAt:
+          type: ["string", "null"]
+        sourcesScanned:
+          type: integer
+        projectsFound:
+          type: integer
+        newProjects:
+          type: integer
+        errorMessage:
+          type: ["string", "null"]
+
+    ScanInput:
+      type: object
+      properties:
+        startDate:
+          type: string
+          description: Only scan for projects announced after this date (YYYY-MM-DD)
+        endDate:
+          type: string
+          description: Only scan for projects announced before this date (YYYY-MM-DD)
