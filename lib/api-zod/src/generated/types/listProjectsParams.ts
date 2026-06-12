@@ -18,4 +18,9 @@ startDate?: string;
 endDate?: string;
 country?: ListProjectsCountry;
 search?: string;
+/**
+ * Filter to only projects discovered in this scan run
+ */
+scanId?: number;
+hasContact?: boolean;
 };

@@ -58,6 +58,17 @@ paths:
           required: false
           schema:
             type: string
+        - name: scanId
+          in: query
+          required: false
+          schema:
+            type: integer
+            description: Filter to only projects discovered in this scan run
+        - name: hasContact
+          in: query
+          required: false
+          schema:
+            type: boolean
       responses:
         "200":
           description: List of solar projects
@@ -301,6 +312,8 @@ components:
           type: string
         updatedAt:
           type: string
+        scanId:
+          type: ["integer", "null"]
 
     ProjectInput:
       type: object

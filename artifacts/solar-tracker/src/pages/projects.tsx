@@ -8,8 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Link } from "wouter";
-import { Download, Search, SearchX, Mail, Phone, User, ContactRound, Sparkles, Loader2 } from "lucide-react";
+import { Link, useSearch, useLocation } from "wouter";
+import { Download, Search, SearchX, Mail, Phone, User, ContactRound, Sparkles, Loader2, X } from "lucide-react";
 import { format } from "date-fns";
 
 export default function Projects() {
@@ -21,6 +21,13 @@ export default function Projects() {
   const [enriching, setEnriching] = useState(false);
   const [enrichResult, setEnrichResult] = useState<{ checked: number; updated: number } | null>(null);
   const queryClient = useQueryClient();
+  const [, navigate] = useLocation();
+
+  // Read scanId from URL query string (set by Scan History "View new" button)
+  const searchStr = useSearch();
+  const urlParams = new URLSearchParams(searchStr);
+  const scanIdParam = urlParams.get("scanId");
+  const scanId = scanIdParam ? parseInt(scanIdParam, 10) : undefined;
 
   async function handleEnrichContacts() {
     setEnriching(true);
@@ -38,28 +45,19 @@ export default function Projects() {
     }
   }
 
-  const { data: allProjects, isLoading } = useListProjects(
-    { 
-      search: search || undefined,
-      country: country !== "ALL" ? country : undefined,
-      startDate: startDate || undefined,
-      endDate: endDate || undefined
-    },
-    { 
-      query: { 
-        queryKey: getListProjectsQueryKey({
-          search: search || undefined,
-          country: country !== "ALL" ? country : undefined,
-          startDate: startDate || undefined,
-          endDate: endDate || undefined
-        }) 
-      } 
-    }
-  );
+  const queryParams = {
+    search: search || undefined,
+    country: country !== "ALL" ? country : undefined,
+    startDate: startDate || undefined,
+    endDate: endDate || undefined,
+    scanId,
+    hasContact: contactOnly || undefined,
+  };
 
-  const projects = contactOnly
-    ? (allProjects ?? []).filter(p => p.contactEmail || p.contactName || p.contactPhone)
-    : allProjects;
+  const { data: projects, isLoading } = useListProjects(
+    queryParams,
+    { query: { queryKey: getListProjectsQueryKey(queryParams) } }
+  );
 
   const handleExport = async () => {
     try {
@@ -81,6 +79,19 @@ export default function Projects() {
   return (
     <Layout>
       <div className="flex flex-col gap-6">
+        {scanId != null && (
+          <div className="flex items-center gap-3 px-4 py-2.5 bg-primary/10 border border-primary/20 rounded-lg text-sm">
+            <span className="font-medium text-primary">Showing new projects from scan RUN-{scanId.toString().padStart(4, '0')}</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-primary hover:text-primary gap-1"
+              onClick={() => navigate("/projects")}
+            >
+              <X className="h-3 w-3" /> Clear filter
+            </Button>
+          </div>
+        )}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold tracking-tight">Projects Directory</h1>

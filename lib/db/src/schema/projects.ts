@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp, numeric, date } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, numeric, date, integer } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -20,6 +20,7 @@ export const projectsTable = pgTable("projects", {
   announcedDate: date("announced_date", { mode: "string" }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+  scanId: integer("scan_id"),
 });
 
 export const insertProjectSchema = createInsertSchema(projectsTable).omit({

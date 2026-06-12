@@ -1768,6 +1768,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
           contactName: project.contactName,
           contactEmail: project.contactEmail,
           contactPhone: project.contactPhone,
+          scanId,
         });
         newProjects++;
         if (project.sourceUrl) existingUrls.add(project.sourceUrl);

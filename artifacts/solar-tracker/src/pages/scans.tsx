@@ -9,12 +9,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import { Play, Loader2, CheckCircle2, XCircle, AlertCircle } from "lucide-react";
+import { Play, Loader2, CheckCircle2, XCircle, AlertCircle, ExternalLink } from "lucide-react";
+import { useLocation } from "wouter";
 import { format } from "date-fns";
 
 export default function Scans() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [, navigate] = useLocation();
   
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -116,12 +118,13 @@ export default function Scans() {
                   <TableHead className="text-right">Sources Scanned</TableHead>
                   <TableHead className="text-right">Total Found</TableHead>
                   <TableHead className="text-right text-primary font-medium">New Projects</TableHead>
+                  <TableHead></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {isLoading ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="h-24 text-center">Loading scan history...</TableCell>
+                    <TableCell colSpan={7} className="h-24 text-center">Loading scan history...</TableCell>
                   </TableRow>
                 ) : scans && scans.length > 0 ? (
                   scans.map((scan) => (
@@ -156,11 +159,24 @@ export default function Scans() {
                       <TableCell className="text-right font-mono font-bold text-primary">
                         {scan.newProjects !== undefined ? `+${scan.newProjects}` : '-'}
                       </TableCell>
+                      <TableCell>
+                        {scan.status === 'completed' && (scan.newProjects ?? 0) > 0 && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="gap-1.5 text-xs"
+                            onClick={() => navigate(`/projects?scanId=${scan.id}`)}
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            View {scan.newProjects} new
+                          </Button>
+                        )}
+                      </TableCell>
                     </TableRow>
                   ))
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={6} className="h-48 text-center text-muted-foreground">
+                    <TableCell colSpan={7} className="h-48 text-center text-muted-foreground">
                       <AlertCircle className="h-8 w-8 mx-auto mb-2 opacity-50" />
                       No scans have been run yet.
                     </TableCell>

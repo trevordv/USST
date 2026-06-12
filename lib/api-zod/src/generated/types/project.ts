@@ -36,4 +36,6 @@ export interface Project {
   announcedDate: string;
   createdAt: string;
   updatedAt: string;
+  /** @nullable */
+  scanId?: number | null;
 }

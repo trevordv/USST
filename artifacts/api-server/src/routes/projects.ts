@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { and, gte, lte, ilike, eq, or, sql, not, isNull, inArray } from "drizzle-orm";
+import { and, gte, lte, ilike, eq, or, sql, not, isNull, isNotNull, inArray } from "drizzle-orm";
 import { db, projectsTable } from "@workspace/db";
 import {
   ListProjectsQueryParams,
@@ -24,7 +24,14 @@ function toProjectResponse(p: typeof projectsTable.$inferSelect) {
   };
 }
 
-function buildWhereConditions(startDate?: string | null, endDate?: string | null, country?: string | null, search?: string | null) {
+function buildWhereConditions(
+  startDate?: string | null,
+  endDate?: string | null,
+  country?: string | null,
+  search?: string | null,
+  scanId?: number | null,
+  hasContact?: boolean | null,
+) {
   const conditions = [];
 
   // ── Permanent quality filters ──────────────────────────────
@@ -39,7 +46,6 @@ function buildWhereConditions(startDate?: string | null, endDate?: string | null
 
   // ── User-supplied filters ──────────────────────────────────
   if (startDate && endDate) {
-    // Strict window: only projects within the entered date range
     conditions.push(gte(projectsTable.announcedDate, startDate));
     conditions.push(lte(projectsTable.announcedDate, endDate));
   } else if (startDate) {
@@ -61,6 +67,12 @@ function buildWhereConditions(startDate?: string | null, endDate?: string | null
       )!
     );
   }
+  if (scanId != null) {
+    conditions.push(eq(projectsTable.scanId, scanId));
+  }
+  if (hasContact === true) {
+    conditions.push(isNotNull(projectsTable.contactEmail));
+  }
 
   return conditions;
 }
@@ -73,8 +85,8 @@ router.get("/projects", async (req, res): Promise<void> => {
     return;
   }
 
-  const { startDate, endDate, country, search } = parsed.data;
-  const conditions = buildWhereConditions(startDate, endDate, country, search);
+  const { startDate, endDate, country, search, scanId, hasContact } = parsed.data;
+  const conditions = buildWhereConditions(startDate, endDate, country, search, scanId, hasContact);
 
   const projects = await db
     .select()

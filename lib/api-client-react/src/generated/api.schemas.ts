@@ -53,6 +53,8 @@ export interface Project {
   announcedDate: string;
   createdAt: string;
   updatedAt: string;
+  /** @nullable */
+  scanId?: number | null;
 }
 
 export type ProjectInputCountry = typeof ProjectInputCountry[keyof typeof ProjectInputCountry];
@@ -174,6 +176,11 @@ startDate?: string;
 endDate?: string;
 country?: ListProjectsCountry;
 search?: string;
+/**
+ * Filter to only projects discovered in this scan run
+ */
+scanId?: number;
+hasContact?: boolean;
 };
 
 export type ListProjectsCountry = typeof ListProjectsCountry[keyof typeof ListProjectsCountry];

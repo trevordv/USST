@@ -24,7 +24,9 @@ export const ListProjectsQueryParams = zod.object({
   "startDate": zod.coerce.string().optional(),
   "endDate": zod.coerce.string().optional(),
   "country": zod.enum(['AU', 'NZ', 'ALL']).optional(),
-  "search": zod.coerce.string().optional()
+  "search": zod.coerce.string().optional(),
+  "scanId": zod.coerce.number().optional(),
+  "hasContact": zod.coerce.boolean().optional()
 })
 
 export const ListProjectsResponseItem = zod.object({
@@ -44,7 +46,8 @@ export const ListProjectsResponseItem = zod.object({
   "contactPhone": zod.string().nullish(),
   "announcedDate": zod.string(),
   "createdAt": zod.string(),
-  "updatedAt": zod.string()
+  "updatedAt": zod.string(),
+  "scanId": zod.number().nullish()
 })
 export const ListProjectsResponse = zod.array(ListProjectsResponseItem)
 
@@ -94,7 +97,8 @@ export const GetProjectResponse = zod.object({
   "contactPhone": zod.string().nullish(),
   "announcedDate": zod.string(),
   "createdAt": zod.string(),
-  "updatedAt": zod.string()
+  "updatedAt": zod.string(),
+  "scanId": zod.number().nullish()
 })
 
 
@@ -139,7 +143,8 @@ export const UpdateProjectResponse = zod.object({
   "contactPhone": zod.string().nullish(),
   "announcedDate": zod.string(),
   "createdAt": zod.string(),
-  "updatedAt": zod.string()
+  "updatedAt": zod.string(),
+  "scanId": zod.number().nullish()
 })
 
 
