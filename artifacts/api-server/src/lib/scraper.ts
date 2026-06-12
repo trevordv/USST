@@ -852,6 +852,266 @@ function parseHtmlPage(
   return projects;
 }
 
+// ---------------------------------------------------------------------------
+// Apify Google Search integration
+// ---------------------------------------------------------------------------
+
+/** Targeted search queries for early-stage AU/NZ solar/wind/BESS projects */
+const APIFY_SEARCH_QUERIES = [
+  "solar farm announced Australia 2026",
+  "solar farm proposed development Australia 2026",
+  "BESS battery energy storage project announced Australia 2026",
+  "wind farm announced Australia 2026",
+  "solar project planning approval Australia 2026",
+  "solar farm announced New Zealand 2026",
+  "renewable energy project development Australia 2026 MW",
+];
+
+interface ApifyOrganicResult {
+  title: string;
+  url: string;
+  description?: string;
+  lastUpdated?: string;
+}
+
+interface ApifyDatasetItem {
+  organicResults?: ApifyOrganicResult[];
+  searchQuery?: { term: string };
+  "#error"?: boolean;
+}
+
+/**
+ * Start an Apify Google Search Scraper run for a batch of queries.
+ * Returns the run ID.
+ */
+async function startApifySearchRun(queries: string[]): Promise<string> {
+  const token = process.env.APIFY_API_TOKEN;
+  if (!token) throw new Error("APIFY_API_TOKEN not set");
+
+  const body = JSON.stringify({
+    queries: queries.join("\n"),
+    maxPagesPerQuery: 1,
+    resultsPerPage: 10,
+    countryCode: "au",
+    languageCode: "en",
+    saveHtml: false,
+    saveHtmlToKeyValueStore: false,
+  });
+
+  const res = await fetch(
+    `https://api.apify.com/v2/acts/apify~google-search-scraper/runs?token=${token}`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body }
+  );
+  const data = (await res.json()) as { data?: { id: string }; error?: { message: string } };
+  if (!data.data?.id) throw new Error(`Apify run failed: ${data.error?.message ?? "unknown"}`);
+  return data.data.id;
+}
+
+/**
+ * Poll an Apify run until SUCCEEDED/FAILED (max 3 min).
+ */
+async function waitForApifyRun(runId: string): Promise<void> {
+  const token = process.env.APIFY_API_TOKEN;
+  const maxAttempts = 36; // 36 × 5s = 3 min
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    const res = await fetch(`https://api.apify.com/v2/actor-runs/${runId}?token=${token}`);
+    const data = (await res.json()) as { data?: { status: string } };
+    const status = data.data?.status;
+    if (status === "SUCCEEDED") return;
+    if (status === "FAILED" || status === "ABORTED" || status === "TIMED-OUT") {
+      throw new Error(`Apify run ${runId} ended with status: ${status}`);
+    }
+  }
+  throw new Error(`Apify run ${runId} timed out after 3 minutes`);
+}
+
+/**
+ * Fetch dataset items from a completed Apify run.
+ */
+async function fetchApifyResults(runId: string): Promise<ApifyDatasetItem[]> {
+  const token = process.env.APIFY_API_TOKEN;
+  const res = await fetch(
+    `https://api.apify.com/v2/actor-runs/${runId}/dataset/items?token=${token}&limit=200`
+  );
+  return (await res.json()) as ApifyDatasetItem[];
+}
+
+/** Domains to skip — already scraped directly, or not useful news sources */
+const SKIP_DOMAINS = new Set([
+  // Already scraped directly
+  "altenergy.com.au", "reneweconomy.com.au", "arena.gov.au",
+  "cleanenergycouncil.org.au", "pv-magazine-australia.com",
+  "energymagazine.com.au", "eeca.govt.nz", "rnz.co.nz",
+  // Social / generic
+  "wikipedia.org", "youtube.com", "facebook.com", "twitter.com",
+  "linkedin.com", "instagram.com", "reddit.com",
+  // Government policy/planning pages (too generic, not news)
+  "planning.qld.gov.au", "planning.vic.gov.au", "planning.nsw.gov.au",
+  "business.qld.gov.au", "energy.vic.gov.au", "energy.nsw.gov.au",
+  "energy.gov.au", "dcceew.gov.au",
+  // Research/list pages (not individual project announcements)
+  "blackridgeresearch.com", "infrastructurepipeline.org",
+  "mallesons.com", "minterellison.com", "allens.com.au",
+]);
+
+/**
+ * Check if a title looks like a real named project rather than a generic page.
+ * A project name should contain a proper noun or location + energy type.
+ */
+function looksLikeProjectTitle(title: string): boolean {
+  const t = title.toLowerCase();
+  // Skip generic page titles
+  const genericPhrases = [
+    "list of", "projects", "wind farms", "solar farms", "renewable energy",
+    "the project", "our projects", "investment prospectus", "ministerial permit",
+    "approval process", "regulatory changes", "planning and approvals",
+    "victoria's", "queensland's", "australia's", "new south wales",
+  ];
+  if (genericPhrases.some((p) => t.startsWith(p) || t === p.trim())) return false;
+  if (title.length < 8) return false;
+
+  // Should contain a project-name indicator OR a MW capacity
+  const projectIndicators = [
+    "solar farm", "solar park", "solar station", "solar power station",
+    "wind farm", "wind park", "bess", "battery storage", "battery energy",
+    "pumped hydro", "hydro", "solar project", "energy project",
+    "power station", "energy storage",
+  ];
+  const hasMW = /\d+\s*mw/i.test(title);
+  const hasIndicator = projectIndicators.some((ind) => t.includes(ind));
+  // A proper project name: has an indicator OR a capacity, AND isn't just a category page
+  return hasIndicator || hasMW;
+}
+
+/**
+ * Run Apify Google Search for AU/NZ solar project announcements.
+ * Returns de-duplicated ScrapedProject list.
+ */
+export async function scrapeViaApify(startDate?: string, endDate?: string): Promise<ScrapedProject[]> {
+  const token = process.env.APIFY_API_TOKEN;
+  if (!token) {
+    logger.warn("APIFY_API_TOKEN not set — skipping Apify search");
+    return [];
+  }
+
+  logger.info("Starting Apify Google Search scrape");
+
+  let runId: string;
+  try {
+    runId = await startApifySearchRun(APIFY_SEARCH_QUERIES);
+    logger.info({ runId }, "Apify run started");
+    await waitForApifyRun(runId);
+    logger.info({ runId }, "Apify run completed");
+  } catch (err) {
+    logger.warn({ err }, "Apify run failed");
+    return [];
+  }
+
+  const items = await fetchApifyResults(runId);
+  const projects: ScrapedProject[] = [];
+  const seenUrls = new Set<string>();
+
+  for (const item of items) {
+    if (item["#error"]) continue;
+    const results = item.organicResults ?? [];
+
+    for (const result of results) {
+      const url = result.url;
+      if (!url || seenUrls.has(url)) continue;
+
+      // Skip already-scraped domains
+      try {
+        const domain = new URL(url).hostname.replace(/^www\./, "");
+        if (SKIP_DOMAINS.has(domain)) continue;
+      } catch { continue; }
+
+      const fullText = `${result.title} ${result.description ?? ""}`;
+
+      // Title must look like a real named project (not a generic page/list)
+      if (!looksLikeProjectTitle(result.title)) continue;
+
+      // Must mention solar/wind/BESS keywords
+      const textLower = fullText.toLowerCase();
+      const hasSolarKw = ["solar", "pv", "photovoltaic", "bess", "battery storage", "wind farm"].some(
+        (kw) => textLower.includes(kw)
+      );
+      if (!hasSolarKw) continue;
+
+      // Must be early-stage
+      if (!isEarlyStage(fullText)) continue;
+
+      // Date filter using lastUpdated if available
+      if (result.lastUpdated && (startDate || endDate)) {
+        const d = new Date(result.lastUpdated);
+        if (!isNaN(d.getTime())) {
+          const dateStr = d.toISOString().slice(0, 10);
+          if (startDate && dateStr < startDate) continue;
+          if (endDate && dateStr > endDate) continue;
+        }
+      }
+
+      seenUrls.add(url);
+
+      // Determine country from text/URL
+      const isNZ = textLower.includes("new zealand") || textLower.includes(" nz ") || url.includes(".nz");
+      const country = isNZ ? "NZ" : "AU";
+
+      projects.push({
+        name: result.title.replace(/\s*[-|].*$/, "").trim().slice(0, 200),
+        description: (result.description ?? "").slice(0, 600),
+        capacityMw: extractCapacity(fullText),
+        developer: extractDeveloper(fullText),
+        location: extractLocation(fullText, country),
+        country,
+        status: determineStatus(fullText),
+        sourceUrl: url,
+        sourceName: extractSourceName(url),
+        announcedDate: result.lastUpdated
+          ? (new Date(result.lastUpdated).toISOString().slice(0, 10))
+          : new Date().toISOString().slice(0, 10),
+        contactName: null,
+        contactEmail: null,
+        contactPhone: null,
+      });
+    }
+  }
+
+  logger.info({ total: projects.length, runId }, "Apify scrape complete");
+  return projects;
+}
+
+/** Extract a readable source name from a URL */
+function extractSourceName(url: string): string {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, "");
+    // Map known domains to friendly names
+    const known: Record<string, string> = {
+      "abc.net.au": "ABC News",
+      "theaustralian.com.au": "The Australian",
+      "afr.com": "Australian Financial Review",
+      "smh.com.au": "Sydney Morning Herald",
+      "theage.com.au": "The Age",
+      "heraldsun.com.au": "Herald Sun",
+      "couriermail.com.au": "Courier Mail",
+      "businessnewsaustralia.com": "Business News Australia",
+      "spglobal.com": "S&P Global",
+      "globalconstructionnews.com": "Global Construction News",
+      "solarpowerworldonline.com": "Solar Power World",
+      "rechargenews.com": "Recharge News",
+      "windpowermonthly.com": "Wind Power Monthly",
+      "energymonitor.ai": "Energy Monitor",
+      "businessdesk.co.nz": "BusinessDesk NZ",
+      "stuff.co.nz": "Stuff NZ",
+      "nzherald.co.nz": "NZ Herald",
+      "greenbuildingadvisor.com": "Green Building Advisor",
+    };
+    return known[host] ?? host;
+  } catch {
+    return "Web";
+  }
+}
+
 async function scrapeSource(
   source: ScrapeSource,
   startDate?: string,
@@ -945,6 +1205,21 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         .where(eq(scansTable.id, scanId));
     } catch (err) {
       logger.warn({ err }, "AltEnergy scrape error");
+      sourcesScanned++;
+    }
+
+    // Apify Google Search — broadens coverage beyond direct-scraped sources
+    try {
+      const apifyProjects = await scrapeViaApify(startDate, endDate);
+      allScraped.push(...apifyProjects);
+      sourcesScanned++; // count Apify as one source
+
+      await db
+        .update(scansTable)
+        .set({ sourcesScanned, projectsFound: allScraped.length })
+        .where(eq(scansTable.id, scanId));
+    } catch (err) {
+      logger.warn({ err }, "Apify scrape error");
       sourcesScanned++;
     }
 
