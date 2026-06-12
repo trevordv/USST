@@ -6,8 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Link } from "wouter";
-import { Download, Search, SearchX } from "lucide-react";
+import { Download, Search, SearchX, Mail, Phone, User, ContactRound } from "lucide-react";
 import { format } from "date-fns";
 
 export default function Projects() {
@@ -15,8 +16,9 @@ export default function Projects() {
   const [country, setCountry] = useState<"ALL" | "AU" | "NZ">("ALL");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [contactOnly, setContactOnly] = useState(false);
 
-  const { data: projects, isLoading } = useListProjects(
+  const { data: allProjects, isLoading } = useListProjects(
     { 
       search: search || undefined,
       country: country !== "ALL" ? country : undefined,
@@ -34,6 +36,10 @@ export default function Projects() {
       } 
     }
   );
+
+  const projects = contactOnly
+    ? (allProjects ?? []).filter(p => p.contactEmail || p.contactName || p.contactPhone)
+    : allProjects;
 
   const handleExport = async () => {
     try {
@@ -111,6 +117,19 @@ export default function Projects() {
               onChange={(e) => setEndDate(e.target.value)}
             />
           </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">Contacts</label>
+            <Button
+              variant={contactOnly ? "default" : "outline"}
+              size="sm"
+              className="flex items-center gap-2 h-10"
+              onClick={() => setContactOnly(v => !v)}
+            >
+              <ContactRound className="h-4 w-4" />
+              {contactOnly ? "Has Contact ✓" : "Has Contact"}
+            </Button>
+          </div>
         </div>
 
         <div className="border rounded-lg bg-card overflow-hidden shadow-sm">
@@ -120,6 +139,7 @@ export default function Projects() {
                 <TableHead>Project</TableHead>
                 <TableHead>Capacity</TableHead>
                 <TableHead>Location</TableHead>
+                <TableHead>Contact</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Announced</TableHead>
               </TableRow>
@@ -127,7 +147,7 @@ export default function Projects() {
             <TableBody>
               {isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="h-24 text-center">Loading projects...</TableCell>
+                  <TableCell colSpan={6} className="h-24 text-center">Loading projects...</TableCell>
                 </TableRow>
               ) : projects && projects.length > 0 ? (
                 projects.map((p) => (
@@ -159,6 +179,51 @@ export default function Projects() {
                     </TableCell>
                     <TableCell>
                       <Link href={`/projects/${p.id}`} className="block">
+                        <TooltipProvider>
+                          {p.contactEmail || p.contactName || p.contactPhone ? (
+                            <div className="flex flex-col gap-0.5">
+                              {p.contactName && (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <div className="flex items-center gap-1.5 text-xs text-foreground">
+                                      <User className="h-3 w-3 text-muted-foreground shrink-0" />
+                                      <span className="truncate max-w-[140px] font-medium">{p.contactName}</span>
+                                    </div>
+                                  </TooltipTrigger>
+                                  <TooltipContent>{p.contactName}</TooltipContent>
+                                </Tooltip>
+                              )}
+                              {p.contactEmail && (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <div className="flex items-center gap-1.5 text-xs text-primary">
+                                      <Mail className="h-3 w-3 shrink-0" />
+                                      <span className="truncate max-w-[140px]">{p.contactEmail}</span>
+                                    </div>
+                                  </TooltipTrigger>
+                                  <TooltipContent>{p.contactEmail}</TooltipContent>
+                                </Tooltip>
+                              )}
+                              {p.contactPhone && (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                      <Phone className="h-3 w-3 shrink-0" />
+                                      <span className="font-mono">{p.contactPhone}</span>
+                                    </div>
+                                  </TooltipTrigger>
+                                  <TooltipContent>{p.contactPhone}</TooltipContent>
+                                </Tooltip>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground/50 italic">No contact</span>
+                          )}
+                        </TooltipProvider>
+                      </Link>
+                    </TableCell>
+                    <TableCell>
+                      <Link href={`/projects/${p.id}`} className="block">
                         <Badge variant={p.status === 'announced' ? 'secondary' : 'default'} className="uppercase text-[10px] font-bold tracking-wider">
                           {p.status.replace('_', ' ')}
                         </Badge>
@@ -173,7 +238,7 @@ export default function Projects() {
                 ))
               ) : (
                 <TableRow>
-                  <TableCell colSpan={5} className="h-48 text-center">
+                  <TableCell colSpan={6} className="h-48 text-center">
                     <div className="flex flex-col items-center justify-center text-muted-foreground">
                       <SearchX className="h-8 w-8 mb-2" />
                       <p>No projects found matching these filters.</p>
