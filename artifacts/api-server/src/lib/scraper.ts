@@ -1209,6 +1209,234 @@ async function scrapeDeveloperPages(startDate?: string, endDate?: string): Promi
   return projects;
 }
 
+// ──────────────────────────────────────────────────────────────
+// Contact enrichment helpers
+// ──────────────────────────────────────────────────────────────
+
+const GENERIC_EMAIL_RE =
+  /^(info|admin|contact|hello|enquiries|enquiry|general|mail|projects|team|reception|office|support|sales|media|pr|news|communications|renewables|solar|wind|energy|development|planning|noreply|no-reply|webmaster|postmaster|feedback|accounts|billing|hr|jobs|careers|connect|update|newsletter|marketing|ops|operations)@/i;
+
+function isPersonalEmail(email: string): boolean {
+  return !GENERIC_EMAIL_RE.test(email) && email.includes("@");
+}
+
+function extractEmailsFromHtml(html: string): Array<{ email: string; context: string }> {
+  const text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ");
+  const results: Array<{ email: string; context: string }> = [];
+  const emailRe = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+  let match;
+  while ((match = emailRe.exec(text)) !== null) {
+    const email = match[0].toLowerCase();
+    const s = Math.max(0, match.index - 200);
+    const e = Math.min(text.length, match.index + email.length + 200);
+    results.push({ email, context: text.slice(s, e) });
+  }
+  return results;
+}
+
+const SKIP_NAMES_RE =
+  /^(New Zealand|South Australia|Western Australia|New South Wales|North Queensland|Clean Energy|Solar Farm|Wind Farm|Battery Storage|Energy Park|Power Station|Project Manager|Development Manager|Business Development|Executive Director|Chief Executive|Managing Director|General Manager|Senior Manager|Project Director|Head Office|Annual Report|Privacy Policy|All Rights)$/;
+
+function extractNameNearEmail(context: string): string | null {
+  const nameRe = /\b([A-Z][a-z]{1,20})\s+([A-Z][a-z]{1,25})\b/g;
+  let m;
+  while ((m = nameRe.exec(context)) !== null) {
+    const name = `${m[1]} ${m[2]}`;
+    if (!SKIP_NAMES_RE.test(name)) return name;
+  }
+  return null;
+}
+
+async function scrapeUrlForContact(url: string): Promise<{ name: string | null; email: string; phone: string | null } | null> {
+  try {
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(10000),
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    const matches = extractEmailsFromHtml(html);
+    for (const { email, context } of matches) {
+      if (isPersonalEmail(email)) {
+        const name = extractNameNearEmail(context);
+        const phoneRaw = context.match(/\(?\+?[\d]{1,4}[\s\-.]?\(?\d{2,4}\)?[\s\-.]?\d{3,4}[\s\-.]?\d{3,4}/);
+        return { name, email, phone: phoneRaw?.[0]?.replace(/\s+/g, " ").trim() ?? null };
+      }
+    }
+  } catch { /* timeout / network */ }
+  return null;
+}
+
+type ContactResult = { name: string | null; email: string; phone: string | null };
+
+/**
+ * Enrich projects that are missing personal contact details.
+ * Phase 1: Scrape developer/project websites directly.
+ * Phase 2: Apify Google Search → visit top result URLs.
+ */
+export async function enrichMissingContacts(): Promise<{ checked: number; updated: number }> {
+  const GENERIC_PREFIXES = [
+    "info@", "admin@", "contact@", "hello@", "enquiries@", "enquiry@",
+    "general@", "mail@", "projects@", "team@", "reception@", "office@",
+    "support@", "sales@", "media@", "pr@", "project@", "feedback@",
+  ];
+
+  function needsEnrichment(p: { contactEmail: string | null; contactName: string | null }): boolean {
+    if (!p.contactEmail && !p.contactName) return true;
+    if (p.contactEmail && GENERIC_PREFIXES.some(px => p.contactEmail!.toLowerCase().startsWith(px))) return true;
+    return false;
+  }
+
+  const allProjects = await db.select().from(projectsTable);
+  const toEnrich = allProjects.filter(needsEnrichment);
+  logger.info({ count: toEnrich.length }, "Contact enrichment: starting");
+  if (toEnrich.length === 0) return { checked: 0, updated: 0 };
+
+  type GroupEntry = {
+    projects: typeof toEnrich;
+    domain: string | null;
+    existingName: string | null;
+  };
+  const groups = new Map<string, GroupEntry>();
+
+  for (const proj of toEnrich) {
+    const key = (proj.developer ?? `id:${proj.id}`).toLowerCase().trim();
+    if (!groups.has(key)) {
+      let domain: string | null = null;
+      if (proj.contactEmail) domain = proj.contactEmail.split("@")[1] ?? null;
+      groups.set(key, { projects: [], domain, existingName: proj.contactName });
+    }
+    const g = groups.get(key)!;
+    g.projects.push(proj);
+    if (!g.domain && proj.contactEmail) g.domain = proj.contactEmail.split("@")[1] ?? null;
+    if (!g.existingName && proj.contactName) g.existingName = proj.contactName;
+    // Fallback: derive domain from non-altenergy source URLs
+    if (!g.domain && proj.sourceUrl && !proj.sourceUrl.includes("altenergy.com.au")) {
+      try {
+        const host = new URL(proj.sourceUrl).hostname.replace(/^www\./, "");
+        if (!SKIP_DOMAINS.has(host)) g.domain = host;
+      } catch { /* ignore */ }
+    }
+  }
+
+  const CONTACT_PATHS = [
+    "/team", "/our-team", "/about", "/about-us", "/people",
+    "/contact", "/contact-us", "/meet-the-team", "/who-we-are", "/staff",
+  ];
+
+  let updated = 0;
+  const enrichedKeys = new Set<string>();
+  const noDomainGroups: Array<[string, GroupEntry]> = [];
+
+  async function applyContact(g: GroupEntry, contact: ContactResult): Promise<void> {
+    for (const proj of g.projects) {
+      await db
+        .update(projectsTable)
+        .set({
+          contactName: contact.name ?? g.existingName ?? proj.contactName,
+          contactEmail: contact.email,
+          contactPhone: contact.phone ?? proj.contactPhone,
+          updatedAt: new Date(),
+        })
+        .where(eq(projectsTable.id, proj.id));
+      updated++;
+    }
+  }
+
+  // ── Phase 1: Scrape known domains ─────────────────────────
+  for (const [devKey, g] of groups) {
+    if (!g.domain) { noDomainGroups.push([devKey, g]); continue; }
+
+    for (const path of CONTACT_PATHS) {
+      const contact = await scrapeUrlForContact(`https://${g.domain}${path}`);
+      if (contact) {
+        await applyContact(g, contact);
+        enrichedKeys.add(devKey);
+        logger.info({ devKey, email: contact.email }, "Contact enriched via domain scrape");
+        break;
+      }
+    }
+    if (!enrichedKeys.has(devKey)) noDomainGroups.push([devKey, g]);
+  }
+
+  // ── Phase 2: Apify Google Search for developers without a known domain ────
+  const token = process.env.APIFY_API_TOKEN;
+  const phaseTwo = noDomainGroups.filter(([k]) => !enrichedKeys.has(k));
+  if (phaseTwo.length > 0 && token) {
+    logger.info({ count: phaseTwo.length }, "Contact enrichment: Phase 2 Apify search");
+
+    const queries = phaseTwo.map(([, g]) => {
+      const dev = g.projects[0].developer ?? "solar developer";
+      const person = g.existingName;
+      if (person && !/team|group|office|crew/i.test(person)) {
+        return `"${person}" "${dev}" renewable energy email contact Australia`;
+      }
+      return `"${dev}" solar Australia contact email -info@ -admin@ -contact@`;
+    });
+
+    try {
+      const runId = await startApifySearchRun(queries.slice(0, 25));
+      await waitForApifyRun(runId);
+      const items = await fetchApifyResults(runId);
+
+      for (let i = 0; i < Math.min(phaseTwo.length, items.length); i++) {
+        const [devKey, g] = phaseTwo[i];
+        if (enrichedKeys.has(devKey)) continue;
+        const results = (items[i] as ApifyDatasetItem)?.organicResults ?? [];
+
+        // a) Check snippets for emails directly
+        for (const result of results) {
+          const text = `${result.title ?? ""} ${result.description ?? ""}`;
+          const emailMatches = [...text.matchAll(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g)];
+          for (const em of emailMatches) {
+            const email = em[0].toLowerCase();
+            if (isPersonalEmail(email)) {
+              const name = extractNameNearEmail(text) ?? g.existingName;
+              await applyContact(g, { name: name ?? null, email, phone: null });
+              enrichedKeys.add(devKey);
+              logger.info({ devKey, email }, "Contact enriched via Apify snippet");
+              break;
+            }
+          }
+          if (enrichedKeys.has(devKey)) break;
+        }
+
+        // b) Visit top result URLs and scrape
+        if (!enrichedKeys.has(devKey)) {
+          for (const result of results.slice(0, 3)) {
+            if (!result.url) continue;
+            const contact = await scrapeUrlForContact(result.url);
+            if (contact) {
+              await applyContact(g, {
+                name: contact.name ?? g.existingName,
+                email: contact.email,
+                phone: contact.phone,
+              });
+              enrichedKeys.add(devKey);
+              logger.info({ devKey, email: contact.email, url: result.url }, "Contact enriched via Apify URL");
+              break;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, "Contact enrichment: Phase 2 Apify failed");
+    }
+  }
+
+  logger.info({ checked: toEnrich.length, updated }, "Contact enrichment complete");
+  return { checked: toEnrich.length, updated };
+}
+
+// ──────────────────────────────────────────────────────────────
+
 /**
  * Run Apify Google Search for AU/NZ solar project announcements.
  * Returns de-duplicated ScrapedProject list.

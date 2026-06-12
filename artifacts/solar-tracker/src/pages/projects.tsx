@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useListProjects, getListProjectsQueryKey, useExportProjects } from "@workspace/api-client-react";
 import { Layout } from "@/components/layout";
 import { Input } from "@/components/ui/input";
@@ -8,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Link } from "wouter";
-import { Download, Search, SearchX, Mail, Phone, User, ContactRound } from "lucide-react";
+import { Download, Search, SearchX, Mail, Phone, User, ContactRound, Sparkles, Loader2 } from "lucide-react";
 import { format } from "date-fns";
 
 export default function Projects() {
@@ -17,6 +18,25 @@ export default function Projects() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [contactOnly, setContactOnly] = useState(false);
+  const [enriching, setEnriching] = useState(false);
+  const [enrichResult, setEnrichResult] = useState<{ checked: number; updated: number } | null>(null);
+  const queryClient = useQueryClient();
+
+  async function handleEnrichContacts() {
+    setEnriching(true);
+    setEnrichResult(null);
+    try {
+      const res = await fetch("/api/projects/enrich-contacts", { method: "POST" });
+      if (!res.ok) throw new Error("Enrichment failed");
+      const data = await res.json() as { checked: number; updated: number };
+      setEnrichResult(data);
+      await queryClient.invalidateQueries();
+    } catch {
+      setEnrichResult({ checked: 0, updated: -1 });
+    } finally {
+      setEnriching(false);
+    }
+  }
 
   const { data: allProjects, isLoading } = useListProjects(
     { 
@@ -66,10 +86,31 @@ export default function Projects() {
             <h1 className="text-3xl font-bold tracking-tight">Projects Directory</h1>
             <p className="text-muted-foreground mt-1">Browse and filter all identified solar projects.</p>
           </div>
-          <Button onClick={handleExport} variant="outline" className="gap-2">
-            <Download className="h-4 w-4" />
-            Export CSV
-          </Button>
+          <div className="flex items-center gap-2">
+            {enrichResult && (
+              <span className="text-sm text-muted-foreground">
+                {enrichResult.updated === -1
+                  ? "Enrichment failed"
+                  : `Found ${enrichResult.updated} new contacts`}
+              </span>
+            )}
+            <Button
+              onClick={handleEnrichContacts}
+              disabled={enriching}
+              variant="outline"
+              className="gap-2"
+            >
+              {enriching ? (
+                <><Loader2 className="h-4 w-4 animate-spin" /> Enriching…</>
+              ) : (
+                <><Sparkles className="h-4 w-4" /> Enrich Contacts</>
+              )}
+            </Button>
+            <Button onClick={handleExport} variant="outline" className="gap-2">
+              <Download className="h-4 w-4" />
+              Export CSV
+            </Button>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-end gap-4 p-4 bg-card border rounded-lg shadow-sm">

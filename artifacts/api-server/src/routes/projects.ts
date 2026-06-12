@@ -11,6 +11,7 @@ import {
   GetProjectStatsQueryParams,
   ExportProjectsQueryParams,
 } from "@workspace/api-zod";
+import { enrichMissingContacts } from "../lib/scraper";
 
 const router: IRouter = Router();
 
@@ -227,6 +228,17 @@ router.patch("/projects/:id", async (req, res): Promise<void> => {
   }
 
   res.json(toProjectResponse(project));
+});
+
+// POST /projects/enrich-contacts
+router.post("/projects/enrich-contacts", async (req, res): Promise<void> => {
+  try {
+    const result = await enrichMissingContacts();
+    res.json(result);
+  } catch (err) {
+    req.log.error({ err }, "Contact enrichment failed");
+    res.status(500).json({ error: "Contact enrichment failed" });
+  }
 });
 
 // DELETE /projects/:id
