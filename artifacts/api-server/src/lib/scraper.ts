@@ -1264,6 +1264,60 @@ function extractEmailsFromHtml(html: string): Array<{ email: string; context: st
 const SKIP_NAMES_RE =
   /^(New Zealand|South Australia|Western Australia|New South Wales|North Queensland|Clean Energy|Solar Farm|Wind Farm|Battery Storage|Energy Park|Power Station|Project Manager|Development Manager|Business Development|Executive Director|Chief Executive|Managing Director|General Manager|Senior Manager|Project Director|Head Office|Annual Report|Privacy Policy|All Rights|Sunshine Estate|Global Ratings|Search Clear|Presentations? Videos?|Kurow Development Team|Unknown Developer|Project Team|Development Team|Our Team|The Team)$/i;
 
+const NOISY_PROJECT_RE = new RegExp(
+  [
+    // Operational / milestone articles
+    "officially opened",
+    "full.?operations?",
+    "reaches? full",
+    "milestone reached",
+    "huge milestone",
+    "already operational",
+    // Planning process articles (not the project itself)
+    "recommended for approval",
+    "approved by.*planning",
+    "commission approves?",
+    "modification application",
+    "amendment report",
+    "thank you for your feedback",
+    "public views? about",
+    "public consultation",
+    // Corporate / deal news (not project announcements)
+    "sign(?:s|ed)? (?:a )?ppa",
+    "power purchase agreement",
+    "board visit",
+    "ayala corporation",
+    "joins? circular",
+    "circular pv alliance",
+    "industry member",
+    "circular future",
+    "solar panels? to be recycled",
+    // Agricultural / lifestyle articles about existing farms
+    "grazing (?:merinos?|fleece|sheep|cattle)",
+    "merinos? flock",
+    "fashion house",
+    "paddocks? to power",
+    "rise of small",
+    "accommodation with",
+    "solar farm accommodation",
+    // Generic article titles (too vague to be project names)
+    "^42%",
+    "^\\d+% (?:wind|solar)",
+    "the power behind",
+    "bess boom",
+    "\\bj\\b",                // single letter 'J'
+    "^.{0,3}$",               // very short names (1-3 chars)
+    // Non-AU/NZ geographies in the title
+    "\\b(?:liberia|africa|india|china|uk |united kingdom|usa |united states|europe|middle east|kenya|nigeria|ghana|pakistan|indonesia|vietnam|philippines|bangladesh|myanmar|cambodia|laos|thailand|malaysia|singapore|taiwan|korea|japan|new mexico|colorado|california|texas|florida)\\b",
+  ].join("|"),
+  "i"
+);
+
+function isNoisyProjectName(name: string): boolean {
+  if (!name || name.trim().length <= 3) return true;
+  return NOISY_PROJECT_RE.test(name);
+}
+
 function extractNameNearEmail(context: string): string | null {
   const nameRe = /\b([A-Z][a-z]{1,20})\s+([A-Z][a-z]{1,25})\b/g;
   let m;
@@ -1751,6 +1805,17 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
     // Insert new projects (deduplicate by sourceUrl)
     for (const project of allScraped) {
       if (project.sourceUrl && existingUrls.has(project.sourceUrl)) continue;
+
+      // Pre-insert quality gate — skip noise that passes scraping but shouldn't be stored
+      if (isNoisyProjectName(project.name)) {
+        if (project.sourceUrl) existingUrls.add(project.sourceUrl); // mark seen so it's not retried
+        continue;
+      }
+      // Only AU and NZ
+      if (project.country && !["AU", "NZ"].includes(project.country)) {
+        if (project.sourceUrl) existingUrls.add(project.sourceUrl);
+        continue;
+      }
 
       try {
         await db.insert(projectsTable).values({
