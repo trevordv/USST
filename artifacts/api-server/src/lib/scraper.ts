@@ -6,18 +6,152 @@
  *
  * Sources covered:
  *  - Renew Economy (reneweconomy.com.au)
- *  - AltEnergy (altenergy.com.au)
+ *  - AltEnergy (altenergy.com.au) — authenticated via WordPress login
  *  - ARENA (arena.gov.au/news)
  *  - Clean Energy Council (cleanenergycouncil.org.au/news)
- *  - Australian Government Department of Climate Change (dcceew.gov.au)
- *  - NZ EECA / Electricity Authority / Transpower news
+ *  - NZ EECA / Electricity Authority news
  *  - PV Magazine Australia (pv-magazine-australia.com)
  *  - Energy Magazine AU (energymagazine.com.au)
+ *  - RNZ Business
  */
 
 import { db, projectsTable, scansTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger";
+
+// ---------------------------------------------------------------------------
+// AltEnergy authenticated session
+// ---------------------------------------------------------------------------
+
+const ALTENERGY_BASE = "https://altenergy.com.au";
+const ALTENERGY_LOGIN_URL = `${ALTENERGY_BASE}/wp-login.php`;
+
+/** In-memory cookie jar for AltEnergy session cookies */
+let altEnergyCookies: string[] = [];
+let altEnergySessionExpiry = 0; // unix ms — re-login after 30 min
+
+/**
+ * Logs in to altenergy.com.au using WordPress form authentication.
+ * Stores the returned Set-Cookie headers for reuse.
+ */
+async function loginAltEnergy(): Promise<void> {
+  const username = process.env.ALTENERGY_USERNAME;
+  const password = process.env.ALTENERGY_PASSWORD;
+
+  if (!username || !password) {
+    logger.warn("ALTENERGY_USERNAME or ALTENERGY_PASSWORD not set — skipping authenticated AltEnergy scrape");
+    return;
+  }
+
+  logger.info("Logging in to AltEnergy...");
+
+  // Step 1: GET the login page to capture any hidden nonce/redirect fields
+  const loginPageRes = await fetchRaw(ALTENERGY_LOGIN_URL);
+  const redirectTo = loginPageRes.text.match(/name="redirect_to"\s+value="([^"]+)"/i)?.[1] ?? "";
+  const testCookie = loginPageRes.text.match(/name="testcookie"\s+value="([^"]+)"/i)?.[1] ?? "1";
+
+  // Step 2: POST credentials
+  const body = new URLSearchParams({
+    log: username,
+    pwd: password,
+    "wp-submit": "Log+In",
+    redirect_to: redirectTo || `${ALTENERGY_BASE}/wp-admin/`,
+    testcookie: testCookie,
+  });
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+
+  try {
+    const res = await fetch(ALTENERGY_LOGIN_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        Cookie: loginPageRes.cookies.join("; "),
+        Referer: ALTENERGY_LOGIN_URL,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+      body: body.toString(),
+      redirect: "manual",
+      signal: controller.signal,
+    });
+
+    // Collect all Set-Cookie headers from login response
+    const rawCookies: string[] = [];
+    res.headers.forEach((value, key) => {
+      if (key.toLowerCase() === "set-cookie") rawCookies.push(value);
+    });
+
+    // Also carry over cookies from the initial GET (testcookie etc.)
+    const allCookies = [...loginPageRes.cookies, ...rawCookies];
+
+    // Filter to just the cookie name=value pairs (strip attributes)
+    altEnergyCookies = allCookies
+      .map((c) => c.split(";")[0].trim())
+      .filter((c) => c.length > 0);
+
+    altEnergySessionExpiry = Date.now() + 30 * 60 * 1000; // 30 min
+
+    const hasWordPressLoggedIn = altEnergyCookies.some((c) =>
+      c.startsWith("wordpress_logged_in")
+    );
+
+    if (hasWordPressLoggedIn) {
+      logger.info("AltEnergy login successful");
+    } else {
+      logger.warn({ status: res.status, cookieCount: altEnergyCookies.length }, "AltEnergy login may have failed — no wordpress_logged_in cookie");
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Low-level fetch that also returns Set-Cookie headers */
+async function fetchRaw(url: string, timeoutMs = 15000): Promise<{ text: string; cookies: string[] }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+    });
+    const cookies: string[] = [];
+    res.headers.forEach((value, key) => {
+      if (key.toLowerCase() === "set-cookie") cookies.push(value);
+    });
+    return { text: await res.text(), cookies };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Fetch a URL with the stored AltEnergy session cookies attached */
+async function fetchAltEnergy(url: string, timeoutMs = 15000): Promise<string> {
+  // Re-login if session has expired or was never established
+  if (Date.now() > altEnergySessionExpiry || altEnergyCookies.length === 0) {
+    await loginAltEnergy();
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Cookie: altEnergyCookies.join("; "),
+      },
+    });
+    return await res.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 interface ScrapedProject {
   name: string;
@@ -40,6 +174,10 @@ interface ScrapeSource {
   country: "AU" | "NZ";
   searchUrl: string;
   feedUrl?: string;
+  /** If true, use the authenticated AltEnergy session for all fetches */
+  authenticated?: boolean;
+  /** Extra URLs to scrape in addition to searchUrl (e.g. category pages) */
+  extraUrls?: string[];
 }
 
 const SOURCES: ScrapeSource[] = [
@@ -52,8 +190,15 @@ const SOURCES: ScrapeSource[] = [
   {
     name: "AltEnergy Australia",
     country: "AU",
-    searchUrl: "https://altenergy.com.au/?s=solar",
+    searchUrl: "https://altenergy.com.au/?s=solar+project",
     feedUrl: "https://altenergy.com.au/feed/",
+    authenticated: true,
+    extraUrls: [
+      "https://altenergy.com.au/category/solar/",
+      "https://altenergy.com.au/category/renewables/",
+      "https://altenergy.com.au/?s=solar+farm+announced",
+      "https://altenergy.com.au/?s=solar+farm+development",
+    ],
   },
   {
     name: "ARENA News",
@@ -267,76 +412,115 @@ function parseRssFeed(xml: string, source: ScrapeSource, startDate?: string, end
   return projects;
 }
 
+/** Pick the right fetch function based on whether the source needs auth */
+async function fetchForSource(source: ScrapeSource, url: string): Promise<string> {
+  return source.authenticated ? fetchAltEnergy(url) : fetchWithTimeout(url);
+}
+
+/** Extract project entries from an HTML page */
+function parseHtmlPage(
+  html: string,
+  source: ScrapeSource,
+  startDate?: string,
+  endDate?: string
+): ScrapedProject[] {
+  const projects: ScrapedProject[] = [];
+
+  const articleMatches = html.matchAll(
+    /<(?:article|div|section)[^>]*class="[^"]*(?:post|article|entry|item|result)[^"]*"[^>]*>([\s\S]*?)<\/(?:article|div|section)>/gi
+  );
+
+  for (const match of articleMatches) {
+    const snippet = match[1];
+    const lower = snippet.toLowerCase();
+
+    if (!lower.includes("solar") && !lower.includes("photovoltaic") && !lower.includes(" pv ")) continue;
+    if (!isEarlyStage(snippet)) continue;
+
+    const titleMatch = snippet.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i);
+    const linkMatch = snippet.match(/href="(https?:\/\/[^"]+)"/i);
+    const dateMatch = snippet.match(/(\d{4}-\d{2}-\d{2})|(\w+ \d{1,2},? \d{4})/i);
+
+    const rawTitle = (titleMatch?.[1] ?? "").replace(/<[^>]+>/g, "").trim();
+    const link = linkMatch?.[1] ?? source.searchUrl;
+    const descText = snippet.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 600);
+
+    if (!rawTitle || rawTitle.length < 10) continue;
+
+    let announcedDate: string;
+    try {
+      const d = dateMatch ? new Date(dateMatch[0]) : new Date();
+      if (isNaN(d.getTime())) throw new Error("invalid");
+      announcedDate = d.toISOString().slice(0, 10);
+    } catch {
+      announcedDate = new Date().toISOString().slice(0, 10);
+    }
+
+    if (startDate && announcedDate < startDate) continue;
+    if (endDate && announcedDate > endDate) continue;
+
+    projects.push({
+      name: rawTitle,
+      description: descText.slice(0, 500),
+      capacityMw: extractCapacity(snippet),
+      developer: extractDeveloper(snippet),
+      location: extractLocation(snippet, source.country),
+      country: source.country,
+      status: determineStatus(snippet),
+      sourceUrl: link,
+      sourceName: source.name,
+      announcedDate,
+      contactName: null,
+      contactEmail: null,
+      contactPhone: null,
+    });
+  }
+
+  return projects;
+}
+
 async function scrapeSource(
   source: ScrapeSource,
   startDate?: string,
   endDate?: string
 ): Promise<ScrapedProject[]> {
   const projects: ScrapedProject[] = [];
+  const seenUrls = new Set<string>();
 
-  try {
-    // Try RSS feed first (more reliable structure)
-    if (source.feedUrl) {
-      const xml = await fetchWithTimeout(source.feedUrl);
-      const rssProjects = parseRssFeed(xml, source, startDate, endDate);
-      projects.push(...rssProjects);
-    }
-
-    // Also try the search page for HTML scraping
-    if (projects.length === 0) {
-      const html = await fetchWithTimeout(source.searchUrl);
-
-      // Extract article snippets with basic heuristics
-      const articleMatches = html.matchAll(
-        /<(?:article|div|section)[^>]*class="[^"]*(?:post|article|entry|item|result)[^"]*"[^>]*>([\s\S]*?)<\/(?:article|div|section)>/gi
-      );
-
-      for (const match of articleMatches) {
-        const snippet = match[1];
-        const lower = snippet.toLowerCase();
-
-        if (!lower.includes("solar")) continue;
-        if (!isEarlyStage(snippet)) continue;
-
-        const titleMatch = snippet.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i);
-        const linkMatch = snippet.match(/href="(https?:\/\/[^"]+)"/i);
-        const dateMatch = snippet.match(/(\d{4}-\d{2}-\d{2})|(\w+ \d{1,2},? \d{4})/i);
-
-        const rawTitle = (titleMatch?.[1] ?? "").replace(/<[^>]+>/g, "").trim();
-        const link = linkMatch?.[1] ?? source.searchUrl;
-        const descText = snippet.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 600);
-
-        if (!rawTitle || rawTitle.length < 10) continue;
-
-        let announcedDate: string;
-        try {
-          const d = dateMatch ? new Date(dateMatch[0]) : new Date();
-          if (isNaN(d.getTime())) throw new Error("invalid");
-          announcedDate = d.toISOString().slice(0, 10);
-        } catch {
-          announcedDate = new Date().toISOString().slice(0, 10);
-        }
-
-        if (startDate && announcedDate < startDate) continue;
-        if (endDate && announcedDate > endDate) continue;
-
-        projects.push({
-          name: rawTitle,
-          description: descText.slice(0, 500),
-          capacityMw: extractCapacity(snippet),
-          developer: extractDeveloper(snippet),
-          location: extractLocation(snippet, source.country),
-          country: source.country,
-          status: determineStatus(snippet),
-          sourceUrl: link,
-          sourceName: source.name,
-          announcedDate,
-          contactName: null,
-          contactEmail: null,
-          contactPhone: null,
-        });
+  function addUnique(items: ScrapedProject[]) {
+    for (const p of items) {
+      if (!seenUrls.has(p.sourceUrl)) {
+        seenUrls.add(p.sourceUrl);
+        projects.push(p);
       }
     }
+  }
+
+  try {
+    // 1. Try RSS feed first — best structured data
+    if (source.feedUrl) {
+      const xml = await fetchForSource(source, source.feedUrl);
+      addUnique(parseRssFeed(xml, source, startDate, endDate));
+      logger.info({ source: source.name, rssCount: projects.length }, "RSS scraped");
+    }
+
+    // 2. Scrape the primary search URL
+    const searchHtml = await fetchForSource(source, source.searchUrl);
+    addUnique(parseHtmlPage(searchHtml, source, startDate, endDate));
+
+    // 3. Scrape extra URLs (authenticated category/search pages for AltEnergy)
+    if (source.extraUrls) {
+      for (const url of source.extraUrls) {
+        try {
+          const html = await fetchForSource(source, url);
+          addUnique(parseHtmlPage(html, source, startDate, endDate));
+        } catch (err) {
+          logger.warn({ err, url, source: source.name }, "Extra URL scrape failed");
+        }
+      }
+    }
+
+    logger.info({ source: source.name, total: projects.length }, "Source scrape complete");
   } catch (err) {
     logger.warn({ err, source: source.name }, "Failed to scrape source");
   }
