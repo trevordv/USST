@@ -748,6 +748,9 @@ export async function scrapeAltEnergy(
       const titleLower = card.title.toLowerCase();
       if (!SOLAR_TITLE_KEYWORDS.some((kw) => titleLower.includes(kw))) continue;
 
+      // Newsandviews titles are article headlines — only keep ones that look like project names
+      if (isNoisyProjectName(card.title, /* requireProjectShape */ true)) continue;
+
       let body = "";
       try {
         body = await fetchAltEnergyArticleBody(card.url);
@@ -1282,7 +1285,7 @@ const NOISY_PROJECT_RE = new RegExp(
     "thank you for your feedback",
     "public views? about",
     "public consultation",
-    // Corporate / deal news (not project announcements)
+    // Corporate / deal / fundraising news (not project announcements)
     "sign(?:s|ed)? (?:a )?ppa",
     "power purchase agreement",
     "board visit",
@@ -1292,6 +1295,23 @@ const NOISY_PROJECT_RE = new RegExp(
     "industry member",
     "circular future",
     "solar panels? to be recycled",
+    "help(?:s|ed)? (?:get|fund|secure|raise|deliver)",
+    "helps? (?:the|a|an) ",
+    "and .{3,30} help",
+    "to power (?:uts|unis?|university|school|hospital|council|government|municipality)",
+    "to underpin",
+    "backs? circular",
+    "folds? .{5,40} into",
+    "secures? offtake",
+    "secures? funding",
+    // Taglines / slogans (not project names)
+    "delivering sustainable solar power across",
+    "sustainable solar power across the world",
+    "the future of energy",
+    "powering a sustainable",
+    "leading the energy transition",
+    "^our ",
+    "^the future",
     // Agricultural / lifestyle articles about existing farms
     "grazing (?:merinos?|fleece|sheep|cattle)",
     "merinos? flock",
@@ -1301,11 +1321,9 @@ const NOISY_PROJECT_RE = new RegExp(
     "accommodation with",
     "solar farm accommodation",
     // Generic article titles (too vague to be project names)
-    "^42%",
     "^\\d+% (?:wind|solar)",
     "the power behind",
     "bess boom",
-    "\\bj\\b",                // single letter 'J'
     "^.{0,3}$",               // very short names (1-3 chars)
     // Non-AU/NZ geographies in the title
     "\\b(?:liberia|africa|india|china|uk |united kingdom|usa |united states|europe|middle east|kenya|nigeria|ghana|pakistan|indonesia|vietnam|philippines|bangladesh|myanmar|cambodia|laos|thailand|malaysia|singapore|taiwan|korea|japan|new mexico|colorado|california|texas|florida)\\b",
@@ -1313,9 +1331,20 @@ const NOISY_PROJECT_RE = new RegExp(
   "i"
 );
 
-function isNoisyProjectName(name: string): boolean {
+/**
+ * A newsandviews article title looks like a project name only when it contains
+ * a recognised project-name suffix (e.g. "Solar Farm", "BESS", "Energy Hub").
+ * Reject article-style headlines like "Rod Drury and Sam Morgan help get $300m…"
+ */
+const PROJECT_NAME_SHAPE_RE =
+  /\b(?:solar\s+farm|solar\s+park|solar\s+project|solar\s+hub|solar\s+station|bess|battery\s+storage|energy\s+hub|energy\s+park|power\s+station|hybrid\s+solar|solar\s+and\s+battery|battery\s+and\s+solar|solar\s+storage|solar\s+plus|wind\s+farm)\b/i;
+
+function isNoisyProjectName(name: string, requireProjectShape = false): boolean {
   if (!name || name.trim().length <= 3) return true;
-  return NOISY_PROJECT_RE.test(name);
+  if (NOISY_PROJECT_RE.test(name)) return true;
+  // For newsandviews article titles, additionally require a project-name shape
+  if (requireProjectShape && !PROJECT_NAME_SHAPE_RE.test(name)) return true;
+  return false;
 }
 
 function extractNameNearEmail(context: string): string | null {
