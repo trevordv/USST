@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { and, gte, lte, ilike, eq, or, sql } from "drizzle-orm";
+import { and, gte, lte, ilike, eq, or, sql, not, isNull, inArray } from "drizzle-orm";
 import { db, projectsTable } from "@workspace/db";
 import {
   ListProjectsQueryParams,
@@ -27,12 +27,27 @@ function toProjectResponse(p: typeof projectsTable.$inferSelect) {
 function buildWhereConditions(startDate?: string | null, endDate?: string | null, country?: string | null, search?: string | null) {
   const conditions = [];
 
-  if (startDate) {
+  // ── Permanent quality filters ──────────────────────────────
+  // No wind projects
+  conditions.push(not(ilike(projectsTable.name, "%wind%")));
+  // Only AU and NZ
+  conditions.push(inArray(projectsTable.country, ["AU", "NZ"]));
+  // Utility scale: >=5 MW (or capacity unknown)
+  conditions.push(
+    or(isNull(projectsTable.capacityMw), gte(projectsTable.capacityMw, "5"))!
+  );
+
+  // ── User-supplied filters ──────────────────────────────────
+  if (startDate && endDate) {
+    // Strict window: only projects within the entered date range
     conditions.push(gte(projectsTable.announcedDate, startDate));
-  }
-  if (endDate) {
+    conditions.push(lte(projectsTable.announcedDate, endDate));
+  } else if (startDate) {
+    conditions.push(gte(projectsTable.announcedDate, startDate));
+  } else if (endDate) {
     conditions.push(lte(projectsTable.announcedDate, endDate));
   }
+
   if (country && country !== "ALL") {
     conditions.push(eq(projectsTable.country, country));
   }

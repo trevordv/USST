@@ -342,7 +342,7 @@ const DEVELOPER_PROJECT_PAGES: DeveloperPage[] = [
   { name: "Harmony Energy NZ",         url: "https://harmonyenergy.co.nz/projects/",                                              country: "NZ" },
   { name: "Meridian Energy NZ",        url: "https://www.meridianenergy.co.nz/new-projects",                                      country: "NZ" },
   { name: "Genesis Energy NZ",         url: "https://www.genesisenergy.co.nz/about/generation/generation-projects",               country: "NZ" },
-  { name: "ACEN Renewables Australia", url: "https://acenrenewables.com.au/",                                                      country: "AU" },
+  { name: "ACEN Renewables Australia", url: "https://acenrenewables.com.au/category/projects/",                                    country: "AU" },
   { name: "Neoen Australia",           url: "https://neoen.com/en/our-projects/",                                                  country: "AU" },
   { name: "Edify Energy",              url: "https://edifyenergy.com/",                                                            country: "AU" },
   { name: "Iberdrola Australia",       url: "https://www.iberdrola.com.au/",                                                       country: "AU" },
@@ -657,8 +657,8 @@ interface AltEnergyProjectRecord {
 /** energy_ids we consider "solar or closely related" */
 const SOLAR_ENERGY_IDS = new Set([1, 4, 9]); // solar-pv, solar-thermal, (hybrid)
 
-/** energy_ids for wind (also relevant for VP of Solar Trackers context) */
-const WIND_ENERGY_IDS = new Set([2, 3]);
+/** Wind energy IDs — excluded from all scraping */
+const WIND_ENERGY_IDS = new Set([2, 3]); // kept for reference only — not ingested
 
 /**
  * Extract the embedded `var project = [...]` JSON from an AltEnergy page.
@@ -789,8 +789,8 @@ export async function scrapeAltEnergy(
       const url = `https://altenergy.com.au/projectdata/show/${rec.id}`;
       if (seenUrls.has(url)) continue;
 
-      // Only solar-related energy types
-      if (!SOLAR_ENERGY_IDS.has(rec.energy_id) && !WIND_ENERGY_IDS.has(rec.energy_id)) continue;
+      // Only solar-related energy types (no wind)
+      if (!SOLAR_ENERGY_IDS.has(rec.energy_id)) continue;
 
       // Only In Development / announced projects
       const typeStr = (rec.type ?? "").toLowerCase();
@@ -815,6 +815,10 @@ export async function scrapeAltEnergy(
 
       seenUrls.add(url);
       const capacityNum = parseFloat(rec.capacity);
+
+      // Enforce >=5 MW minimum (skip projects with known sub-5MW capacity)
+      if (!isNaN(capacityNum) && capacityNum < 5) continue;
+
       const country = rec.country === "NZ" ? "NZ" : "AU";
       const location = [rec.location, rec.state].filter(Boolean).join(", ");
 
@@ -967,17 +971,16 @@ function parseHtmlPage(
 // Apify Google Search integration
 // ---------------------------------------------------------------------------
 
-/** Targeted search queries for early-stage AU/NZ solar/wind/BESS projects */
+/** Targeted search queries for early-stage AU/NZ utility-scale solar/BESS projects (>=5MW, no wind) */
 const APIFY_SEARCH_QUERIES = [
-  // Broad AU coverage
-  "solar farm announced Australia 2026",
+  // Broad AU coverage — solar and BESS only
+  "solar farm announced Australia 2026 MW",
   "solar farm proposed development Australia 2026",
   "BESS battery energy storage project announced Australia 2026",
-  "wind farm announced Australia 2026",
-  "solar project planning approval Australia 2026",
-  "renewable energy project development Australia 2026 MW",
+  "solar project planning approval Australia 2026 MW",
+  "utility scale solar project development Australia 2026",
   // NZ coverage
-  "solar farm announced New Zealand 2026",
+  "solar farm announced New Zealand 2026 MW",
   "NZ solar BESS project proposed OR announced 2026 MW",
   // State-level gaps (SA, WA, NT get less coverage in national feeds)
   "solar project announced South Australia OR Western Australia 2026 MW",
@@ -986,7 +989,7 @@ const APIFY_SEARCH_QUERIES = [
   "site:abc.net.au solar farm announced OR proposed 2026",
   "site:afr.com solar farm announced Australia 2026",
   "site:carbonnews.co.nz solar project 2026",
-  "site:stuff.co.nz solar wind project announced 2026 MW",
+  "site:stuff.co.nz solar farm announced 2026 MW",
   "site:minister.dcceew.gov.au solar project approved 2026",
 ];
 
@@ -1147,16 +1150,36 @@ async function scrapeDeveloperPages(startDate?: string, endDate?: string): Promi
         if (!rawTitle || rawTitle.length < 8 || rawTitle.length > 120) continue;
 
         const lower = rawTitle.toLowerCase();
-        // Must mention solar, wind, battery, or BESS
-        const hasSolar = ["solar", "pv", "wind", "bess", "battery", "photovoltaic", "hydro"].some(
+        // Must mention solar, battery, or BESS (no wind)
+        const hasSolar = ["solar", "pv", "bess", "battery", "photovoltaic"].some(
           (kw) => lower.includes(kw)
         );
         if (!hasSolar) continue;
+
+        // Skip wind-only projects
+        if (lower.includes("wind") && !hasSolar) continue;
 
         // Skip generic navigation/category headings
         const genericHeadings = ["our projects", "projects", "about", "contact", "home", "news",
           "media", "resources", "services", "team", "careers", "overview"];
         if (genericHeadings.includes(lower)) continue;
+
+        // Skip titles that are clearly news articles or blog posts, not project names
+        const articlePatterns = [
+          /\bboard visit\b/, /\bofficial(ly)? open/i, /\bopen(s|ed|ing)\b.*solar/i,
+          /\bbehind\b.*boom/i, /\bpublic views?\b/, /\bgrazing\b/, /\bmerino/i,
+          /\bfashion house/i, /\brecycled?\b/, /\bscoping report\b/i,
+          /\bgeotech\b/i, /\baccommodation\b/i, /\bcommunity fight/i,
+          /\bboosts?\s+(clean|renewable)/i, /^one\s+\w+['']s\s+largest/i,
+          /\bvisit\b.*\bsolar\b/, /\bsustainability\b.*\bmana\b/i,
+          /pumped hydro/i, /hydropower/i, /hydroelectric/i,
+          /\b(liberia|africa|india|china|usa|uk|europe)\b/i,
+        ];
+        if (articlePatterns.some(p => p.test(rawTitle))) continue;
+
+        // Skip titles that are clearly "in operation" (not early stage)
+        const operationalPatterns = [/\bopened\b/, /\boperational\b/, /\bcommissioned\b/, /\bgenerating\b/];
+        if (operationalPatterns.some(p => p.test(lower))) continue;
 
         const dedupeKey = `${page.name}::${rawTitle.toLowerCase()}`;
         if (seenNames.has(dedupeKey)) continue;
@@ -1239,7 +1262,7 @@ function extractEmailsFromHtml(html: string): Array<{ email: string; context: st
 }
 
 const SKIP_NAMES_RE =
-  /^(New Zealand|South Australia|Western Australia|New South Wales|North Queensland|Clean Energy|Solar Farm|Wind Farm|Battery Storage|Energy Park|Power Station|Project Manager|Development Manager|Business Development|Executive Director|Chief Executive|Managing Director|General Manager|Senior Manager|Project Director|Head Office|Annual Report|Privacy Policy|All Rights)$/;
+  /^(New Zealand|South Australia|Western Australia|New South Wales|North Queensland|Clean Energy|Solar Farm|Wind Farm|Battery Storage|Energy Park|Power Station|Project Manager|Development Manager|Business Development|Executive Director|Chief Executive|Managing Director|General Manager|Senior Manager|Project Director|Head Office|Annual Report|Privacy Policy|All Rights|Sunshine Estate|Global Ratings|Search Clear|Presentations? Videos?|Kurow Development Team|Unknown Developer|Project Team|Development Team|Our Team|The Team)$/i;
 
 function extractNameNearEmail(context: string): string | null {
   const nameRe = /\b([A-Z][a-z]{1,20})\s+([A-Z][a-z]{1,25})\b/g;

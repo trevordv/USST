@@ -142,7 +142,7 @@ export default function Projects() {
           </div>
 
           <div className="w-40 space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">Announced After</label>
+            <label className="text-xs font-medium text-muted-foreground">Date From</label>
             <Input 
               type="date" 
               value={startDate}
@@ -151,7 +151,7 @@ export default function Projects() {
           </div>
 
           <div className="w-40 space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">Announced Before</label>
+            <label className="text-xs font-medium text-muted-foreground">Date To</label>
             <Input 
               type="date" 
               value={endDate}
