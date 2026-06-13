@@ -822,7 +822,7 @@ export async function scrapeAltEnergy(
         sourceName: "AltEnergy Australia",
         announcedDate: (rec.updated_at ?? "").slice(0, 10) || new Date().toISOString().slice(0, 10),
         contactName: rec.contact_name ?? null,
-        contactEmail: rec.contact_email ?? null,
+        contactEmail: isValidProjectContact(rec.contact_email, rec.developer || rec.owner) ? rec.contact_email : null,
         contactPhone: rec.contact_phone ?? null,
       });
     }
@@ -1050,6 +1050,29 @@ function isWindProject(name: string, description?: string | null): boolean {
  * Check if an email domain is plausibly related to a company name.
  * Used to reject emails scraped from unrelated pages (e.g. harvard.edu for WestWind Energy).
  */
+/**
+ * Validate a contact email for a project. Combines personal-check with domain relevance.
+ * Returns true only if the email is both a non-generic address and plausibly
+ * related to the developer/company name.
+ */
+/** Generic / government / regulatory domains that are never valid developer contacts */
+const INVALID_CONTACT_DOMAINS = [
+  "cer.gov.au", "cleanenergyregulator.gov.au", "dcceew.gov.au", "energy.gov.au",
+  "aemo.com.au", "epa.gov.au", "epa.govt.nz", "gov.au", "govt.nz", "gov.uk",
+  "ac.uk", "harvard.edu", "stanford.edu", "mit.edu", "edu.au", "edu.nz",
+  "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com",
+  "live.com", "mail.com", "protonmail.com", "proton.me", "zoho.com", "fastmail.com",
+];
+
+function isValidProjectContact(email: string | null, developerName: string | null | undefined): boolean {
+  if (!email) return false;
+  const domain = email.split("@")[1]?.toLowerCase() ?? "";
+  if (INVALID_CONTACT_DOMAINS.some(d => domain.endsWith(d))) return false;
+  if (!isPersonalEmail(email)) return false;
+  if (!isEmailDomainRelated(email, developerName)) return false;
+  return true;
+}
+
 function isEmailDomainRelated(email: string, companyName: string | null | undefined): boolean {
   if (!companyName) return true; // can't verify without a company name
   const domain = email.split("@")[1]?.toLowerCase() ?? "";
@@ -1223,9 +1246,10 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     "support@", "sales@", "media@", "pr@", "project@", "feedback@",
   ];
 
-  function needsEnrichment(p: { contactEmail: string | null; contactName: string | null }): boolean {
+  function needsEnrichment(p: { contactEmail: string | null; contactName: string | null; developer?: string | null }): boolean {
     if (!p.contactEmail && !p.contactName) return true;
     if (p.contactEmail && GENERIC_PREFIXES.some(px => p.contactEmail!.toLowerCase().startsWith(px))) return true;
+    if (p.contactEmail && !isValidProjectContact(p.contactEmail, p.developer ?? null)) return true;
     return false;
   }
 
