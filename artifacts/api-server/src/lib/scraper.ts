@@ -20,7 +20,7 @@
  * (POST /projects/enrich-contacts), never during scanning.
  */
 
-import { db, projectsTable, scansTable, scanProjectsTable } from "@workspace/db";
+import { db, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger";
 
@@ -1177,7 +1177,7 @@ type ContactResult = { name: string | null; email: string; phone: string | null 
  * Phase 2: Apify Google Search → visit top result URLs.
  * Phase 3: LinkedIn profile search for developers with generic contacts.
  */
-export async function enrichMissingContacts(): Promise<{ checked: number; updated: number }> {
+export async function enrichMissingContacts(runId?: number): Promise<{ checked: number; updated: number }> {
   const GENERIC_PREFIXES = [
     "info@", "admin@", "contact@", "hello@", "enquiries@", "enquiry@",
     "general@", "mail@", "projects@", "team@", "reception@", "office@",
@@ -1192,8 +1192,15 @@ export async function enrichMissingContacts(): Promise<{ checked: number; update
 
   const allProjects = await db.select().from(projectsTable);
   const toEnrich = allProjects.filter(needsEnrichment);
-  logger.info({ count: toEnrich.length }, "Contact enrichment: starting");
-  if (toEnrich.length === 0) return { checked: 0, updated: 0 };
+  logger.info({ count: toEnrich.length, runId }, "Contact enrichment: starting");
+  if (toEnrich.length === 0) {
+    if (runId) {
+      await db.update(contactEnrichmentsTable)
+        .set({ status: "completed", completedAt: new Date(), checked: 0, updated: 0 })
+        .where(eq(contactEnrichmentsTable.id, runId));
+    }
+    return { checked: 0, updated: 0 };
+  }
 
   type GroupEntry = {
     projects: typeof toEnrich;
@@ -1434,8 +1441,36 @@ export async function enrichMissingContacts(): Promise<{ checked: number; update
     }
   }
 
-  logger.info({ checked: toEnrich.length, updated }, "Contact enrichment complete");
+  logger.info({ checked: toEnrich.length, updated, runId }, "Contact enrichment complete");
+  if (runId) {
+    await db.update(contactEnrichmentsTable)
+      .set({ status: "completed", completedAt: new Date(), checked: toEnrich.length, updated })
+      .where(eq(contactEnrichmentsTable.id, runId));
+  }
   return { checked: toEnrich.length, updated };
+}
+
+/**
+ * Start an enrichment run in the background and return the run ID.
+ * The caller receives 202 Accepted immediately; the enrichment runs asynchronously.
+ */
+export async function startEnrichment(): Promise<number> {
+  const [run] = await db.insert(contactEnrichmentsTable)
+    .values({ status: "running", checked: 0, updated: 0 })
+    .returning();
+
+  const runId = run.id;
+
+  // Kick off the long-running work without awaiting
+  enrichMissingContacts(runId).catch((err: Error) => {
+    logger.error({ err, runId }, "Contact enrichment background task failed");
+    db.update(contactEnrichmentsTable)
+      .set({ status: "failed", completedAt: new Date(), errorMessage: err.message })
+      .where(eq(contactEnrichmentsTable.id, runId))
+      .catch((e) => logger.error({ err: e, runId }, "Failed to mark enrichment as failed"));
+  });
+
+  return runId;
 }
 
 // ──────────────────────────────────────────────────────────────

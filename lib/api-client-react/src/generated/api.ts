@@ -20,6 +20,7 @@ import type {
 } from '@tanstack/react-query';
 
 import type {
+  ContactEnrichment,
   ExportProjectsParams,
   GetProjectStatsParams,
   HealthStatus,
@@ -956,6 +957,83 @@ export function useGetScanProjects<TData = Awaited<ReturnType<typeof getScanProj
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getGetScanProjectsQueryOptions(id,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getGetContactEnrichmentUrl = (id: number,) => {
+
+
+
+
+  return `/api/contact-enrichments/${id}`
+}
+
+/**
+ * @summary Get contact enrichment run status
+ */
+export const getContactEnrichment = async (id: number, options?: RequestInit): Promise<ContactEnrichment> => {
+
+  return customFetch<ContactEnrichment>(getGetContactEnrichmentUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetContactEnrichmentQueryKey = (id: number,) => {
+    return [
+    `/api/contact-enrichments/${id}`
+    ] as const;
+    }
+
+
+export const getGetContactEnrichmentQueryOptions = <TData = Awaited<ReturnType<typeof getContactEnrichment>>, TError = ErrorType<void>>(id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getContactEnrichment>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetContactEnrichmentQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getContactEnrichment>>> = ({ signal }) => getContactEnrichment(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: !!(id), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getContactEnrichment>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetContactEnrichmentQueryResult = NonNullable<Awaited<ReturnType<typeof getContactEnrichment>>>
+export type GetContactEnrichmentQueryError = ErrorType<void>
+
+
+/**
+ * @summary Get contact enrichment run status
+ */
+
+export function useGetContactEnrichment<TData = Awaited<ReturnType<typeof getContactEnrichment>>, TError = ErrorType<void>>(
+ id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getContactEnrichment>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetContactEnrichmentQueryOptions(id,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

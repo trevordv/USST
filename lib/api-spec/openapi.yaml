@@ -14,6 +14,8 @@ tags:
     description: Solar project operations
   - name: scans
     description: Scan operations
+  - name: contact-enrichments
+    description: Contact enrichment run status
 paths:
   /healthz:
     get:
@@ -287,6 +289,27 @@ paths:
         "404":
           description: Scan not found
 
+  /contact-enrichments/{id}:
+    get:
+      operationId: getContactEnrichment
+      tags: [contact-enrichments]
+      summary: Get contact enrichment run status
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Enrichment run status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactEnrichment"
+        "404":
+          description: Enrichment run not found
+
 components:
   schemas:
     HealthStatus:
@@ -505,3 +528,23 @@ components:
         isNew:
           type: boolean
           description: True if this project was newly inserted during this scan
+
+    ContactEnrichment:
+      type: object
+      required: [id, status, startedAt, checked, updated]
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+          enum: [running, completed, failed]
+        startedAt:
+          type: string
+        completedAt:
+          type: ["string", "null"]
+        checked:
+          type: integer
+        updated:
+          type: integer
+        errorMessage:
+          type: ["string", "null"]

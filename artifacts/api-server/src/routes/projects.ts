@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { and, gte, lte, ilike, eq, or, sql, not, isNull, isNotNull, inArray } from "drizzle-orm";
-import { db, projectsTable } from "@workspace/db";
+import { db, projectsTable, contactEnrichmentsTable } from "@workspace/db";
 import {
   ListProjectsQueryParams,
   CreateProjectBody,
@@ -10,8 +10,9 @@ import {
   DeleteProjectParams,
   GetProjectStatsQueryParams,
   ExportProjectsQueryParams,
+  GetContactEnrichmentParams,
 } from "@workspace/api-zod";
-import { enrichMissingContacts } from "../lib/scraper";
+import { enrichMissingContacts, startEnrichment } from "../lib/scraper";
 
 const router: IRouter = Router();
 
@@ -259,12 +260,38 @@ router.patch("/projects/:id", async (req, res): Promise<void> => {
 // POST /projects/enrich-contacts
 router.post("/projects/enrich-contacts", async (req, res): Promise<void> => {
   try {
-    const result = await enrichMissingContacts();
-    res.json(result);
+    const runId = await startEnrichment();
+    res.status(202).json({ runId, status: "running" });
   } catch (err) {
-    req.log.error({ err }, "Contact enrichment failed");
-    res.status(500).json({ error: "Contact enrichment failed" });
+    req.log.error({ err }, "Contact enrichment failed to start");
+    res.status(500).json({ error: "Contact enrichment failed to start" });
   }
+});
+
+// GET /contact-enrichments/:id
+router.get("/contact-enrichments/:id", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetContactEnrichmentParams.safeParse({ id: parseInt(raw, 10) });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+
+  const [run] = await db
+    .select()
+    .from(contactEnrichmentsTable)
+    .where(eq(contactEnrichmentsTable.id, params.data.id));
+
+  if (!run) {
+    res.status(404).json({ error: "Enrichment run not found" });
+    return;
+  }
+
+  res.json({
+    ...run,
+    startedAt: run.startedAt.toISOString(),
+    completedAt: run.completedAt ? run.completedAt.toISOString() : null,
+  });
 });
 
 // DELETE /projects/:id

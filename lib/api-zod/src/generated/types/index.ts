@@ -6,6 +6,8 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from './contactEnrichment';
+export * from './contactEnrichmentStatus';
 export * from './exportProjectsParams';
 export * from './getProjectStatsParams';
 export * from './healthStatus';

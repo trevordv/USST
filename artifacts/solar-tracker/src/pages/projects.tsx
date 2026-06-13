@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useListProjects, getListProjectsQueryKey, useExportProjects } from "@workspace/api-client-react";
+import { useListProjects, getListProjectsQueryKey, useExportProjects, useGetContactEnrichment, getGetContactEnrichmentQueryKey } from "@workspace/api-client-react";
 import { Layout } from "@/components/layout";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,7 @@ export default function Projects() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [contactOnly, setContactOnly] = useState(false);
-  const [enriching, setEnriching] = useState(false);
+  const [enrichRunId, setEnrichRunId] = useState<number | null>(null);
   const [enrichResult, setEnrichResult] = useState<{ checked: number; updated: number } | null>(null);
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
@@ -29,21 +29,44 @@ export default function Projects() {
   const scanIdParam = urlParams.get("scanId");
   const scanId = scanIdParam ? parseInt(scanIdParam, 10) : undefined;
 
+  // Poll enrichment status when a run is active
+  const { data: enrichment } = useGetContactEnrichment(enrichRunId ?? 0, {
+    query: {
+      enabled: !!enrichRunId,
+      queryKey: getGetContactEnrichmentQueryKey(enrichRunId ?? 0),
+      refetchInterval: (query) => {
+        const status = query.state.data?.status;
+        return status === "running" ? 3000 : false;
+      }
+    }
+  });
+
+  // When enrichment completes, show result and invalidate project list
+  useEffect(() => {
+    if (enrichment && enrichment.status !== "running") {
+      if (enrichment.status === "completed") {
+        setEnrichResult({ checked: enrichment.checked, updated: enrichment.updated });
+      } else {
+        setEnrichResult({ checked: 0, updated: -1 });
+      }
+      setEnrichRunId(null);
+      queryClient.invalidateQueries();
+    }
+  }, [enrichment, queryClient]);
+
   async function handleEnrichContacts() {
-    setEnriching(true);
     setEnrichResult(null);
     try {
       const res = await fetch("/api/projects/enrich-contacts", { method: "POST" });
       if (!res.ok) throw new Error("Enrichment failed");
-      const data = await res.json() as { checked: number; updated: number };
-      setEnrichResult(data);
-      await queryClient.invalidateQueries();
+      const data = await res.json() as { runId: number };
+      setEnrichRunId(data.runId);
     } catch {
       setEnrichResult({ checked: 0, updated: -1 });
-    } finally {
-      setEnriching(false);
     }
   }
+
+  const enriching = enrichRunId != null && enrichment?.status === "running";
 
   const queryParams = {
     search: search || undefined,

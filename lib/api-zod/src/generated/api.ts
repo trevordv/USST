@@ -259,3 +259,21 @@ export const GetScanProjectsResponseItem = zod.object({
 export const GetScanProjectsResponse = zod.array(GetScanProjectsResponseItem)
 
 
+/**
+ * @summary Get contact enrichment run status
+ */
+export const GetContactEnrichmentParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const GetContactEnrichmentResponse = zod.object({
+  "id": zod.number(),
+  "status": zod.enum(['running', 'completed', 'failed']),
+  "startedAt": zod.string(),
+  "completedAt": zod.string().nullish(),
+  "checked": zod.number(),
+  "updated": zod.number(),
+  "errorMessage": zod.string().nullish()
+})
+
+

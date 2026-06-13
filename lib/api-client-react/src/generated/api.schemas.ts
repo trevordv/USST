@@ -215,6 +215,27 @@ export interface ScanProject {
   isNew: boolean;
 }
 
+export type ContactEnrichmentStatus = typeof ContactEnrichmentStatus[keyof typeof ContactEnrichmentStatus];
+
+
+export const ContactEnrichmentStatus = {
+  running: 'running',
+  completed: 'completed',
+  failed: 'failed',
+} as const;
+
+export interface ContactEnrichment {
+  id: number;
+  status: ContactEnrichmentStatus;
+  startedAt: string;
+  /** @nullable */
+  completedAt?: string | null;
+  checked: number;
+  updated: number;
+  /** @nullable */
+  errorMessage?: string | null;
+}
+
 export type ListProjectsParams = {
 /**
  * ISO date string (YYYY-MM-DD)

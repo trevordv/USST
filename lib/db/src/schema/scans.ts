@@ -30,3 +30,21 @@ export const scanProjectsTable = pgTable("scan_projects", {
   isNew: boolean("is_new").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ── Contact enrichment runs ──────────────────────────────────────────
+export const contactEnrichmentsTable = pgTable("contact_enrichments", {
+  id: serial("id").primaryKey(),
+  status: text("status").notNull().default("running"),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  checked: integer("checked").notNull().default(0),
+  updated: integer("updated").notNull().default(0),
+  errorMessage: text("error_message"),
+});
+
+export const insertContactEnrichmentSchema = createInsertSchema(contactEnrichmentsTable).omit({
+  id: true,
+  startedAt: true,
+});
+export type InsertContactEnrichment = z.infer<typeof insertContactEnrichmentSchema>;
+export type ContactEnrichment = typeof contactEnrichmentsTable.$inferSelect;
