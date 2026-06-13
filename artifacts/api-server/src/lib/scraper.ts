@@ -1452,7 +1452,7 @@ async function scrapeSource(
 export async function runScan(scanId: number, startDate?: string, endDate?: string): Promise<void> {
   logger.info({ scanId, startDate, endDate }, "Starting scan");
 
-  let totalProjectsFound = 0;
+  let validProjectsFound = 0;
   let newProjects = 0;
   let sourcesScanned = 0;
   let errorMessage: string | null = null;
@@ -1473,7 +1473,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         // Update scan progress in DB
         await db
           .update(scansTable)
-          .set({ sourcesScanned, projectsFound: allScraped.length })
+          .set({ sourcesScanned })
           .where(eq(scansTable.id, scanId));
       } catch (err) {
         logger.warn({ err, source: source.name }, "Source scrape error");
@@ -1489,14 +1489,12 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
 
       await db
         .update(scansTable)
-        .set({ sourcesScanned, projectsFound: allScraped.length })
+        .set({ sourcesScanned })
         .where(eq(scansTable.id, scanId));
     } catch (err) {
       logger.warn({ err }, "AltEnergy scrape error");
       sourcesScanned++;
     }
-
-    totalProjectsFound = allScraped.length;
 
     // Build a lookup of existing sourceUrl -> projectId for quick checking
     const existingByUrl = new Map<string, number>();
@@ -1517,6 +1515,14 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
         continue;
       }
+      // Must have capacity (no null capacity projects)
+      if (project.capacityMw == null) {
+        if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
+        continue;
+      }
+
+      // Count valid projects that passed all quality gates
+      validProjectsFound++;
 
       const isNew = !project.sourceUrl || !existingByUrl.has(project.sourceUrl);
       let projectId: number;
@@ -1526,7 +1532,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
           const [inserted] = await db.insert(projectsTable).values({
             name: project.name,
             description: project.description,
-            capacityMw: project.capacityMw != null ? String(project.capacityMw) : null,
+            capacityMw: String(project.capacityMw),
             developer: project.developer,
             epc: null,
             location: project.location,
@@ -1565,12 +1571,12 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         status: "completed",
         completedAt: new Date(),
         sourcesScanned,
-        projectsFound: totalProjectsFound,
+        projectsFound: validProjectsFound,
         newProjects,
       })
       .where(eq(scansTable.id, scanId));
 
-    logger.info({ scanId, sourcesScanned, totalProjectsFound, newProjects }, "Scan completed");
+    logger.info({ scanId, sourcesScanned, validProjectsFound, newProjects }, "Scan completed");
   } catch (err) {
     errorMessage = err instanceof Error ? err.message : String(err);
     logger.error({ err, scanId }, "Scan failed");
@@ -1581,7 +1587,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         status: "failed",
         completedAt: new Date(),
         sourcesScanned,
-        projectsFound: totalProjectsFound,
+        projectsFound: validProjectsFound,
         newProjects,
         errorMessage,
       })

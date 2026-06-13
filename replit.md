@@ -47,7 +47,8 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 - **Project-name shape check for news articles** — AltEnergy `newsandviews` titles are article headlines, not project names. Only titles containing a recognisable project suffix (e.g. "Solar Farm", "BESS", "Energy Hub") are kept; article-style headlines are discarded.
 - **Contact enrichment as explicit action** — `POST /projects/enrich-contacts` runs domain scraping + Apify search to find developer emails and phones. It is intentionally not automatic to avoid rate-limiting and spam flags.
 - **Scan lineage tracking** — `projects.scan_id` ties every project to the scan that discovered it, enabling "View X new" per scan in the history UI.
-- **Permanent filters on the API** — The `GET /projects` endpoint always applies: no wind in name, AU/NZ only, ≥5MW (or null capacity). User filters (date, country, search, scanId, hasContact) are layered on top.
+- **Permanent filters on the API** — The `GET /projects` endpoint always applies: no wind in name, AU/NZ only, must have a capacity value, and ≥5 MW. User filters (date, country, search, scanId, hasContact) are layered on top.
+- **Capacity gate at ingest** — Projects with no extractable capacity (`null` or `undefined` MW) are dropped during the scan and never inserted. The scraper logs this as a quality rejection.
 - **Strict source whitelist** — The scraper only scans the approved source list below. No broad Google Search, no developer page scraping, no unlisted sites. The `sourcesScanned` counter in the scan history reflects exactly these approved sources.
 
 ## Product
@@ -92,6 +93,7 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 ## User preferences
 
 - Target: AU/NZ utility-scale solar and BESS projects ≥5MW. No wind.
+- List only projects where the capacity is mentioned for example 100MW.
 - Clean data is paramount — no news articles, no operational updates, no non-AU/NZ projects.
 - The scan must be restricted to **only the approved sources listed above**. No broad Google Search, no developer page scraping, no ad-hoc sites.
 - AltEnergy is a subscription site requiring login credentials (`ALTENERGY_USERNAME` / `ALTENERGY_PASSWORD`) to access the project database and news sections.

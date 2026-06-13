@@ -99,11 +99,11 @@ export default function ScanDetail() {
               </div>
               <div className="text-right">
                 <div className="text-sm text-muted-foreground">Total found</div>
-                <div className="text-xl font-mono font-bold">{scan.projectsFound}</div>
+                <div className="text-xl font-mono font-bold">{projects?.length ?? 0}</div>
               </div>
               <div className="text-right">
                 <div className="text-sm text-muted-foreground">New</div>
-                <div className="text-xl font-mono font-bold text-primary">+{scan.newProjects}</div>
+                <div className="text-xl font-mono font-bold text-primary">+{newCount}</div>
               </div>
             </div>
           </div>

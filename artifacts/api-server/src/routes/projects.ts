@@ -39,10 +39,9 @@ function buildWhereConditions(
   conditions.push(not(ilike(projectsTable.name, "%wind%")));
   // Only AU and NZ
   conditions.push(inArray(projectsTable.country, ["AU", "NZ"]));
-  // Utility scale: >=5 MW (or capacity unknown)
-  conditions.push(
-    or(isNull(projectsTable.capacityMw), gte(projectsTable.capacityMw, "5"))!
-  );
+  // Must have capacity (no null capacity projects) and utility scale: >=5 MW
+  conditions.push(isNotNull(projectsTable.capacityMw));
+  conditions.push(gte(projectsTable.capacityMw, "5"));
 
   // ── User-supplied filters ──────────────────────────────────
   if (startDate && endDate) {
@@ -107,7 +106,7 @@ router.post("/projects", async (req, res): Promise<void> => {
 
   const insertData = {
     ...parsed.data,
-    capacityMw: parsed.data.capacityMw != null ? String(parsed.data.capacityMw) : null,
+    capacityMw: String(parsed.data.capacityMw),
   };
   const [project] = await db.insert(projectsTable).values(insertData).returning();
   res.status(201).json(toProjectResponse(project));

@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, isNotNull, gte, and } from "drizzle-orm";
 import { db, scansTable, projectsTable, scanProjectsTable } from "@workspace/db";
 import { TriggerScanBody, GetScanParams } from "@workspace/api-zod";
 import { runScan } from "../lib/scraper";
@@ -101,7 +101,13 @@ router.get("/scans/:id/projects", async (req, res): Promise<void> => {
     const projects = await db
       .select()
       .from(projectsTable)
-      .where(inArray(projectsTable.id, projectIds));
+      .where(
+        and(
+          inArray(projectsTable.id, projectIds),
+          isNotNull(projectsTable.capacityMw),
+          gte(projectsTable.capacityMw, "5")
+        )
+      );
     const isNewMap = new Map(relations.map((r) => [r.projectId, r.isNew]));
 
     res.json(

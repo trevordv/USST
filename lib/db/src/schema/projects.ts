@@ -6,7 +6,7 @@ export const projectsTable = pgTable("projects", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   description: text("description"),
-  capacityMw: numeric("capacity_mw", { precision: 10, scale: 2 }),
+  capacityMw: numeric("capacity_mw", { precision: 10, scale: 2 }).notNull(),
   developer: text("developer"),
   epc: text("epc"),
   location: text("location"),
