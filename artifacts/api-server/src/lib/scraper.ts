@@ -1035,6 +1035,45 @@ function isPersonalEmail(email: string): boolean {
   return !GENERIC_EMAIL_RE.test(email) && email.includes("@");
 }
 
+/**
+ * Detect wind projects even when the name doesn't contain "wind".
+ * Checks description for turbine-related keywords.
+ */
+function isWindProject(name: string, description?: string | null): boolean {
+  if (/wind\b/i.test(name)) return true;
+  const desc = (description ?? "").toLowerCase();
+  if (desc.includes("turbine")) return true;
+  return false;
+}
+
+/**
+ * Check if an email domain is plausibly related to a company name.
+ * Used to reject emails scraped from unrelated pages (e.g. harvard.edu for WestWind Energy).
+ */
+function isEmailDomainRelated(email: string, companyName: string | null | undefined): boolean {
+  if (!companyName) return true; // can't verify without a company name
+  const domain = email.split("@")[1]?.toLowerCase() ?? "";
+  const rootDomain = domain.replace(/\.[^.]+$/, ""); // e.g. "harvard" from "cfa.harvard.edu"
+  const company = companyName.toLowerCase();
+
+  // Extract meaningful keywords from the company name
+  const companyWords = company
+    .replace(/(energy|solar|power|renewables|wind|battery|storage|pty|ltd|limited|group|holdings|corporation|inc|co|company|australia|new zealand|nz|au)\b/g, "")
+    .replace(/[^a-z0-9]/g, " ")
+    .split(/\s+/)
+    .filter(w => w.length >= 3);
+
+  // The domain (or its root) must contain at least one company keyword
+  const related = companyWords.some(w => domain.includes(w) || w.includes(rootDomain));
+  if (related) return true;
+
+  // Academic / government / institutional domains are suspicious unless they match
+  const suspiciousTlds = [".edu", ".gov", ".gov.au", ".gov.nz", ".ac.uk", ".ac.nz", ".org"];
+  if (suspiciousTlds.some(tld => domain.endsWith(tld))) return false;
+
+  return true; // allow unknown domains — we'll be stricter in Phase 1
+}
+
 function extractEmailsFromHtml(html: string): Array<{ email: string; context: string }> {
   const text = html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -1146,7 +1185,7 @@ function extractNameNearEmail(context: string): string | null {
   return null;
 }
 
-async function scrapeUrlForContact(url: string): Promise<{ name: string | null; email: string; phone: string | null } | null> {
+async function scrapeUrlForContact(url: string, companyName?: string | null): Promise<{ name: string | null; email: string; phone: string | null } | null> {
   try {
     const res = await fetch(url, {
       signal: AbortSignal.timeout(10000),
@@ -1159,7 +1198,7 @@ async function scrapeUrlForContact(url: string): Promise<{ name: string | null; 
     const html = await res.text();
     const matches = extractEmailsFromHtml(html);
     for (const { email, context } of matches) {
-      if (isPersonalEmail(email)) {
+      if (isPersonalEmail(email) && isEmailDomainRelated(email, companyName)) {
         const name = extractNameNearEmail(context);
         const phoneRaw = context.match(/\(?\+?[\d]{1,4}[\s\-.]?\(?\d{2,4}\)?[\s\-.]?\d{3,4}[\s\-.]?\d{3,4}/);
         return { name, email, phone: phoneRaw?.[0]?.replace(/\s+/g, " ").trim() ?? null };
@@ -1267,7 +1306,7 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     if (!g.domain) { noDomainGroups.push([devKey, g]); continue; }
 
     for (const path of CONTACT_PATHS) {
-      const contact = await scrapeUrlForContact(`https://${g.domain}${path}`);
+      const contact = await scrapeUrlForContact(`https://${g.domain}${path}`, g.projects[0].developer ?? null);
       if (contact) {
         await applyContact(g, contact);
         enrichedKeys.add(devKey);
@@ -1304,12 +1343,13 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
         const results = (items[i] as ApifyDatasetItem)?.organicResults ?? [];
 
         // a) Check snippets for emails directly
+        const companyName = g.projects[0].developer ?? null;
         for (const result of results) {
           const text = `${result.title ?? ""} ${result.description ?? ""}`;
           const emailMatches = [...text.matchAll(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g)];
           for (const em of emailMatches) {
             const email = em[0].toLowerCase();
-            if (isPersonalEmail(email)) {
+            if (isPersonalEmail(email) && isEmailDomainRelated(email, companyName)) {
               const name = extractNameNearEmail(text) ?? g.existingName;
               await applyContact(g, { name: name ?? null, email, phone: null });
               enrichedKeys.add(devKey);
@@ -1324,7 +1364,7 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
         if (!enrichedKeys.has(devKey)) {
           for (const result of results.slice(0, 3)) {
             if (!result.url) continue;
-            const contact = await scrapeUrlForContact(result.url);
+            const contact = await scrapeUrlForContact(result.url, companyName);
             if (contact) {
               await applyContact(g, {
                 name: contact.name ?? g.existingName,
@@ -1413,12 +1453,13 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
           const personItems = await fetchApifyResults(personRunId);
           const personResults = (personItems[0] as ApifyDatasetItem)?.organicResults ?? [];
 
+          const companyName = g.projects[0].developer ?? null;
           for (const pr of personResults) {
             const pText = `${pr.title ?? ""} ${pr.description ?? ""}`;
             const emailMatches = [...pText.matchAll(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g)];
             for (const em of emailMatches) {
               const email = em[0].toLowerCase();
-              if (isPersonalEmail(email)) {
+              if (isPersonalEmail(email) && isEmailDomainRelated(email, companyName)) {
                 bestMatch.email = email;
                 break;
               }
@@ -1651,6 +1692,11 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       }
       // Must have capacity (no null capacity projects)
       if (project.capacityMw == null) {
+        if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
+        continue;
+      }
+      // No wind projects — catch turbines even when name doesn't contain "wind"
+      if (isWindProject(project.name, project.description)) {
         if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
         continue;
       }
