@@ -24,5 +24,8 @@ export * from './projectUpdate';
 export * from './projectUpdateCountry';
 export * from './projectUpdateStatus';
 export * from './scanInput';
+export * from './scanProject';
+export * from './scanProjectCountry';
+export * from './scanProjectStatus';
 export * from './scanRun';
 export * from './scanRunStatus';

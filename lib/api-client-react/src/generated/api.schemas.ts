@@ -165,6 +165,56 @@ export interface ScanInput {
   endDate?: string;
 }
 
+export type ScanProjectCountry = typeof ScanProjectCountry[keyof typeof ScanProjectCountry];
+
+
+export const ScanProjectCountry = {
+  AU: 'AU',
+  NZ: 'NZ',
+} as const;
+
+export type ScanProjectStatus = typeof ScanProjectStatus[keyof typeof ScanProjectStatus];
+
+
+export const ScanProjectStatus = {
+  announced: 'announced',
+  under_development: 'under_development',
+} as const;
+
+export interface ScanProject {
+  id: number;
+  name: string;
+  /** @nullable */
+  description?: string | null;
+  /** @nullable */
+  capacityMw?: number | null;
+  /** @nullable */
+  developer?: string | null;
+  /** @nullable */
+  epc?: string | null;
+  /** @nullable */
+  location?: string | null;
+  country: ScanProjectCountry;
+  status: ScanProjectStatus;
+  /** @nullable */
+  sourceUrl?: string | null;
+  /** @nullable */
+  sourceName?: string | null;
+  /** @nullable */
+  contactName?: string | null;
+  /** @nullable */
+  contactEmail?: string | null;
+  /** @nullable */
+  contactPhone?: string | null;
+  announcedDate: string;
+  createdAt: string;
+  updatedAt: string;
+  /** @nullable */
+  scanId?: number | null;
+  /** True if this project was newly inserted during this scan */
+  isNew: boolean;
+}
+
 export type ListProjectsParams = {
 /**
  * ISO date string (YYYY-MM-DD)

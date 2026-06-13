@@ -29,6 +29,7 @@ import type {
   ProjectStats,
   ProjectUpdate,
   ScanInput,
+  ScanProject,
   ScanRun
 } from './api.schemas';
 
@@ -877,6 +878,84 @@ export function useGetScan<TData = Awaited<ReturnType<typeof getScan>>, TError =
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getGetScanQueryOptions(id,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getGetScanProjectsUrl = (id: number,) => {
+
+
+
+
+  return `/api/scans/${id}/projects`
+}
+
+/**
+ * Returns every project found by this scan run (both new and existing), with an isNew flag on each.
+ * @summary List all projects discovered by a scan
+ */
+export const getScanProjects = async (id: number, options?: RequestInit): Promise<ScanProject[]> => {
+
+  return customFetch<ScanProject[]>(getGetScanProjectsUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetScanProjectsQueryKey = (id: number,) => {
+    return [
+    `/api/scans/${id}/projects`
+    ] as const;
+    }
+
+
+export const getGetScanProjectsQueryOptions = <TData = Awaited<ReturnType<typeof getScanProjects>>, TError = ErrorType<void>>(id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getScanProjects>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetScanProjectsQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getScanProjects>>> = ({ signal }) => getScanProjects(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: !!(id), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getScanProjects>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetScanProjectsQueryResult = NonNullable<Awaited<ReturnType<typeof getScanProjects>>>
+export type GetScanProjectsQueryError = ErrorType<void>
+
+
+/**
+ * @summary List all projects discovered by a scan
+ */
+
+export function useGetScanProjects<TData = Awaited<ReturnType<typeof getScanProjects>>, TError = ErrorType<void>>(
+ id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getScanProjects>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetScanProjectsQueryOptions(id,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

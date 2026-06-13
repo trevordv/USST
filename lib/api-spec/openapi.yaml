@@ -263,6 +263,30 @@ paths:
         "404":
           description: Not found
 
+  /scans/{id}/projects:
+    get:
+      operationId: getScanProjects
+      tags: [scans]
+      summary: List all projects discovered by a scan
+      description: Returns every project found by this scan run (both new and existing), with an isNew flag on each.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of projects with isNew flag
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScanProject"
+        "404":
+          description: Scan not found
+
 components:
   schemas:
     HealthStatus:
@@ -435,3 +459,49 @@ components:
         endDate:
           type: string
           description: Only scan for projects announced before this date (YYYY-MM-DD)
+
+    ScanProject:
+      type: object
+      required: [id, name, country, status, announcedDate, createdAt, updatedAt, isNew]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: ["string", "null"]
+        capacityMw:
+          type: ["number", "null"]
+        developer:
+          type: ["string", "null"]
+        epc:
+          type: ["string", "null"]
+        location:
+          type: ["string", "null"]
+        country:
+          type: string
+          enum: [AU, NZ]
+        status:
+          type: string
+          enum: [announced, under_development]
+        sourceUrl:
+          type: ["string", "null"]
+        sourceName:
+          type: ["string", "null"]
+        contactName:
+          type: ["string", "null"]
+        contactEmail:
+          type: ["string", "null"]
+        contactPhone:
+          type: ["string", "null"]
+        announcedDate:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+        scanId:
+          type: ["integer", "null"]
+        isNew:
+          type: boolean
+          description: True if this project was newly inserted during this scan

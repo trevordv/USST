@@ -20,7 +20,7 @@
  * (POST /projects/enrich-contacts), never during scanning.
  */
 
-import { db, projectsTable, scansTable } from "@workspace/db";
+import { db, projectsTable, scansTable, scanProjectsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger";
 
@@ -1498,43 +1498,64 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
 
     totalProjectsFound = allScraped.length;
 
-    // Insert new projects (deduplicate by sourceUrl)
-    for (const project of allScraped) {
-      if (project.sourceUrl && existingUrls.has(project.sourceUrl)) continue;
+    // Build a lookup of existing sourceUrl -> projectId for quick checking
+    const existingByUrl = new Map<string, number>();
+    const existingRows = await db.select({ id: projectsTable.id, sourceUrl: projectsTable.sourceUrl }).from(projectsTable);
+    for (const r of existingRows) {
+      if (r.sourceUrl) existingByUrl.set(r.sourceUrl, r.id);
+    }
 
-      // Pre-insert quality gate — skip noise that passes scraping but shouldn't be stored
+    // Insert / record every project found by this scan (deduplicate by sourceUrl)
+    for (const project of allScraped) {
+      // Pre-insert quality gate — skip noise
       if (isNoisyProjectName(project.name)) {
-        if (project.sourceUrl) existingUrls.add(project.sourceUrl); // mark seen so it's not retried
+        if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1); // sentinel
         continue;
       }
       // Only AU and NZ
       if (project.country && !["AU", "NZ"].includes(project.country)) {
-        if (project.sourceUrl) existingUrls.add(project.sourceUrl);
+        if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
         continue;
       }
 
+      const isNew = !project.sourceUrl || !existingByUrl.has(project.sourceUrl);
+      let projectId: number;
+
       try {
-        await db.insert(projectsTable).values({
-          name: project.name,
-          description: project.description,
-          capacityMw: project.capacityMw != null ? String(project.capacityMw) : null,
-          developer: project.developer,
-          epc: null,
-          location: project.location,
-          country: project.country,
-          status: project.status,
-          sourceUrl: project.sourceUrl,
-          sourceName: project.sourceName,
-          announcedDate: project.announcedDate,
-          contactName: project.contactName,
-          contactEmail: project.contactEmail,
-          contactPhone: project.contactPhone,
+        if (isNew) {
+          const [inserted] = await db.insert(projectsTable).values({
+            name: project.name,
+            description: project.description,
+            capacityMw: project.capacityMw != null ? String(project.capacityMw) : null,
+            developer: project.developer,
+            epc: null,
+            location: project.location,
+            country: project.country,
+            status: project.status,
+            sourceUrl: project.sourceUrl,
+            sourceName: project.sourceName,
+            announcedDate: project.announcedDate,
+            contactName: project.contactName,
+            contactEmail: project.contactEmail,
+            contactPhone: project.contactPhone,
+            scanId,
+          }).returning({ id: projectsTable.id });
+          projectId = inserted.id;
+          newProjects++;
+          if (project.sourceUrl) existingByUrl.set(project.sourceUrl, projectId);
+        } else {
+          projectId = existingByUrl.get(project.sourceUrl!)!;
+        }
+
+        // Record this scan↔project relationship
+        await db.insert(scanProjectsTable).values({
           scanId,
+          projectId,
+          projectName: project.name,
+          isNew,
         });
-        newProjects++;
-        if (project.sourceUrl) existingUrls.add(project.sourceUrl);
       } catch (err) {
-        logger.warn({ err, project: project.name }, "Failed to insert project");
+        logger.warn({ err, project: project.name }, "Failed to insert project or scan relationship");
       }
     }
 

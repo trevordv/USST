@@ -160,17 +160,30 @@ export default function Scans() {
                         {scan.newProjects !== undefined ? `+${scan.newProjects}` : '-'}
                       </TableCell>
                       <TableCell>
-                        {scan.status === 'completed' && (scan.newProjects ?? 0) > 0 && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="gap-1.5 text-xs"
-                            onClick={() => navigate(`/projects?scanId=${scan.id}`)}
-                          >
-                            <ExternalLink className="h-3 w-3" />
-                            View {scan.newProjects} new
-                          </Button>
-                        )}
+                        <div className="flex items-center gap-1.5 justify-end">
+                          {scan.status === 'completed' && scan.projectsFound > 0 && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="gap-1.5 text-xs"
+                              onClick={() => navigate(`/scans/${scan.id}`)}
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                              View {scan.projectsFound} found
+                            </Button>
+                          )}
+                          {scan.status === 'completed' && (scan.newProjects ?? 0) > 0 && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="gap-1.5 text-xs border-primary/30 text-primary hover:bg-primary/5"
+                              onClick={() => navigate(`/projects?scanId=${scan.id}`)}
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                              View {scan.newProjects} new
+                            </Button>
+                          )}
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))

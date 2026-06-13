@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
-import { eq } from "drizzle-orm";
-import { db, scansTable, projectsTable } from "@workspace/db";
+import { eq, inArray } from "drizzle-orm";
+import { db, scansTable, projectsTable, scanProjectsTable } from "@workspace/db";
 import { TriggerScanBody, GetScanParams } from "@workspace/api-zod";
 import { runScan } from "../lib/scraper";
 
@@ -73,6 +73,65 @@ router.get("/scans/:id", async (req, res): Promise<void> => {
     startedAt: scan.startedAt.toISOString(),
     completedAt: scan.completedAt ? scan.completedAt.toISOString() : null,
   });
+});
+
+// GET /scans/:id/projects — all projects discovered by this scan
+router.get("/scans/:id/projects", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const id = parseInt(raw, 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: "Invalid scan id" });
+    return;
+  }
+
+  const [scan] = await db.select().from(scansTable).where(eq(scansTable.id, id));
+  if (!scan) {
+    res.status(404).json({ error: "Scan not found" });
+    return;
+  }
+
+  // 1. Try modern scan_projects table
+  const relations = await db
+    .select()
+    .from(scanProjectsTable)
+    .where(eq(scanProjectsTable.scanId, id));
+
+  if (relations.length > 0) {
+    const projectIds = relations.map((r) => r.projectId);
+    const projects = await db
+      .select()
+      .from(projectsTable)
+      .where(inArray(projectsTable.id, projectIds));
+    const isNewMap = new Map(relations.map((r) => [r.projectId, r.isNew]));
+
+    res.json(
+      projects.map((p) => ({
+        ...p,
+        capacityMw: p.capacityMw != null ? parseFloat(p.capacityMw) : null,
+        createdAt: p.createdAt.toISOString(),
+        updatedAt: p.updatedAt.toISOString(),
+        isNew: isNewMap.get(p.id) ?? false,
+      }))
+    );
+    return;
+  }
+
+  // 2. Fallback: historical scans stored only the *new* projects via scan_id on projects table.
+  // We cannot show "all found" for historical scans, but we can show the new ones at minimum.
+  const historicalProjects = await db
+    .select()
+    .from(projectsTable)
+    .where(eq(projectsTable.scanId, id));
+
+  res.json(
+    historicalProjects.map((p) => ({
+      ...p,
+      capacityMw: p.capacityMw != null ? parseFloat(p.capacityMw) : null,
+      createdAt: p.createdAt.toISOString(),
+      updatedAt: p.updatedAt.toISOString(),
+      isNew: true,
+    }))
+  );
 });
 
 export default router;

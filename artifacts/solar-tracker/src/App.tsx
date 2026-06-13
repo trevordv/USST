@@ -8,6 +8,7 @@ import Dashboard from "./pages/dashboard";
 import Projects from "./pages/projects";
 import ProjectDetail from "./pages/project-detail";
 import Scans from "./pages/scans";
+import ScanDetail from "./pages/scan-detail";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -24,6 +25,7 @@ function Router() {
       <Route path="/projects" component={Projects} />
       <Route path="/projects/:id" component={ProjectDetail} />
       <Route path="/scans" component={Scans} />
+      <Route path="/scans/:id" component={ScanDetail} />
       <Route component={NotFound} />
     </Switch>
   );

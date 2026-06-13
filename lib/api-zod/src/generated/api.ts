@@ -227,3 +227,35 @@ export const GetScanResponse = zod.object({
 })
 
 
+/**
+ * Returns every project found by this scan run (both new and existing), with an isNew flag on each.
+ * @summary List all projects discovered by a scan
+ */
+export const GetScanProjectsParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const GetScanProjectsResponseItem = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "description": zod.string().nullish(),
+  "capacityMw": zod.number().nullish(),
+  "developer": zod.string().nullish(),
+  "epc": zod.string().nullish(),
+  "location": zod.string().nullish(),
+  "country": zod.enum(['AU', 'NZ']),
+  "status": zod.enum(['announced', 'under_development']),
+  "sourceUrl": zod.string().nullish(),
+  "sourceName": zod.string().nullish(),
+  "contactName": zod.string().nullish(),
+  "contactEmail": zod.string().nullish(),
+  "contactPhone": zod.string().nullish(),
+  "announcedDate": zod.string(),
+  "createdAt": zod.string(),
+  "updatedAt": zod.string(),
+  "scanId": zod.number().nullish(),
+  "isNew": zod.boolean().describe('True if this project was newly inserted during this scan')
+})
+export const GetScanProjectsResponse = zod.array(GetScanProjectsResponseItem)
+
+
