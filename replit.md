@@ -1,6 +1,6 @@
 # Solar Project Scout
 
-A sales intelligence tool for the Australian and New Zealand utility-scale solar market. It continuously scans ~40 industry news sites, government portals, and developer pipelines to discover new solar and BESS projects (≥5MW) in early development, then presents them in a filterable, exportable directory with optional contact enrichment.
+A sales intelligence tool for the Australian and New Zealand utility-scale solar market. It scans a curated set of approved industry news sites and government portals to discover new solar and BESS projects (≥5MW) in early development, then presents them in a filterable, exportable directory with optional contact enrichment.
 
 ## Run & Operate
 
@@ -48,6 +48,7 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 - **Contact enrichment as explicit action** — `POST /projects/enrich-contacts` runs domain scraping + Apify search to find developer emails and phones. It is intentionally not automatic to avoid rate-limiting and spam flags.
 - **Scan lineage tracking** — `projects.scan_id` ties every project to the scan that discovered it, enabling "View X new" per scan in the history UI.
 - **Permanent filters on the API** — The `GET /projects` endpoint always applies: no wind in name, AU/NZ only, ≥5MW (or null capacity). User filters (date, country, search, scanId, hasContact) are layered on top.
+- **Strict source whitelist** — The scraper only scans the approved source list below. No broad Google Search, no developer page scraping, no unlisted sites. The `sourcesScanned` counter in the scan history reflects exactly these approved sources.
 
 ## Product
 
@@ -57,14 +58,43 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 - **Manual CRUD** — Add, edit, or delete individual projects. Useful for corrections or entries the scraper missed.
 - **Contact Enrichment** — Batch button on the projects page that attempts to find missing developer contact details (name, email, phone) via web scraping and Apify Google Search.
 
+## Approved sources (only these are scanned)
+
+| Category | Source | URL |
+|----------|--------|-----|
+| **News** | AltEnergy – News & Views | https://altenergy.com.au/newsandviews |
+| | AltEnergy – Project Database | https://altenergy.com.au/kilowatt_subcribers |
+| | AltEnergy – Watts News | https://altenergy.com.au/watt_news |
+| | RenewEconomy | https://reneweconomy.com.au |
+| | PV Magazine Australia | https://www.pv-magazine-australia.com |
+| | EcoGeneration | https://www.ecogeneration.com.au |
+| | Utility Magazine | https://utilitymagazine.com.au |
+| | ESD News | https://esdnews.com.au |
+| | RenewMap | https://renewmap.com.au |
+| | ARENA | https://arena.gov.au |
+| **Government** | Clean Energy Regulator | https://cer.gov.au |
+| | AEMO | https://www.aemo.com.au |
+| | Capacity Investment Scheme | https://www.dcceew.gov.au |
+| | EPBC Act Referrals | https://epbcpublicportal.environment.gov.au |
+| | NSW Planning Portal | https://www.planningportal.nsw.gov.au |
+| | NSW Planning – Renewable Energy | https://www.planning.nsw.gov.au |
+| | Planning Victoria | https://www.planning.vic.gov.au |
+| | QLD Coordinator-General | https://www.coordinatorgeneral.qld.gov.au |
+| | SA – Energy & Mining | https://www.energymining.sa.gov.au |
+| | WA EPA | https://www.epa.wa.gov.au |
+| | NT Development Applications | https://www.ntlis.nt.gov.au |
+| | Tasmania EPA | https://epa.tas.gov.au |
+| **NZ** | NZ Electricity Authority | https://www.ea.govt.nz |
+| | Transpower NZ | https://www.transpower.co.nz |
+| | NZ Fast-track | https://www.fasttrack.govt.nz |
+| | NZ EPA | https://www.epa.govt.nz |
+
 ## User preferences
 
 - Target: AU/NZ utility-scale solar and BESS projects ≥5MW. No wind.
 - Clean data is paramount — no news articles, no operational updates, no non-AU/NZ projects.
-- Data sources scanned include:
-  - News: Renew Economy, AltEnergy (newsandviews, project DB, watt_news), ARENA, Clean Energy Council, PV Magazine Australia, Energy Magazine Australia, RNZ Business, EECA NZ, ESD News, SolarQuarter Australia, Green Review, BusinessDesk NZ, ABC News
-  - Government: Clean Energy Regulator, QLD Coordinator-General, NSW Planning Portal, Tasmania EPA, ReCFIT Tasmania, Transgrid, Powerlink Queensland, Transpower NZ, NZ EPA Fast-track, NZ Electricity Authority
-  - Developers: LightsourceBP, Neoen, Edify Energy, Iberdrola, OX2, Flow Power, ACEN, RATCH, Harmony Energy, Meridian Energy, Genesis Energy, Far North Solar Farm, NZ Clean Energy
+- The scan must be restricted to **only the approved sources listed above**. No broad Google Search, no developer page scraping, no ad-hoc sites.
+- AltEnergy is a subscription site requiring login credentials (`ALTENERGY_USERNAME` / `ALTENERGY_PASSWORD`) to access the project database and news sections.
 
 ## Gotchas
 
@@ -74,6 +104,7 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 - **Apify rate limits** — The contact enrichment endpoint uses `apify~google-search-scraper`. Running it on a large batch may hit rate limits. Use date-range filtering to reduce scope.
 - **Do not run `pnpm dev` at the workspace root** — Replit apps run via individual artifact workflows. Use `restart_workflow` instead.
 - **AltEnergy requires login credentials** — The scraper uses `ALTENERGY_USERNAME` and `ALTENERGY_PASSWORD` (WordPress/Laravel session). These must be set in the environment.
+- **Adding a new source requires explicit approval** — The scraper is locked to the approved source list. If you want to add a new site, update `replit.md` first, then update the `SOURCES` array in `scraper.ts`.
 
 ## Pointers
 

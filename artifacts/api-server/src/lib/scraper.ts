@@ -1,18 +1,23 @@
 /**
  * Solar project scraper
  *
- * Fetches content from Australian/New Zealand energy news sources and extracts
- * solar project announcements using keyword and pattern matching.
+ * Fetches content from Australian / New Zealand energy news sources and extracts
+ * solar and BESS project announcements (≥5 MW) using keyword and pattern matching.
+ *
+ * Only the 28 approved sources listed in replit.md are scanned — no broad search,
+ * no developer page scraping, no ad-hoc sites.
  *
  * Sources covered:
- *  - Renew Economy (reneweconomy.com.au)
- *  - AltEnergy (altenergy.com.au) — authenticated via WordPress login
- *  - ARENA (arena.gov.au/news)
- *  - Clean Energy Council (cleanenergycouncil.org.au/news)
- *  - NZ EECA / Electricity Authority news
- *  - PV Magazine Australia (pv-magazine-australia.com)
- *  - Energy Magazine AU (energymagazine.com.au)
- *  - RNZ Business
+ *  - News: Renew Economy, AltEnergy, PV Magazine Australia, EcoGeneration,
+ *    Utility Magazine, ESD News, RenewMap
+ *  - Government: ARENA, CER, AEMO, DCCEEW, EPBC Act, NSW Planning Portal,
+ *    NSW Planning, Planning Victoria, QLD Coordinator-General, SA Energy & Mining,
+ *    WA EPA, NT Development, Tasmania EPA
+ *  - NZ: Electricity Authority, Transpower, NZ Fast-track, NZ EPA
+ *  - AltEnergy is authenticated via WordPress login and handled separately
+ *
+ * Apify Google Search is used ONLY for the explicit contact-enrichment feature
+ * (POST /projects/enrich-contacts), never during scanning.
  */
 
 import { db, projectsTable, scansTable } from "@workspace/db";
@@ -199,29 +204,17 @@ interface ScrapeSource {
   extraUrls?: string[];
 }
 
+/**
+ * Approved source whitelist — only these sources are scanned.
+ * See replit.md for the full approved source list.
+ */
 const SOURCES: ScrapeSource[] = [
+  // ── News / Industry ───────────────────────────────────────────────────────
   {
     name: "Renew Economy",
     country: "AU",
     searchUrl: "https://reneweconomy.com.au/?s=solar+project+announced",
     feedUrl: "https://reneweconomy.com.au/feed/",
-  },
-  // AltEnergy is handled by scrapeAltEnergy() — omit from generic SOURCES
-  // so it doesn't go through the generic HTML parser
-  {
-    name: "ARENA News",
-    country: "AU",
-    searchUrl: "https://arena.gov.au/news/?s=solar",
-    extraUrls: [
-      "https://arena.gov.au/blog/",
-      "https://arena.gov.au/projects/",
-    ],
-  },
-  {
-    name: "Clean Energy Council",
-    country: "AU",
-    searchUrl: "https://www.cleanenergycouncil.org.au/news?q=solar",
-    extraUrls: ["https://cleanenergycouncil.org.au/news-resources"],
   },
   {
     name: "PV Magazine Australia",
@@ -230,50 +223,36 @@ const SOURCES: ScrapeSource[] = [
     feedUrl: "https://www.pv-magazine-australia.com/feed/",
   },
   {
-    name: "Energy Magazine Australia",
+    name: "EcoGeneration",
     country: "AU",
-    searchUrl: "https://www.energymagazine.com.au/?s=solar",
+    searchUrl: "https://www.ecogeneration.com.au/category/projects/solar-projects/",
   },
   {
-    name: "EECA New Zealand",
-    country: "NZ",
-    searchUrl: "https://www.eeca.govt.nz/search/?q=solar",
+    name: "Utility Magazine",
+    country: "AU",
+    searchUrl: "https://utilitymagazine.com.au/category/electricity/solar/",
   },
-  {
-    name: "RNZ Business",
-    country: "NZ",
-    searchUrl: "https://www.rnz.co.nz/search?q=solar+project",
-  },
-  // ── Industry news with RSS feeds ─────────────────────────────────────────
   {
     name: "ESD News",
     country: "AU",
-    searchUrl: "https://esdnews.com.au/category/projects/",
+    searchUrl: "https://esdnews.com.au/tag/solar/",
     feedUrl: "https://esdnews.com.au/feed/",
   },
   {
-    name: "SolarQuarter Australia",
+    name: "RenewMap",
     country: "AU",
-    searchUrl: "https://solarquarter.com/tag/australia/",
-    feedUrl: "https://solarquarter.com/feed/",
+    searchUrl: "https://renewmap.com.au/resources/",
   },
+  // AltEnergy is handled by scrapeAltEnergy() — omit from generic SOURCES
+  // so it doesn't go through the generic HTML parser
   {
-    name: "Green Review",
+    name: "ARENA",
     country: "AU",
-    searchUrl: "https://greenreview.com.au/",
-    feedUrl: "https://greenreview.com.au/feed/",
-  },
-  {
-    name: "BusinessDesk NZ",
-    country: "NZ",
-    searchUrl: "https://businessdesk.co.nz/energy",
-    feedUrl: "https://businessdesk.co.nz/feed",
-  },
-  {
-    name: "ABC News Australia",
-    country: "AU",
-    searchUrl: "https://www.abc.net.au/news/topic/solar-energy",
-    feedUrl: "https://www.abc.net.au/news/feed/51120/rss.xml",
+    searchUrl: "https://arena.gov.au/news/?s=solar",
+    extraUrls: [
+      "https://arena.gov.au/blog/",
+      "https://arena.gov.au/projects/",
+    ],
   },
   // ── Government / Regulatory ──────────────────────────────────────────────
   {
@@ -282,9 +261,19 @@ const SOURCES: ScrapeSource[] = [
     searchUrl: "https://cer.gov.au/markets/reports-and-data/large-scale-renewable-energy-data",
   },
   {
-    name: "QLD Coordinator-General",
+    name: "AEMO",
     country: "AU",
-    searchUrl: "https://www.coordinatorgeneral.qld.gov.au/projects/find-a-project/current-coordinated-projects",
+    searchUrl: "https://www.aemo.com.au/energy-systems/electricity/national-electricity-market-nem/nem-forecasting-and-planning/forecasting-and-planning-data/generation-information",
+  },
+  {
+    name: "Capacity Investment Scheme",
+    country: "AU",
+    searchUrl: "https://www.dcceew.gov.au/energy/renewable/capacity-investment-scheme/closed-cis-tenders",
+  },
+  {
+    name: "EPBC Act Referrals",
+    country: "AU",
+    searchUrl: "https://epbcpublicportal.environment.gov.au/",
   },
   {
     name: "NSW Planning Portal",
@@ -292,64 +281,60 @@ const SOURCES: ScrapeSource[] = [
     searchUrl: "https://www.planningportal.nsw.gov.au/major-projects/projects",
   },
   {
+    name: "NSW Planning Renewable Energy",
+    country: "AU",
+    searchUrl: "https://www.planning.nsw.gov.au/policy-and-legislation/renewable-energy",
+  },
+  {
+    name: "Planning Victoria",
+    country: "AU",
+    searchUrl: "https://www.planning.vic.gov.au/guides-and-resources/guides/all-guides/renewable-energy-facilities/solar-energy-facilities",
+  },
+  {
+    name: "QLD Coordinator-General",
+    country: "AU",
+    searchUrl: "https://www.coordinatorgeneral.qld.gov.au/projects/find-a-project/current-coordinated-projects",
+  },
+  {
+    name: "SA Energy & Mining",
+    country: "AU",
+    searchUrl: "https://www.energymining.sa.gov.au/industry/hydrogen-and-renewable-energy/large-scale-generation-and-storage/solar-energy-projects",
+  },
+  {
+    name: "WA EPA",
+    country: "AU",
+    searchUrl: "https://www.epa.wa.gov.au/proposal-search",
+  },
+  {
+    name: "NT Development Applications",
+    country: "AU",
+    searchUrl: "https://www.ntlis.nt.gov.au/planning",
+  },
+  {
     name: "Tasmania EPA",
     country: "AU",
     searchUrl: "https://epa.tas.gov.au/business-industry/assessment/proposals-assessed-by-the-epa",
-  },
-  {
-    name: "ReCFIT Tasmania",
-    country: "AU",
-    searchUrl: "https://www.recfit.tas.gov.au/what_is_recfit/major_investment_projects",
-  },
-  {
-    name: "Transgrid Australia",
-    country: "AU",
-    searchUrl: "https://www.transgrid.com.au/about-us/network/large-generator-connections/",
-  },
-  {
-    name: "Powerlink Queensland",
-    country: "AU",
-    searchUrl: "https://www.powerlink.com.au/projects",
-  },
-  {
-    name: "Transpower New Zealand",
-    country: "NZ",
-    searchUrl: "https://www.transpower.co.nz/connections/whats-latest-grid-connections",
-  },
-  {
-    name: "NZ EPA Fast-track",
-    country: "NZ",
-    searchUrl: "https://www.epa.govt.nz/fast-track-consenting/",
   },
   {
     name: "NZ Electricity Authority",
     country: "NZ",
     searchUrl: "https://www.ea.govt.nz/data-and-insights/charts-and-dashboards/generation-investment-pipeline/",
   },
-];
-
-// ── Developer company project pages ─────────────────────────────────────────
-interface DeveloperPage {
-  name: string;
-  url: string;
-  country: "AU" | "NZ";
-}
-
-const DEVELOPER_PROJECT_PAGES: DeveloperPage[] = [
-  { name: "LightsourceBP Australia",  url: "https://lightsourcebp.com/au/projects/",                                              country: "AU" },
-  { name: "LightsourceBP New Zealand", url: "https://lightsourcebp.com/nz/projects/",                                             country: "NZ" },
-  { name: "RATCH Australia",           url: "https://ratchaustralia.com/projects",                                                 country: "AU" },
-  { name: "Harmony Energy NZ",         url: "https://harmonyenergy.co.nz/projects/",                                              country: "NZ" },
-  { name: "Meridian Energy NZ",        url: "https://www.meridianenergy.co.nz/new-projects",                                      country: "NZ" },
-  { name: "Genesis Energy NZ",         url: "https://www.genesisenergy.co.nz/about/generation/generation-projects",               country: "NZ" },
-  { name: "ACEN Renewables Australia", url: "https://acenrenewables.com.au/category/projects/",                                    country: "AU" },
-  { name: "Neoen Australia",           url: "https://neoen.com/en/our-projects/",                                                  country: "AU" },
-  { name: "Edify Energy",              url: "https://edifyenergy.com/",                                                            country: "AU" },
-  { name: "Iberdrola Australia",       url: "https://www.iberdrola.com.au/",                                                       country: "AU" },
-  { name: "OX2 Australia",             url: "https://www.ox2.com/australia/projects/",                                             country: "AU" },
-  { name: "Flow Power Australia",      url: "https://flowpower.com.au/renewable-energy-projects/",                                 country: "AU" },
-  { name: "Far North Solar Farm NZ",   url: "https://fnsf.co.nz/",                                                                country: "NZ" },
-  { name: "NZ Clean Energy",           url: "https://www.nzcleanenergy.nz/",                                                       country: "NZ" },
+  {
+    name: "Transpower NZ",
+    country: "NZ",
+    searchUrl: "https://www.transpower.co.nz/connections/whats-latest-grid-connections",
+  },
+  {
+    name: "NZ Fast-track",
+    country: "NZ",
+    searchUrl: "https://www.fasttrack.govt.nz/projects",
+  },
+  {
+    name: "NZ EPA",
+    country: "NZ",
+    searchUrl: "https://www.epa.govt.nz/fast-track-consenting/",
+  },
 ];
 
 // Keywords that indicate a project is in early stage (not yet generating)
@@ -970,42 +955,19 @@ function parseHtmlPage(
   return projects;
 }
 
-// ---------------------------------------------------------------------------
-// Apify Google Search integration
-// ---------------------------------------------------------------------------
+// ──────────────────────────────────────────────────────────────
+// Contact enrichment helpers
+// ──────────────────────────────────────────────────────────────
 
-/** Targeted search queries for early-stage AU/NZ utility-scale solar/BESS projects (>=5MW, no wind) */
-const APIFY_SEARCH_QUERIES = [
-  // Broad AU coverage — solar and BESS only
-  "solar farm announced Australia 2026 MW",
-  "solar farm proposed development Australia 2026",
-  "BESS battery energy storage project announced Australia 2026",
-  "solar project planning approval Australia 2026 MW",
-  "utility scale solar project development Australia 2026",
-  // NZ coverage
-  "solar farm announced New Zealand 2026 MW",
-  "NZ solar BESS project proposed OR announced 2026 MW",
-  // State-level gaps (SA, WA, NT get less coverage in national feeds)
-  "solar project announced South Australia OR Western Australia 2026 MW",
-  "solar BESS project announced Northern Territory OR Tasmania 2026",
-  // Site-specific queries for sites that block direct scraping
-  "site:abc.net.au solar farm announced OR proposed 2026",
-  "site:afr.com solar farm announced Australia 2026",
-  "site:carbonnews.co.nz solar project 2026",
-  "site:stuff.co.nz solar farm announced 2026 MW",
-  "site:minister.dcceew.gov.au solar project approved 2026",
-];
-
+// Internal Apify types (used only for contact enrichment Phase 2)
 interface ApifyOrganicResult {
   title: string;
   url: string;
   description?: string;
-  lastUpdated?: string;
 }
 
 interface ApifyDatasetItem {
   organicResults?: ApifyOrganicResult[];
-  searchQuery?: { term: string };
   "#error"?: boolean;
 }
 
@@ -1065,179 +1027,6 @@ async function fetchApifyResults(runId: string): Promise<ApifyDatasetItem[]> {
   );
   return (await res.json()) as ApifyDatasetItem[];
 }
-
-/** Domains to skip — already scraped directly, or not useful news sources */
-const SKIP_DOMAINS = new Set([
-  // Already scraped directly (news sources)
-  "altenergy.com.au", "reneweconomy.com.au", "arena.gov.au",
-  "cleanenergycouncil.org.au", "pv-magazine-australia.com",
-  "energymagazine.com.au", "eeca.govt.nz", "rnz.co.nz",
-  "esdnews.com.au", "solarquarter.com", "greenreview.com.au",
-  "businessdesk.co.nz", "abc.net.au",
-  // Already scraped directly (government/regulatory)
-  "cer.gov.au", "coordinatorgeneral.qld.gov.au",
-  "planningportal.nsw.gov.au", "epa.tas.gov.au", "recfit.tas.gov.au",
-  "transgrid.com.au", "powerlink.com.au", "transpower.co.nz",
-  "epa.govt.nz", "ea.govt.nz",
-  // Already scraped directly (developer pages)
-  "lightsourcebp.com", "ratchaustralia.com", "harmonyenergy.co.nz",
-  "meridianenergy.co.nz", "genesisenergy.co.nz", "acenrenewables.com.au",
-  "neoen.com", "edifyenergy.com", "iberdrola.com.au", "ox2.com",
-  "flowpower.com.au", "fnsf.co.nz", "nzcleanenergy.nz",
-  // Social / generic
-  "wikipedia.org", "youtube.com", "facebook.com", "twitter.com",
-  "linkedin.com", "instagram.com", "reddit.com",
-  // Government policy/planning pages (too generic, not news)
-  "planning.qld.gov.au", "planning.vic.gov.au", "planning.nsw.gov.au",
-  "business.qld.gov.au", "energy.vic.gov.au", "energy.nsw.gov.au",
-  "energy.gov.au", "dcceew.gov.au",
-  // Research/list pages (not individual project announcements)
-  "blackridgeresearch.com", "infrastructurepipeline.org",
-  "mallesons.com", "minterellison.com", "allens.com.au",
-]);
-
-/**
- * Check if a title looks like a real named project rather than a generic page.
- * A project name should contain a proper noun or location + energy type.
- */
-function looksLikeProjectTitle(title: string): boolean {
-  const t = title.toLowerCase();
-  // Skip generic page titles
-  const genericPhrases = [
-    "list of", "projects", "wind farms", "solar farms", "renewable energy",
-    "the project", "our projects", "investment prospectus", "ministerial permit",
-    "approval process", "regulatory changes", "planning and approvals",
-    "victoria's", "queensland's", "australia's", "new south wales",
-  ];
-  if (genericPhrases.some((p) => t.startsWith(p) || t === p.trim())) return false;
-  if (title.length < 8) return false;
-
-  // Should contain a project-name indicator OR a MW capacity
-  const projectIndicators = [
-    "solar farm", "solar park", "solar station", "solar power station",
-    "wind farm", "wind park", "bess", "battery storage", "battery energy",
-    "pumped hydro", "hydro", "solar project", "energy project",
-    "power station", "energy storage",
-  ];
-  const hasMW = /\d+\s*mw/i.test(title);
-  const hasIndicator = projectIndicators.some((ind) => t.includes(ind));
-  // A proper project name: has an indicator OR a capacity, AND isn't just a category page
-  return hasIndicator || hasMW;
-}
-
-/**
- * Scrape developer company project pages using a heading-based approach.
- * These pages list the developer's own pipeline so we trust them as early-stage
- * without requiring the standard isEarlyStage keyword check.
- */
-async function scrapeDeveloperPages(startDate?: string, endDate?: string): Promise<ScrapedProject[]> {
-  const projects: ScrapedProject[] = [];
-  const seenNames = new Set<string>();
-
-  for (const page of DEVELOPER_PROJECT_PAGES) {
-    try {
-      const html = await fetchWithTimeout(page.url);
-      // Strip scripts and styles so we only scan content
-      const content = html
-        .replace(/<script[\s\S]*?<\/script>/gi, "")
-        .replace(/<style[\s\S]*?<\/style>/gi, "");
-
-      // Extract headings (h1-h4) as candidate project names
-      const headings = [...content.matchAll(/<h[1-4][^>]*>([\s\S]*?)<\/h[1-4]>/gi)];
-      // Also try strong/b tags (some pages bold project names)
-      const bolds = [...content.matchAll(/<(?:strong|b)[^>]*>([\s\S]*?)<\/(?:strong|b)>/gi)];
-
-      let pageFound = 0;
-      for (const match of [...headings, ...bolds]) {
-        const rawTitle = match[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-        if (!rawTitle || rawTitle.length < 8 || rawTitle.length > 120) continue;
-
-        const lower = rawTitle.toLowerCase();
-        // Must mention solar, battery, or BESS (no wind)
-        const hasSolar = ["solar", "pv", "bess", "battery", "photovoltaic"].some(
-          (kw) => lower.includes(kw)
-        );
-        if (!hasSolar) continue;
-
-        // Skip wind-only projects
-        if (lower.includes("wind") && !hasSolar) continue;
-
-        // Skip generic navigation/category headings
-        const genericHeadings = ["our projects", "projects", "about", "contact", "home", "news",
-          "media", "resources", "services", "team", "careers", "overview"];
-        if (genericHeadings.includes(lower)) continue;
-
-        // Skip titles that are clearly news articles or blog posts, not project names
-        const articlePatterns = [
-          /\bboard visit\b/, /\bofficial(ly)? open/i, /\bopen(s|ed|ing)\b.*solar/i,
-          /\bbehind\b.*boom/i, /\bpublic views?\b/, /\bgrazing\b/, /\bmerino/i,
-          /\bfashion house/i, /\brecycled?\b/, /\bscoping report\b/i,
-          /\bgeotech\b/i, /\baccommodation\b/i, /\bcommunity fight/i,
-          /\bboosts?\s+(clean|renewable)/i, /^one\s+\w+['']s\s+largest/i,
-          /\bvisit\b.*\bsolar\b/, /\bsustainability\b.*\bmana\b/i,
-          /pumped hydro/i, /hydropower/i, /hydroelectric/i,
-          /\b(liberia|africa|india|china|usa|uk|europe)\b/i,
-        ];
-        if (articlePatterns.some(p => p.test(rawTitle))) continue;
-
-        // Skip titles that are clearly "in operation" (not early stage)
-        const operationalPatterns = [/\bopened\b/, /\boperational\b/, /\bcommissioned\b/, /\bgenerating\b/];
-        if (operationalPatterns.some(p => p.test(lower))) continue;
-
-        const dedupeKey = `${page.name}::${rawTitle.toLowerCase()}`;
-        if (seenNames.has(dedupeKey)) continue;
-        seenNames.add(dedupeKey);
-
-        // Find surrounding context for capacity/location
-        const pos = content.indexOf(match[0]);
-        const context = content.slice(pos, pos + 800);
-        const capacityMw = extractCapacity(rawTitle + " " + context.replace(/<[^>]+>/g, " "));
-
-        // Only include if >=5 MW or capacity unknown (can't verify)
-        if (capacityMw !== null && capacityMw < 5) continue;
-
-        // Try to find a hyperlink nearby this heading
-        const nearby = content.slice(Math.max(0, pos - 300), pos + 500);
-        const linkMatch = nearby.match(/href="(https?:\/\/[^"]+)"/i);
-        const sourceUrl = linkMatch?.[1] ?? page.url;
-
-        const location = extractLocation(rawTitle + " " + context.replace(/<[^>]+>/g, " "), page.country);
-        const today = new Date().toISOString().slice(0, 10);
-
-        if (startDate && today < startDate) continue;
-        if (endDate && today > endDate) continue;
-
-        projects.push({
-          name: rawTitle,
-          description: `Project listed on the ${page.name} developer pipeline page.`,
-          capacityMw,
-          developer: page.name.replace(/\s+(Australia|New Zealand|NZ|AU)$/i, "").trim(),
-          location,
-          country: page.country,
-          status: "under_development",
-          sourceUrl,
-          sourceName: page.name,
-          announcedDate: today,
-          contactName: null,
-          contactEmail: null,
-          contactPhone: null,
-        });
-        pageFound++;
-      }
-
-      logger.info({ page: page.name, found: pageFound }, "Developer page scraped");
-    } catch (err) {
-      logger.warn({ err, page: page.name }, "Developer page scrape failed");
-    }
-  }
-
-  logger.info({ total: projects.length }, "Developer pages scrape complete");
-  return projects;
-}
-
-// ──────────────────────────────────────────────────────────────
-// Contact enrichment helpers
-// ──────────────────────────────────────────────────────────────
 
 const GENERIC_EMAIL_RE =
   /^(info|admin|contact|hello|enquiries|enquiry|general|mail|projects|team|reception|office|support|sales|media|pr|news|communications|renewables|solar|wind|energy|development|planning|noreply|no-reply|webmaster|postmaster|feedback|accounts|billing|hr|jobs|careers|connect|update|newsletter|marketing|ops|operations)@/i;
@@ -1427,7 +1216,16 @@ export async function enrichMissingContacts(): Promise<{ checked: number; update
     if (!g.domain && proj.sourceUrl && !proj.sourceUrl.includes("altenergy.com.au")) {
       try {
         const host = new URL(proj.sourceUrl).hostname.replace(/^www\./, "");
-        if (!SKIP_DOMAINS.has(host)) g.domain = host;
+        // Skip news/government/social domains — these are never developer domains
+        const nonDeveloperDomains = new Set([
+          "abc.net.au", "reneweconomy.com.au", "arena.gov.au", "pv-magazine-australia.com",
+          "esdnews.com.au", "solarquarter.com", "greenreview.com.au", "businessdesk.co.nz",
+          "cer.gov.au", "planningportal.nsw.gov.au", "epa.tas.gov.au", "transpower.co.nz",
+          "epa.govt.nz", "ea.govt.nz", "fasttrack.govt.nz", "wikipedia.org", "youtube.com",
+          "linkedin.com", "facebook.com", "twitter.com", "instagram.com", "reddit.com",
+          "theaustralian.com.au", "afr.com", "smh.com.au", "theage.com.au", "heraldsun.com.au",
+        ]);
+        if (!nonDeveloperDomains.has(host)) g.domain = host;
       } catch { /* ignore */ }
     }
   }
@@ -1543,103 +1341,6 @@ export async function enrichMissingContacts(): Promise<{ checked: number; update
 
 // ──────────────────────────────────────────────────────────────
 
-/**
- * Run Apify Google Search for AU/NZ solar project announcements.
- * Returns de-duplicated ScrapedProject list.
- */
-export async function scrapeViaApify(startDate?: string, endDate?: string): Promise<ScrapedProject[]> {
-  const token = process.env.APIFY_API_TOKEN;
-  if (!token) {
-    logger.warn("APIFY_API_TOKEN not set — skipping Apify search");
-    return [];
-  }
-
-  logger.info("Starting Apify Google Search scrape");
-
-  let runId: string;
-  try {
-    runId = await startApifySearchRun(APIFY_SEARCH_QUERIES);
-    logger.info({ runId }, "Apify run started");
-    await waitForApifyRun(runId);
-    logger.info({ runId }, "Apify run completed");
-  } catch (err) {
-    logger.warn({ err }, "Apify run failed");
-    return [];
-  }
-
-  const items = await fetchApifyResults(runId);
-  const projects: ScrapedProject[] = [];
-  const seenUrls = new Set<string>();
-
-  for (const item of items) {
-    if (item["#error"]) continue;
-    const results = item.organicResults ?? [];
-
-    for (const result of results) {
-      const url = result.url;
-      if (!url || seenUrls.has(url)) continue;
-
-      // Skip already-scraped domains
-      try {
-        const domain = new URL(url).hostname.replace(/^www\./, "");
-        if (SKIP_DOMAINS.has(domain)) continue;
-      } catch { continue; }
-
-      const fullText = `${result.title} ${result.description ?? ""}`;
-
-      // Title must look like a real named project (not a generic page/list)
-      if (!looksLikeProjectTitle(result.title)) continue;
-
-      // Must mention solar/wind/BESS keywords
-      const textLower = fullText.toLowerCase();
-      const hasSolarKw = ["solar", "pv", "photovoltaic", "bess", "battery storage", "wind farm"].some(
-        (kw) => textLower.includes(kw)
-      );
-      if (!hasSolarKw) continue;
-
-      // Must be early-stage
-      if (!isEarlyStage(fullText)) continue;
-
-      // Date filter using lastUpdated if available
-      if (result.lastUpdated && (startDate || endDate)) {
-        const d = new Date(result.lastUpdated);
-        if (!isNaN(d.getTime())) {
-          const dateStr = d.toISOString().slice(0, 10);
-          if (startDate && dateStr < startDate) continue;
-          if (endDate && dateStr > endDate) continue;
-        }
-      }
-
-      seenUrls.add(url);
-
-      // Determine country from text/URL
-      const isNZ = textLower.includes("new zealand") || textLower.includes(" nz ") || url.includes(".nz");
-      const country = isNZ ? "NZ" : "AU";
-
-      projects.push({
-        name: result.title.replace(/\s*[-|].*$/, "").trim().slice(0, 200),
-        description: (result.description ?? "").slice(0, 600),
-        capacityMw: extractCapacity(fullText),
-        developer: extractDeveloper(fullText),
-        location: extractLocation(fullText, country),
-        country,
-        status: determineStatus(fullText),
-        sourceUrl: url,
-        sourceName: extractSourceName(url),
-        announcedDate: result.lastUpdated
-          ? (new Date(result.lastUpdated).toISOString().slice(0, 10))
-          : new Date().toISOString().slice(0, 10),
-        contactName: null,
-        contactEmail: null,
-        contactPhone: null,
-      });
-    }
-  }
-
-  logger.info({ total: projects.length, runId }, "Apify scrape complete");
-  return projects;
-}
-
 /** Extract a readable source name from a URL */
 function extractSourceName(url: string): string {
   try {
@@ -1682,20 +1383,16 @@ function extractSourceName(url: string): string {
       "epa.govt.nz": "NZ EPA",
       "ea.govt.nz": "NZ Electricity Authority",
       "minister.dcceew.gov.au": "DCCEEW Ministerial Media",
-      // Developer pages
+      // Utility / developer sites that may appear as source URLs
       "lightsourcebp.com": "LightsourceBP",
-      "ratchaustralia.com": "RATCH Australia",
-      "harmonyenergy.co.nz": "Harmony Energy NZ",
-      "meridianenergy.co.nz": "Meridian Energy NZ",
-      "genesisenergy.co.nz": "Genesis Energy NZ",
-      "acenrenewables.com.au": "ACEN Renewables Australia",
       "neoen.com": "Neoen",
       "edifyenergy.com": "Edify Energy",
       "iberdrola.com.au": "Iberdrola Australia",
       "ox2.com": "OX2 Australia",
       "flowpower.com.au": "Flow Power Australia",
-      "fnsf.co.nz": "Far North Solar Farm NZ",
       "nzcleanenergy.nz": "NZ Clean Energy",
+      "firstsolar.com": "First Solar",
+      "canadian.com": "Canadian Solar",
     };
     return known[host] ?? host;
   } catch {
@@ -1796,36 +1493,6 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         .where(eq(scansTable.id, scanId));
     } catch (err) {
       logger.warn({ err }, "AltEnergy scrape error");
-      sourcesScanned++;
-    }
-
-    // Developer company project pages — their own pipeline listings
-    try {
-      const developerProjects = await scrapeDeveloperPages(startDate, endDate);
-      allScraped.push(...developerProjects);
-      sourcesScanned++;
-
-      await db
-        .update(scansTable)
-        .set({ sourcesScanned, projectsFound: allScraped.length })
-        .where(eq(scansTable.id, scanId));
-    } catch (err) {
-      logger.warn({ err }, "Developer pages scrape error");
-      sourcesScanned++;
-    }
-
-    // Apify Google Search — broadens coverage beyond direct-scraped sources
-    try {
-      const apifyProjects = await scrapeViaApify(startDate, endDate);
-      allScraped.push(...apifyProjects);
-      sourcesScanned++; // count Apify as one source
-
-      await db
-        .update(scansTable)
-        .set({ sourcesScanned, projectsFound: allScraped.length })
-        .where(eq(scansTable.id, scanId));
-    } catch (err) {
-      logger.warn({ err }, "Apify scrape error");
       sourcesScanned++;
     }
 
