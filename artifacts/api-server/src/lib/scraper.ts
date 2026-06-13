@@ -1175,6 +1175,7 @@ type ContactResult = { name: string | null; email: string; phone: string | null 
  * Enrich projects that are missing personal contact details.
  * Phase 1: Scrape developer/project websites directly.
  * Phase 2: Apify Google Search → visit top result URLs.
+ * Phase 3: LinkedIn profile search for developers with generic contacts.
  */
 export async function enrichMissingContacts(): Promise<{ checked: number; updated: number }> {
   const GENERIC_PREFIXES = [
@@ -1332,6 +1333,104 @@ export async function enrichMissingContacts(): Promise<{ checked: number; update
       }
     } catch (err) {
       logger.warn({ err }, "Contact enrichment: Phase 2 Apify failed");
+    }
+  }
+
+  // ── Phase 3: LinkedIn profile search for developers with generic contacts ──
+  const phaseThree = noDomainGroups.filter(([k]) => !enrichedKeys.has(k));
+  if (phaseThree.length > 0 && token) {
+    logger.info({ count: phaseThree.length }, "Contact enrichment: Phase 3 LinkedIn search");
+
+    // Relevant job titles that indicate the person who would handle project enquiries
+    const RELEVANT_TITLES = [
+      "project director", "head of projects", "head of epc", "project manager",
+      "engineering manager", "project development manager", "development manager",
+      "head of development", "director of projects", "managing director",
+      "chief executive officer", "ceo", "country manager", "general manager",
+      "head of construction", "construction manager", "epc manager",
+      "commercial manager", "business development manager", "bd manager",
+    ];
+
+    const titleQuery = RELEVANT_TITLES.map(t => `"${t}"`).join(" OR ");
+
+    const linkedInQueries = phaseThree.map(([, g]) => {
+      const dev = g.projects[0].developer ?? "solar developer";
+      return `"${dev}" LinkedIn (${titleQuery})`;
+    });
+
+    try {
+      const runId = await startApifySearchRun(linkedInQueries.slice(0, 20));
+      await waitForApifyRun(runId);
+      const items = await fetchApifyResults(runId);
+
+      for (let i = 0; i < Math.min(phaseThree.length, items.length); i++) {
+        const [devKey, g] = phaseThree[i];
+        if (enrichedKeys.has(devKey)) continue;
+        const results = (items[i] as ApifyDatasetItem)?.organicResults ?? [];
+
+        // Find LinkedIn profile results with relevant titles
+        let bestMatch: { name: string; title: string; email: string | null; phone: string | null } | null = null;
+
+        for (const result of results) {
+          const text = `${result.title ?? ""} ${result.description ?? ""}`;
+          const url = result.url ?? "";
+
+          // Only look at LinkedIn results
+          if (!url.includes("linkedin.com/in/")) continue;
+
+          // Extract name from title (usually "Name - Title | LinkedIn")
+          const linkedInMatch = text.match(/^([^|\-]+)[\s|\-]+([^|\n]+)/);
+          if (!linkedInMatch) continue;
+
+          const extractedName = linkedInMatch[1].trim();
+          const extractedTitle = linkedInMatch[2].trim().toLowerCase();
+
+          // Check if the title matches any relevant role
+          const isRelevant = RELEVANT_TITLES.some(t => extractedTitle.includes(t));
+          if (!isRelevant) continue;
+
+          // Score the match: prefer more senior roles
+          const seniority = extractedTitle.includes("director") || extractedTitle.includes("head") || extractedTitle.includes("ceo") || extractedTitle.includes("chief") || extractedTitle.includes("managing") ? 3 :
+                            extractedTitle.includes("manager") ? 2 : 1;
+
+          if (!bestMatch || seniority > bestMatch.title.split(" ").length) {
+            bestMatch = { name: extractedName, title: linkedInMatch[2].trim(), email: null, phone: null };
+          }
+        }
+
+        if (bestMatch) {
+          // Try to find email/phone for this person via a targeted search
+          const personQuery = `"${bestMatch.name}" "${bestMatch.title}" "${g.projects[0].developer ?? ""}" email contact Australia`;
+          const personRunId = await startApifySearchRun([personQuery]);
+          await waitForApifyRun(personRunId);
+          const personItems = await fetchApifyResults(personRunId);
+          const personResults = (personItems[0] as ApifyDatasetItem)?.organicResults ?? [];
+
+          for (const pr of personResults) {
+            const pText = `${pr.title ?? ""} ${pr.description ?? ""}`;
+            const emailMatches = [...pText.matchAll(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g)];
+            for (const em of emailMatches) {
+              const email = em[0].toLowerCase();
+              if (isPersonalEmail(email)) {
+                bestMatch.email = email;
+                break;
+              }
+            }
+            if (bestMatch.email) break;
+          }
+
+          // Apply the LinkedIn contact
+          await applyContact(g, {
+            name: bestMatch.name,
+            email: bestMatch.email ?? g.projects[0].contactEmail ?? "",
+            phone: bestMatch.phone,
+          });
+          enrichedKeys.add(devKey);
+          logger.info({ devKey, name: bestMatch.name, title: bestMatch.title, email: bestMatch.email }, "Contact enriched via LinkedIn");
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, "Contact enrichment: Phase 3 LinkedIn failed");
     }
   }
 
