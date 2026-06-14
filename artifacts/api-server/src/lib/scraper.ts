@@ -1073,28 +1073,63 @@ function isValidProjectContact(email: string | null, developerName: string | nul
   return true;
 }
 
+/**
+ * Check if an email domain is plausibly related to a company name.
+ * The email domain must contain the company name or a recognisable part of it.
+ * Returns true only if the company name (or a meaningful keyword) is found in the domain.
+ */
 function isEmailDomainRelated(email: string, companyName: string | null | undefined): boolean {
-  if (!companyName) return true; // can't verify without a company name
+  if (!companyName) return false;
   const domain = email.split("@")[1]?.toLowerCase() ?? "";
-  const rootDomain = domain.replace(/\.[^.]+$/, ""); // e.g. "harvard" from "cfa.harvard.edu"
+  const rootDomain = domain.replace(/\.[^.]+$/, "");
   const company = companyName.toLowerCase();
 
-  // Extract meaningful keywords from the company name
-  const companyWords = company
-    .replace(/(energy|solar|power|renewables|wind|battery|storage|pty|ltd|limited|group|holdings|corporation|inc|co|company|australia|new zealand|nz|au)\b/g, "")
-    .replace(/[^a-z0-9]/g, " ")
-    .split(/\s+/)
-    .filter(w => w.length >= 3);
+  const allWords = company.replace(/[^a-z0-9]/g, " ").split(/\s+/).filter(w => w.length >= 1);
+  const commonWords = new Set([
+    "energy", "solar", "power", "renewables", "wind", "battery", "storage",
+    "pty", "ltd", "limited", "group", "holdings", "corporation", "inc", "co", "company",
+    "australia", "new", "zealand", "nz", "au", "and", "the", "of",
+    "green", "gold", "pacific", "blue", "red", "north", "south", "east", "west",
+    "renewable", "clean", "project", "development", "projects", "international",
+    "global", "national", "regional", "local", "urban", "rural", "metro", "metro",
+  ]);
+  const companyWords = allWords.filter(w => w.length >= 2 && !commonWords.has(w));
 
-  // The domain (or its root) must contain at least one company keyword
-  const related = companyWords.some(w => domain.includes(w) || w.includes(rootDomain));
+  // 1. Any company keyword must appear in the domain
+  const related = companyWords.some(w => domain.includes(w));
   if (related) return true;
 
-  // Academic / government / institutional domains are suspicious unless they match
-  const suspiciousTlds = [".edu", ".gov", ".gov.au", ".gov.nz", ".ac.uk", ".ac.nz", ".org"];
-  if (suspiciousTlds.some(tld => domain.endsWith(tld))) return false;
+  // 2. Whole company name as a slug (e.g. "contactenergy" in "contactenergy.co.nz")
+  const companySlug = company.replace(/[^a-z0-9]/g, "");
+  if (companySlug.length >= 3 && domain.includes(companySlug)) return true;
 
-  return true; // allow unknown domains — we'll be stricter in Phase 1
+  // 3. Prefix match: domain is a prefix of the company slug (e.g. "edp" vs "edpr")
+  const domainSlug = rootDomain.replace(/[^a-z0-9]/g, "");
+  if (domainSlug.length >= 3 && companySlug.startsWith(domainSlug)) return true;
+  if (domainSlug.length >= 3 && companySlug.includes(domainSlug)) return true;
+
+  // 4. Substring match: meaningful company word is in the domain (e.g. "generation" → "genco")
+  // Only for longer words (>= 4 chars) to avoid false positives
+  const meaningfulWords = allWords.filter(w => w.length >= 4 && !commonWords.has(w));
+  const meaningfulMatch = meaningfulWords.some(w => {
+    // Domain must contain a substring of the company word (>= 4 chars) or vice versa
+    for (let i = 0; i <= w.length - 4; i++) {
+      const sub = w.slice(i, i + 4);
+      if (domainSlug.includes(sub)) return true;
+    }
+    for (let i = 0; i <= domainSlug.length - 4; i++) {
+      const sub = domainSlug.slice(i, i + 4);
+      if (w.includes(sub)) return true;
+    }
+    return false;
+  });
+  if (meaningfulMatch) return true;
+
+  // 5. Acronym from ALL company words (e.g. "Yindjibarndi Energy Corporation" → "yec")
+  const acronym = allWords.map(w => w[0]).join("");
+  if (acronym.length >= 2 && domain.includes(acronym)) return true;
+
+  return false;
 }
 
 function extractEmailsFromHtml(html: string): Array<{ email: string; context: string }> {
