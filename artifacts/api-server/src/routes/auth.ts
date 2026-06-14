@@ -106,6 +106,12 @@ router.post("/auth/validate", async (req, res): Promise<void> => {
     return;
   }
 
+  // Admin key always grants access
+  if (token === ADMIN_SECRET) {
+    res.json({ valid: true, id: 0, label: "Admin", expiresAt: null });
+    return;
+  }
+
   const [row] = await db
     .select()
     .from(accessTokensTable)
