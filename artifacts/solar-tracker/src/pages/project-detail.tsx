@@ -199,10 +199,6 @@ export default function ProjectDetail() {
               </CardContent>
             </Card>
 
-            <div className="text-xs text-muted-foreground text-center">
-              <p>Source: {project.sourceName || 'Unknown'}</p>
-              <p>Added to database: {format(new Date(project.createdAt), 'MMM d, yyyy')}</p>
-            </div>
           </div>
         </div>
       </div>
