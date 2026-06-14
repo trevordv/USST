@@ -277,3 +277,49 @@ export const GetContactEnrichmentResponse = zod.object({
 })
 
 
+/**
+ * @summary Create a new access token
+ */
+export const CreateAccessTokenBody = zod.object({
+  "label": zod.string().optional(),
+  "expiresAt": zod.string().describe('ISO 8601 datetime (e.g. 2025-12-31T23:59:59Z)')
+})
+
+
+/**
+ * @summary List all access tokens
+ */
+export const ListAccessTokensResponseItem = zod.object({
+  "id": zod.number(),
+  "token": zod.string(),
+  "label": zod.string().nullish(),
+  "expiresAt": zod.string(),
+  "createdAt": zod.string(),
+  "revoked": zod.boolean()
+})
+export const ListAccessTokensResponse = zod.array(ListAccessTokensResponseItem)
+
+
+/**
+ * @summary Revoke an access token
+ */
+export const RevokeAccessTokenParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+
+/**
+ * @summary Validate an access token
+ */
+export const ValidateAccessTokenBody = zod.object({
+  "token": zod.string()
+})
+
+export const ValidateAccessTokenResponse = zod.object({
+  "valid": zod.boolean(),
+  "id": zod.number().optional(),
+  "label": zod.string().nullish(),
+  "expiresAt": zod.string()
+})
+
+

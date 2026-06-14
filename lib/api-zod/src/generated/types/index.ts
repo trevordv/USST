@@ -6,6 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from './accessToken';
+export * from './accessTokenInput';
+export * from './accessTokenValidation';
 export * from './contactEnrichment';
 export * from './contactEnrichmentStatus';
 export * from './exportProjectsParams';
@@ -31,3 +34,4 @@ export * from './scanProjectCountry';
 export * from './scanProjectStatus';
 export * from './scanRun';
 export * from './scanRunStatus';
+export * from './validateAccessTokenBody';

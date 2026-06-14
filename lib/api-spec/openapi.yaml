@@ -310,6 +310,86 @@ paths:
         "404":
           description: Enrichment run not found
 
+  /auth/token:
+    post:
+      operationId: createAccessToken
+      tags: [auth]
+      summary: Create a new access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccessTokenInput"
+      responses:
+        "201":
+          description: Token created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessToken"
+        "401":
+          description: Unauthorized
+
+  /auth/tokens:
+    get:
+      operationId: listAccessTokens
+      tags: [auth]
+      summary: List all access tokens
+      responses:
+        "200":
+          description: List of tokens
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AccessToken"
+        "401":
+          description: Unauthorized
+
+  /auth/tokens/{id}:
+    delete:
+      operationId: revokeAccessToken
+      tags: [auth]
+      summary: Revoke an access token
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Revoked
+        "401":
+          description: Unauthorized
+
+  /auth/validate:
+    post:
+      operationId: validateAccessToken
+      tags: [auth]
+      summary: Validate an access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+      responses:
+        "200":
+          description: Valid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessTokenValidation"
+        "401":
+          description: Invalid or expired token
+
 components:
   schemas:
     HealthStatus:
@@ -548,3 +628,43 @@ components:
           type: integer
         errorMessage:
           type: ["string", "null"]
+
+    AccessToken:
+      type: object
+      required: [id, token, expiresAt, createdAt, revoked]
+      properties:
+        id:
+          type: integer
+        token:
+          type: string
+        label:
+          type: ["string", "null"]
+        expiresAt:
+          type: string
+        createdAt:
+          type: string
+        revoked:
+          type: boolean
+
+    AccessTokenInput:
+      type: object
+      required: [expiresAt]
+      properties:
+        label:
+          type: string
+        expiresAt:
+          type: string
+          description: ISO 8601 datetime (e.g. 2025-12-31T23:59:59Z)
+
+    AccessTokenValidation:
+      type: object
+      required: [valid, expiresAt]
+      properties:
+        valid:
+          type: boolean
+        id:
+          type: integer
+        label:
+          type: ["string", "null"]
+        expiresAt:
+          type: string

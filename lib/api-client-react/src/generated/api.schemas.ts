@@ -236,6 +236,30 @@ export interface ContactEnrichment {
   errorMessage?: string | null;
 }
 
+export interface AccessToken {
+  id: number;
+  token: string;
+  /** @nullable */
+  label?: string | null;
+  expiresAt: string;
+  createdAt: string;
+  revoked: boolean;
+}
+
+export interface AccessTokenInput {
+  label?: string;
+  /** ISO 8601 datetime (e.g. 2025-12-31T23:59:59Z) */
+  expiresAt: string;
+}
+
+export interface AccessTokenValidation {
+  valid: boolean;
+  id?: number;
+  /** @nullable */
+  label?: string | null;
+  expiresAt: string;
+}
+
 export type ListProjectsParams = {
 /**
  * ISO date string (YYYY-MM-DD)
@@ -272,5 +296,9 @@ export type ExportProjectsParams = {
 startDate?: string;
 endDate?: string;
 country?: string;
+};
+
+export type ValidateAccessTokenBody = {
+  token: string;
 };
 

@@ -1,19 +1,24 @@
 import { ReactNode } from "react";
 import { Link, useLocation } from "wouter";
-import { 
-  LayoutDashboard, 
-  Database, 
-  Activity, 
-  SunMedium 
+import { useAuth } from "@/lib/auth-context";
+import {
+  LayoutDashboard,
+  Database,
+  Activity,
+  SunMedium,
+  KeyRound,
+  LogOut,
 } from "lucide-react";
 
 export function Layout({ children }: { children: ReactNode }) {
   const [location] = useLocation();
+  const { logout } = useAuth();
 
   const navItems = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
     { href: "/projects", label: "Projects", icon: Database },
     { href: "/scans", label: "Scan History", icon: Activity },
+    { href: "/invite", label: "Invites", icon: KeyRound },
   ];
 
   return (
@@ -47,7 +52,14 @@ export function Layout({ children }: { children: ReactNode }) {
           })}
         </nav>
         
-        <div className="p-4 border-t border-sidebar-border">
+        <div className="p-4 border-t border-sidebar-border space-y-2">
+          <button
+            onClick={logout}
+            className="flex w-full items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors"
+          >
+            <LogOut className="h-4 w-4" />
+            Sign Out
+          </button>
           <div className="text-xs text-sidebar-foreground/50 text-center font-mono">
             SYS_STATUS: ONLINE
           </div>

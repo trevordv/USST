@@ -20,6 +20,9 @@ import type {
 } from '@tanstack/react-query';
 
 import type {
+  AccessToken,
+  AccessTokenInput,
+  AccessTokenValidation,
   ContactEnrichment,
   ExportProjectsParams,
   GetProjectStatsParams,
@@ -31,7 +34,8 @@ import type {
   ProjectUpdate,
   ScanInput,
   ScanProject,
-  ScanRun
+  ScanRun,
+  ValidateAccessTokenBody
 } from './api.schemas';
 
 import { customFetch } from '../custom-fetch';
@@ -1045,4 +1049,293 @@ export function useGetContactEnrichment<TData = Awaited<ReturnType<typeof getCon
 
 
 
+
+export const getCreateAccessTokenUrl = () => {
+
+
+
+
+  return `/api/auth/token`
+}
+
+/**
+ * @summary Create a new access token
+ */
+export const createAccessToken = async (accessTokenInput: AccessTokenInput, options?: RequestInit): Promise<AccessToken> => {
+
+  return customFetch<AccessToken>(getCreateAccessTokenUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      accessTokenInput,)
+  }
+);}
+
+
+
+
+export const getCreateAccessTokenMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createAccessToken>>, TError,{data: BodyType<AccessTokenInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createAccessToken>>, TError,{data: BodyType<AccessTokenInput>}, TContext> => {
+
+const mutationKey = ['createAccessToken'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createAccessToken>>, {data: BodyType<AccessTokenInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  createAccessToken(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateAccessTokenMutationResult = NonNullable<Awaited<ReturnType<typeof createAccessToken>>>
+    export type CreateAccessTokenMutationBody = BodyType<AccessTokenInput>
+    export type CreateAccessTokenMutationError = ErrorType<void>
+
+    /**
+ * @summary Create a new access token
+ */
+export const useCreateAccessToken = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createAccessToken>>, TError,{data: BodyType<AccessTokenInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createAccessToken>>,
+        TError,
+        {data: BodyType<AccessTokenInput>},
+        TContext
+      > => {
+      return useMutation(getCreateAccessTokenMutationOptions(options));
+    }
+
+export const getListAccessTokensUrl = () => {
+
+
+
+
+  return `/api/auth/tokens`
+}
+
+/**
+ * @summary List all access tokens
+ */
+export const listAccessTokens = async ( options?: RequestInit): Promise<AccessToken[]> => {
+
+  return customFetch<AccessToken[]>(getListAccessTokensUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListAccessTokensQueryKey = () => {
+    return [
+    `/api/auth/tokens`
+    ] as const;
+    }
+
+
+export const getListAccessTokensQueryOptions = <TData = Awaited<ReturnType<typeof listAccessTokens>>, TError = ErrorType<void>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listAccessTokens>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListAccessTokensQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listAccessTokens>>> = ({ signal }) => listAccessTokens({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listAccessTokens>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListAccessTokensQueryResult = NonNullable<Awaited<ReturnType<typeof listAccessTokens>>>
+export type ListAccessTokensQueryError = ErrorType<void>
+
+
+/**
+ * @summary List all access tokens
+ */
+
+export function useListAccessTokens<TData = Awaited<ReturnType<typeof listAccessTokens>>, TError = ErrorType<void>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listAccessTokens>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListAccessTokensQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getRevokeAccessTokenUrl = (id: number,) => {
+
+
+
+
+  return `/api/auth/tokens/${id}`
+}
+
+/**
+ * @summary Revoke an access token
+ */
+export const revokeAccessToken = async (id: number, options?: RequestInit): Promise<void> => {
+
+  return customFetch<void>(getRevokeAccessTokenUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+export const getRevokeAccessTokenMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof revokeAccessToken>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof revokeAccessToken>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['revokeAccessToken'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof revokeAccessToken>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  revokeAccessToken(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type RevokeAccessTokenMutationResult = NonNullable<Awaited<ReturnType<typeof revokeAccessToken>>>
+
+    export type RevokeAccessTokenMutationError = ErrorType<void>
+
+    /**
+ * @summary Revoke an access token
+ */
+export const useRevokeAccessToken = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof revokeAccessToken>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof revokeAccessToken>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getRevokeAccessTokenMutationOptions(options));
+    }
+
+export const getValidateAccessTokenUrl = () => {
+
+
+
+
+  return `/api/auth/validate`
+}
+
+/**
+ * @summary Validate an access token
+ */
+export const validateAccessToken = async (validateAccessTokenBody: ValidateAccessTokenBody, options?: RequestInit): Promise<AccessTokenValidation> => {
+
+  return customFetch<AccessTokenValidation>(getValidateAccessTokenUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      validateAccessTokenBody,)
+  }
+);}
+
+
+
+
+export const getValidateAccessTokenMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof validateAccessToken>>, TError,{data: BodyType<ValidateAccessTokenBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof validateAccessToken>>, TError,{data: BodyType<ValidateAccessTokenBody>}, TContext> => {
+
+const mutationKey = ['validateAccessToken'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof validateAccessToken>>, {data: BodyType<ValidateAccessTokenBody>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  validateAccessToken(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ValidateAccessTokenMutationResult = NonNullable<Awaited<ReturnType<typeof validateAccessToken>>>
+    export type ValidateAccessTokenMutationBody = BodyType<ValidateAccessTokenBody>
+    export type ValidateAccessTokenMutationError = ErrorType<void>
+
+    /**
+ * @summary Validate an access token
+ */
+export const useValidateAccessToken = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof validateAccessToken>>, TError,{data: BodyType<ValidateAccessTokenBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof validateAccessToken>>,
+        TError,
+        {data: BodyType<ValidateAccessTokenBody>},
+        TContext
+      > => {
+      return useMutation(getValidateAccessTokenMutationOptions(options));
+    }
 
