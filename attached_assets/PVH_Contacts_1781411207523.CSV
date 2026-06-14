@@ -1,0 +1,547 @@
+﻿Title,First Name,Middle Name,Last Name,Suffix,Company,E-mail Address,E-mail Type,E-mail Display Name
+,Chris,Tartaglia -,DDC,,DDC,chris@ddcpl.com.au,SMTP,Chris Tartaglia - DDC
+,SCSF,,,,UGL,scsf@ugllimited.com,SMTP,SCSF
+,Vincent,,Zhang,,UGL,vincent.zhang@ugllimited.com,SMTP,Vincent Zhang
+,Vicky,,Boominathan,,UGL,vicky.boominath@ugllimited.com,SMTP,Vicky Boominathan
+,Arvind,,Bhardwaj,,UGL,arvind.bhardwaj@ugllimited.com,SMTP,Arvind Bhardwaj
+,Arpit,,Gandhi,,UGL,arpit.gandhi@ugllimited.com,SMTP,Arpit Gandhi
+,Bianca,Celine J,Morales,,First Balfour,bjmorales@firstbalfour.com,SMTP,Bianca Celine J Morales
+,Juyi,,Lee,,Samsung,juyi.lee@samsung.com,SMTP,Juyi Lee
+,Hyunbae,Paul,Lee,,Samsung,hb0329.lee@samsung.com,SMTP,Hyunbae Paul Lee
+,arvind.,,nagarajan,,OX2,arvind.nagarajan@ox2.com,SMTP,arvind.nagarajan@ox2.com
+,darcy.,,denton,,OX2,darcy.denton@ox2.com,SMTP,darcy.denton@ox2.com
+,ravi.,,singh,,OX2,ravi.singh@ox2.com,SMTP,ravi.singh@ox2.com
+,Tay,Son,Le,,Greenwood,son@greenwoodsolutions.com.au,SMTP,Tay Son Le
+,Adam,,Lumley,,Greenwwod Solutions,adam@greenwoodsolutions.com.au,SMTP,Adam Lumley
+B ing,,,Lee,,Samsung,bing.lee@samsung.com,SMTP,이빙
+,Daniel,,Coghlan,,Liberty Steel (Infrabuild),daniel.coghlan@libertygfg.com,SMTP,Daniel Coghlan
+,Jaryd,,Revere,,Octopus,Jaryd.Revere@octopusinvestments.com,SMTP,Jaryd Revere
+,Swannie,,Swanepoel,,PSD Energy,SSwanepoel@psdenergy.com,SMTP,Swannie Swanepoel
+,Thomas,,GERSTCH,,TOTAL Energy,thomas.gerstch@totalenergies.com,SMTP,Thomas GERSTCH
+,Amir,,SAROFIM,,TOTAL Energy,amir.sarofim@totalenergies.com,SMTP,Amir SAROFIM
+,Talia,,Bacot-Keating,,BISON Energy,talia@bisonenergy.net,SMTP,Talia Bacot-Keating
+,holly,,wild,,BISON Energy,holly.wild@bisonenergy.net,SMTP,holly wild
+,Dane,,Archer,,BISON Energy,dane.archer@bisonenergy.net,SMTP,Dane Archer
+,Sid,,Pandey,,Octopus,Sid.Pandey@octopusinvestments.com,SMTP,Sid Pandey
+,khalid.,,akhtar,,Siemens Energy,khalid.akhtar@siemens-energy.com,SMTP,khalid.akhtar@siemens-energy.com
+,Christopher,,Smith,,Recurrent Energy,christopher.smith@recurrentenergy.com,SMTP,Christopher Smith
+,Roy,,Sun,,Recurrent Energy,roy.sun@recurrentenergy.com,SMTP,Roy Sun
+,Hassan,,Syed,,X-Elio,hassan.syed@e.x-elio.com,SMTP,Hassan Syed
+,meritxell.,,romero,,ENGIE,meritxell.romero@engie.com,SMTP,meritxell.romero@engie.com
+,michael,,,,Bison Energy,michael@bisonenergy.net,SMTP,michael@bisonenergy.net
+,cj,,,,Bison Energy,cj@bisonenergy.net,SMTP,cj@bisonenergy.net
+,patrick,,,,Bison Energy,patrick@bisonenergy.net,SMTP,patrick@bisonenergy.net
+,Mark,,Daly,,Bison Energy,mark.daly@bisonenergy.net,SMTP,Mark Daly
+,Phil,,Lever,,Intec Energy,p.lever@in-tecenergy.com,SMTP,Phil Lever
+,Serkan,,Kula,,Intec Energy,s.kula@in-tecenergy.com,SMTP,Serkan Kula
+,robert.,,chignell,,ENGIE,robert.chignell@engie.com,SMTP,robert.chignell@engie.com
+,Stuart,,Gurjar,,UGL,stuart.gurjar@ugllimited.com,SMTP,Stuart Gurjar
+,Jingqi,,Zhang,,BJEI Australia,jingqi.zhang@bjeiaustralia.com,SMTP,Jingqi Zhang
+,Michael,,Gadecki,,BJEI Australia,michael.gadecki@bjeiaustralia.com,SMTP,Michael Gadecki
+,Nathan,,Betard,,Pilecom,Nathan.Betard@pilecom.com.au,SMTP,Nathan Betard
+,Bruce,,Cousins,,Pilkecom,Bruce.Cousins@pilecom.com.au,SMTP,Bruce Cousins
+,Germán,,Sansó,,Pilecom,German.Sanso@pilecom.com.au,SMTP,Germán Sansó
+,JUAN,RODRIGUEZ,CRUZ,,Elecnor,jrodriguez.atersa@elecnor.com,SMTP,JUAN RODRIGUEZ CRUZ
+,SIAMAK,,GHARAHJEH,,Elecnor,siamak.gharahjeh@elecnor.es,SMTP,SIAMAK GHARAHJEH
+,EZEQUIEL,,SANDOVAL,,Elecnor,ezequiel.sandoval@elecnor.com,SMTP,EZEQUIEL SANDOVAL
+,MARCOS,,MORALES,,Elecnor,mmorales@elecnor.com,SMTP,MARCOS MORALES
+,ENRIQUE,TRABAJO,ESTEVEZ,,Elecnor,etrabajo.atersa@elecnor.com,SMTP,ENRIQUE TRABAJO ESTEVEZ
+,Renar,,Kivirand,,XSolar,renar@xsolar.com.au,SMTP,Renar Kivirand
+,Errol,,Bellchambers,,DT Infrastructure,ErrolBellchambers@dtinfrastructure.com.au,SMTP,Errol Bellchambers
+,Sanj,,Singh,,Lightyears Solar,Sanj.Singh@lightyearssolar.co.nz,SMTP,Sanj Singh
+,Hugh,,Sangster,,RATCH,hugh.sangster@ratchaustralia.com,SMTP,Hugh Sangster
+,echo,,,,Jinxilj,echo@jinxilj.com,SMTP,echo@jinxilj.com
+,Daniel,,Cunningham,,LODESTONE,dcunningham@lodestoneenergy.co.nz,SMTP,Daniel Cunningham (dcunningham@lodestoneenergy.co.nz)
+,Richard,,Pearce,,LODESTONE,rpearce@lodestoneenergy.co.nz,SMTP,Richard Pearce (rpearce@lodestoneenergy.co.nz)
+,Alexander,,Jahshan,,Ferrovial,ajahshan@ferrovial.com.au,SMTP,"Jahshan, Alexander"
+,Juan,Francisco,Rasines Portilla,,Ferrovial,jfrasines@ferrovial.com.au,SMTP,"Rasines Portilla, Juan Francisco"
+,Gabriel,,Cesar Augusto,,Ferrovial,gcesar@ferrovial.com.au,SMTP,"Cesar Augusto, Gabriel"
+,JORGE,,DOMINGO MEDIAVILLA,,Ferrovial,jdomingo@ferrovial.com,SMTP,"DOMINGO MEDIAVILLA, JORGE"
+,Noelia,,De las Heras Bonilla,,PV Hardware,/o=ExchangeLabs/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Recipients/cn=c1b5417d2f3c4b12b06510b048da5514-Noelia De l,EX,Noelia De las Heras Bonilla
+,Nikitas,,Soukaras,,One Global Logistics,nikitas@oglau.com,SMTP,Nikitas Soukaras
+,James,,Sparke,,One Global Logistics,james@oglau.com,SMTP,James Sparke
+,Darrin,,Honeybrook,,One Global Logistics,Darrin@oglau.com,SMTP,Darrin Honeybrook
+,Bernie,,James,,BJE,bernie.james@bjeiaustralia.com,SMTP,Bernie James
+,Henry,,Wang,,BJE,henry.wang@bjeiaustralia.com,SMTP,Henry Wang
+,Duncan,,Upton,,BJE,duncan.upton@bjeiaustralia.com,SMTP,Duncan Upton
+,daniel,,,,KT Construction,daniel@kt-construction.com.au,SMTP,daniel@kt-construction.com.au
+,peter,,,,KT Construction,peter@kt-construction.com.au,SMTP,peter@kt-construction.com.au
+,Guillaume,,Sabater,,KT Construction,guillaume@kt-construction.com.au,SMTP,Guillaume Sabater
+,Murtaza,,Lukmanjee,,KT Construction,murtaza@kt-construction.com.au,SMTP,Murtaza Lukmanjee
+,Lee,,Illingworth,,Monford,lee.illingworth@monfordgroup.com,SMTP,Lee Illingworth
+,Jane,,,,NGE Electrical,jane@ngelectrical.com.au,SMTP,Jane
+,daniel.,,edmonds,,Lodestone Energy,daniel.edmonds@infratec.co.nz,SMTP,daniel.edmonds@infratec.co.nz
+,Nick,,murray,,Lodestone energy,nmurray@lodestoneenergy.co.nz,SMTP,nmurray@lodestoneenergy.co.nz
+,Subhanshu,,Pradhan,,European Energy,spr@europeanenergy.com,SMTP,Subhanshu Pradhan
+,Jin,Han,Teng,,European Energy,jhte@europeanenergy.com,SMTP,Jin Han Teng
+,Stuart,,Miller,,BJE,stuart.miller@bjeiaustralia.com,SMTP,Stuart Miller
+,CARLOS,CENTENO,CORDOVA,,EDP,CARLOS.CENTENO@EDP.COM,SMTP,CARLOS CENTENO CORDOVA
+,Jeremy,,Bridle,,Clean Energy Council,jbridle@cleanenergycouncil.org.au,SMTP,Jeremy Bridle
+,Luke,,McDonald,,Solart FC,/o=ExchangeLabs/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Recipients/cn=328095a25ed34049b227d787717d46db-b8e11818-09,EX,Luke McDonald (luke@solarfc.com.au)
+,lily.,,zhou,,Sunterra,lily.zhou@sunterra.com.au,SMTP,lily.zhou@sunterra.com.au
+,Dean,,Tarquinio,,Birdwood Energy,dean@birdwoodenergy.com,SMTP,Dean Tarquinio
+,Angela,,Wei,,Birdwood Energy,angela@birdwoodenergy.com,SMTP,Angela Wei
+,Anthony,,Anderson,,Birdwood Energy,anthony@birdwoodenergy.com,SMTP,Anthony Anderson
+,Emily,,Belleville,,Volta,emily.belleville@volta.com.au,SMTP,Emily Belleville
+,Sean,,Rogers,,TELSTRA,Sean.Rogers.2@team.telstra.com,SMTP,"Rogers, Sean"
+,Shaun,,Curran,,UGL,shaun.curran@ugllimited.com,SMTP,Shaun Curran
+,Matthew,,Plunkett-Cole,,UGL,matthew.plunkettcole@ugllimited.com,SMTP,Matthew Plunkett-Cole
+,Trent,,Hoffman,,UGL,trent.hoffman@ugllimited.com,SMTP,Trent Hoffman
+,Trina,,Jensen,,ARK Energy,Trina.Jensen@arkenergy.com.au,SMTP,Trina Jensen
+,Michael,,Fraczak,,Bechtel,mfraczak@Bechtel.com,SMTP,"Fraczak, Michael"
+,dgarris4,,,,Bechtel,dgarris4@Bechtel.com,SMTP,dgarris4@bechtel.com
+,Ben,,Williams,,GENEX,bw@genexpower.com.au,SMTP,Ben Williams
+,Ashley,,Rogers,,RATCH,ashley.rogers@ratchaustralia.com,SMTP,Ashley Rogers
+,deswang,,,,Cambridge Partners,deswang@cambridgerepartners.com,SMTP,deswang@cambridgerepartners.com
+,michaeldwyer,,,,Cambridge Partners,michaeldwyer@cambridgerepartners.com,SMTP,michaeldwyer@cambridgerepartners.com
+,Andy,,McCutcheon,,BEON Energy,amccutcheon@beon-es.com.au,SMTP,"McCutcheon, Andy"
+,Ciara,,Deering,,Elgin Energy,ciara.deering@elgin.com,SMTP,Ciara Deering
+,Mehdi,,Madarshahian,,ALINTA Energy,Mehdi.Madarshahian@alintaenergy.com.au,SMTP,"Madarshahian, Mehdi"
+,Cansu,,Özkul,,VENN Energy,co@vennenergy.com,SMTP,Cansu Özkul
+,James,,Newman,,DT Infrastructure,JamesNewman@dtinfrastructure.com.au,SMTP,James Newman
+,gagandeep.,,singh,,Enerven,gagandeep.singh@enerven.com.au,SMTP,gagandeep.singh@enerven.com.au
+,Ben,,,,Tranex,ben.y@tranexsolar.com.au,SMTP,ben.y@tranexsolar.com.au
+,Kirsten,,Davis,,APA Group,Kirsten.Davis@apa.com.au,SMTP,"Davis, Kirsten"
+,Kurt,,El-Sayed,(RTIO),Rio Tinto,Kurt.El-Sayed2@riotinto.com,SMTP,"El-Sayed, Kurt (RTIO)"
+,Darren,,Williams,(GBS),Rio Tinto,Darren.Williams3@riotinto.com,SMTP,"Williams, Darren (GBS)"
+,Alanna,,Kolano,,Greenwood,alanna.k@greenwoodsolutions.com.au,SMTP,Alanna Kolano
+,Yesh,,Reddy,,Greenwood,yesh@greenwoodsolutions.com.au,SMTP,Yesh Reddy
+,Lee,,Matson,,Greenwood,lee@greenwoodsolutions.com.au,SMTP,Lee Matson
+,Lahiru,,Sendapperuma,,Greenwood,lahiru@greenwoodsolutions.com.au,SMTP,Lahiru Sendapperuma
+,rhalvorsen,,,,AMP Energy,rhalvorsen@amp.energy,SMTP,rhalvorsen@amp.energy
+,bjayatilaka,,,,AMP Energy,bjayatilaka@amp.energy,SMTP,bjayatilaka@amp.energy
+,Darcy,,Haines,,Earthconnect,darcy.haines@earthconnect-australia.com,SMTP,Darcy Haines
+,kealy,,Day,,Smart Commercial Solar,kealy@smartcommercialsolar.com.au,SMTP,kealy@smartcommercialsolar.com.au
+,Nathan,,Uebergang,,AMP Energy,nuebergang@amp.energy,SMTP,Nathan Uebergang
+,Kenny,,Tian,,Lightsource BP,kenny.tian@lightsourcebp.com,SMTP,Kenny Tian
+,Remi,,Coni,,Spark Renewables,remi.coni@sparkrenewables.com,SMTP,Remi Coni
+,Peter,,Seeney,,Spark Renewables,peter.seeney@sparkrenewables.com,SMTP,Peter Seeney
+,Eric,,Nemme,,CleanPeak Energy,Eric.Nemme@cleanpeakenergy.com.au,SMTP,Eric Nemme
+,Shaikat,,Debnath,,APA Group,Shaikat.Debnath@apa.com.au,SMTP,"Debnath, Shaikat"
+,Harrison,,Rayner,,APA Group,Harrison.Rayner@apa.com.au,SMTP,"Rayner, Harrison"
+,Andreas,,Merk-External,,ENGIE,andreas.merk@engie.com,SMTP,Andreas Merk-External
+,Manikandan,,Jeyachandran,,VENN Energy,mj@vennenergy.com,SMTP,Manikandan Jeyachandran
+,Muren,,Guler,,VENN Energy,mg@vennenergy.com,SMTP,Muren Guler
+,merv.,,howe,,DTI Infrastructure,merv.howe@dtinfrastructure.com.au,SMTP,merv.howe@dtinfrastructure.com.au
+,Tim,,Greenaway,,ACEN,tim.greenaway@acenrenewables.com.au,SMTP,Tim Greenaway
+,sarah.,,donnan,,ACEN,sarah.donnan@acenrenewables.com.au,SMTP,sarah.donnan@acenrenewables.com.au
+,David,Scarsella,,,SOLMECH,David@solmech.com.au,SMTP,David Scarsella <David@solmech.com.au>
+,Tim,,Rule,,NGE Electrical,tim@ngelectrical.com.au,SMTP,Tim Rule
+,Daniel,,Chit,,NGE Electrical,dchit@ngelectrical.com.au,SMTP,Daniel Chit
+,Ciaran,,Shannon,,MONFORD,ciaran@monfordgroup.com,SMTP,Ciaran Shannon
+,SabyasachiMukherjee,,,,ASTROenergy,Sabyasachi@Astronergy.com,SMTP,SabyasachiMukherjee
+,Simon,,Youl,,Birdwood Energy,simon@birdwoodenergy.com,SMTP,Simon Youl
+,Bira,,Paraguassu,(D&T),RIO TINTO,Bira.Paraguassu@riotinto.com,SMTP,"Paraguassu, Bira (D&T)"
+,cgreen,,,,,cgreen@macgeo.com.au,SMTP,cgreen@macgeo.com.au
+,Tan,,Tao,,Astroenergy,tao.tan@Astronergy.com,SMTP,Tan Tao
+,Kane,,,,Specialised Energy,kane@specialised.energy,SMTP,Kane
+,Lucis,,Han,,Valent Energy,lucis.han@valent-energy.com,SMTP,Lucis Han
+,Haydn,,Yates,,YES Group,haydn@yesgroupsa.com.au,SMTP,Haydn Yates
+,Jonathan,,Kennedy,,ARUP,jonathan.kennedy@arup.com,SMTP,Jonathan Kennedy
+,Rodrigo,Bravo,,,Private Energy Partners,rb@private-energypartners.com,SMTP,Rodrigo Bravo <rb@private-energypartners.com>
+,Timothy,Vallis,,,AGL,TVallis@agl.com.au,SMTP,Timothy Vallis <TVallis@agl.com.au>
+,Simon,,Coady,,ORIGIN Energy,simon.coady@originenergy.com.au,SMTP,"Coady, Simon"
+,Tiffany,,Simpson,,ORIGIN Energy,Tiffany.Simpson@originenergy.com.au,SMTP,"Simpson, Tiffany"
+,Alex,,Pirlo,,ORIGIN Energy,Alex.Pirlo@originenergy.com.au,SMTP,"Pirlo, Alex"
+,Mike,,Giulianini,,ORIGIN Energy,mike.giulianini@originenergy.com.au,SMTP,"Giulianini, Mike"
+,Emma,,Eriksson,,,emma@erikssonengineering.com,SMTP,Emma Eriksson
+,JOSE,LUIS,TORRES,,,torres.joseluis@elecnor.com,SMTP,JOSE LUIS TORRES
+,Ninad,,Pujara,,Private Energy Partners,npu@private-energypartners.com,SMTP,Ninad Pujara
+,Amer,,Muzamil,,Fortesque,amer.muzamil@fortescue.com,SMTP,Amer Muzamil
+,Li,,Angela,,,angelali@longi.com,SMTP,"Angela,Li"
+,Shanti,,Jia,,,jiamingyu@longi.com,SMTP,Shanti Jia
+,Pareekshit,,Parihar,,Far North Solar Farm,pareekshit@fnsf.co.nz,SMTP,Pareekshit Parihar
+,navdeep.,,atwal,,,navdeep.atwal@engie.com,SMTP,navdeep.atwal@engie.com
+,Tom,,Aitken,,,tom@solsrv.com.au,SMTP,Tom Aitken
+,Yose,,Farasi,,HDF Energy,yose.farasi@hdf-energy.com,SMTP,Yose Farasi
+,Ira,,Trisnawati,,HDF  Energy,ira.trisnawati@hdf-energy.com,SMTP,Ira Trisnawati
+,Madeleine,,Holly,,,Madeleine.Holly@venaenergy.com,SMTP,Madeleine Holly
+,Kevin,,Brady,,,Kevin.Brady@dtinfrastructure.com.au,SMTP,Kevin Brady
+,Martin,Williams | MacGeo | Principal Geotechnical,Engineer,,,mwilliams@macgeo.com.au,SMTP,Martin Williams | MacGeo | Principal Geotechnical Engineer
+,Arnoud,,Storteboom,,,a.storteboom@acle.com.au,SMTP,Arnoud Storteboom
+,Tim,Kan,Wang,,PCL,tkwang@pcl.com,SMTP,Tim Kan Wang
+,duncan,,,,,duncan@firmpower.com.au,SMTP,duncan@firmpower.com.au
+,curtis.,,y,,,curtis.y@tranexsolar.com.au,SMTP,curtis.y@tranexsolar.com.au
+,Mark,,Mackay,,,mark.mackay@mackpower.com.au,SMTP,Mark Mackay
+,Jeff,,Bowser,,Mack Power,jeff.bowser@mackpower.com.au,SMTP,Jeff Bowser
+,Duane,,Cornish,,Phoenix Industrial Partners,duane.cornish@phoenixindustrialpartners.com.au,SMTP,Duane Cornish
+,ben.,,hill,,Downer,ben.hill@downergroup.com,SMTP,ben.hill@downergroup.com
+,chris.,,haddon,,Yindi,chris.haddon@yindjibarndienergy.com.au,SMTP,chris.haddon@yindjibarndienergy.com.au
+,Daryn,,Stocks,,EPC Solar,daryn@epcsolar.com.au,SMTP,Daryn Stocks
+,Ahmaz,Zafriq | EPC,Solar,,EPC Solar,Engineering@epcsolar.com.au,SMTP,Ahmaz Zafriq | EPC Solar
+,Andrew,,Lim,,GHD,Andrew.Lim@ghd.com,SMTP,Andrew Lim
+,Joel,,Schmidt,,GHD,Joel.Schmidt@ghd.com,SMTP,Joel Schmidt
+,Chris,,Haddon,,YEC,chris.haddon@yec.au,SMTP,Chris Haddon
+,Andrew,,Johnson,,ACE Power,ajohnson@acepower.com.au,SMTP,Andrew Johnson
+,a.,,johnson,,ACE Power,a.johnson@acepower.com.au,SMTP,a.johnson@acepower.com.au
+,Dennis,,DARSONO,,TOTAL Energy,dennis.darsono@totalenergies.com,SMTP,Dennis DARSONO
+,Alex,,Wheeler,,BEON,alwheeler@beon-es.com.au,SMTP,"Wheeler, Alex"
+,Julia,,Evans,,BEON,JUevans@beon-es.com.au,SMTP,"Evans, Julia"
+,Kieren,,Lewis,,BEON,klewis@beon-es.com.au,SMTP,"Lewis, Kieren"
+,Mitchell,,Hardwick,,Aurecon,Mitchell.Hardwick@aurecongroup.com,SMTP,Mitchell Hardwick
+,Emre,Altundas,,,Gentari,emre.altundas@gentari.com.au,SMTP,Emre Altundas <emre.altundas@gentari.com.au>
+,Peter,,Hadden,,Clean Peak Energy,Peter.Hadden@cleanpeakenergy.com.au,SMTP,Peter Hadden
+,Parnesh,,Chand,,CleanPeak Energy,parnesh.chand@cleanpeakenergy.com.au,SMTP,Parnesh Chand
+,Dan,,Quee,,TRANEX,dan.q@tranexsolar.com.au,SMTP,Dan Quee
+,Roger,,Young,,TRANEX,roger.y@tranexsolar.com.au,SMTP,Roger Young
+,Louis,,Tao,,Billion Watts,louistao@billionwatts.com.tw,SMTP,Louis Tao
+,Harun,,Idrees,,Allied Green,harun@alliedgreen.com.au,SMTP,Harun Idrees
+,Scott,,Burling,,NZ Clean Energy,scott@nzcleanenergy.nz,SMTP,Scott Burling
+,shannon,,,,Allied Green,shannon@alliedgreen.com.au,SMTP,shannon@alliedgreen.com.au
+,Joe,,Billich,,Volta,joe.billich@volta.com.au,SMTP,Joe Billich
+,Edgar,,Pedrego,,Pv Hardware LLC,/o=ExchangeLabs/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Recipients/cn=e1fef437b9274af584de384f2f694fec-Edgar Pedre,EX,Edgar Pedrego
+,Alex,,Nassar,,GHD,Alex.Nassar@ghd.com,SMTP,Alex Nassar
+,Athena,Bendeemer Renewable Energy,Hub,,METIS,community@metisenergy.com,SMTP,Athena Bendeemer Renewable Energy Hub
+,Ray,,Chan,,Brightnight,rchan@brightnightpower.com,SMTP,Ray Chan
+,Alan,,Robinson,,Brightnight,Alan.Robinson@brightnightpower.com,SMTP,Alan Robinson
+,Polly,,Baranco,,Brightnight,polly@brightnightpower.com,SMTP,Polly Baranco
+,Jamal,,Awar,,Brightnight,Jamal@brightnightpower.com,SMTP,Jamal Awar
+,Kiran,,Pandey,,Brightnight,kiran@brightnightpower.com,SMTP,Kiran Pandey
+,Asif,,Khan,,Brightnight,asif@brightnightpower.com,SMTP,Asif Khan
+,Joseph,,Cowell,,Tranex Solar,joseph.c@tranexsolar.com.au,SMTP,Joseph Cowell
+,trevor,,,,wwcanberra,trevor@wwcanberra.com,SMTP,trevor@wwcanberra.com
+,vbdammog,,,,First Balfour,vbdammog@firstbalfour.com,SMTP,vbdammog@firstbalfour.com
+,eatumbocon,,,,First Balfour,eatumbocon@firstbalfour.com,SMTP,eatumbocon@firstbalfour.com
+,ascalangian,,,,First Balfour,ascalangian@firstbalfour.com,SMTP,ascalangian@firstbalfour.com
+,abboqueo,,,,First Balfour,abboqueo@firstbalfour.com,SMTP,abboqueo@firstbalfour.com
+,Brenton,,Richards,,Tranex,brenton.r@tranexsolar.com.au,SMTP,Brenton Richards
+,tony,,,,Greenwood,tony@greenwoodsolutions.com.au,SMTP,tony@greenwoodsolutions.com.au
+,Mark,,Borroni,,Downer,Mark.Borroni@downergroup.com,SMTP,Mark Borroni
+,Denny,,Hua,,NGE electrical,denny@ngelectrical.com.au,SMTP,Denny Hua
+,Hugo,,Polankai,,NGE Electrical,hugo@ngelectrical.com.au,SMTP,Hugo Polankai
+,Dheraaj,,Menon,,ERS Energy,dheraaj@ers.my,SMTP,Dheraaj Menon
+,Aaron,,Neoh,,ERS Energy,jiafoo@ers.my,SMTP,Aaron Neoh
+,Bryan,Yong Wei,Hoong,,ERS Energy,bryanyong@ers.my,SMTP,Bryan Yong Wei Hoong
+,Amir,Asyraf,Rosli,,ERS Energy,amir.asyraf@ers.my,SMTP,Amir Asyraf Rosli
+,Robert,,Craig,,Birdwood Energy,robert@birdwoodenergy.com,SMTP,Robert Craig
+,GU,,Bryant,,Longi,gubryant@longi.com,SMTP,GU Bryant
+,Hector,,Rogel,,Mitlan Engineering,hrogel@mictlanengineering.com,SMTP,Hector Rogel
+,James,,Swan,,Infrabuild,James.Swan@infrabuild.com,SMTP,James Swan
+,Udena,,Vithanage,,Suncable,udena.vithanage@suncable.energy,SMTP,Udena Vithanage
+,Alisha,,Barlow,,Suncable,alisha.barlow@suncable.energy,SMTP,Alisha Barlow
+,Raj,,GEDDAM,,TOTAL Energy,raj.geddam@totalenergies.com,SMTP,Raj GEDDAM
+,Thomas,,PIMENTA,,TOTAL Energy,thomas.pimenta@totalenergies.com,SMTP,Thomas PIMENTA
+,ben.,,shannon,,Agile Energy,ben.shannon@agileenergy.com.au,SMTP,ben.shannon@agileenergy.com.au
+,Liang,,Zhao,,ACLE,liang@acle.com.au,SMTP,Liang Zhao
+,David,,Cumming,,ARK Energy,David.Cumming@arkenergy.com.au,SMTP,David Cumming
+,Fabio,,Moscia,,UGL,fabio.moscia@ugllimited.com,SMTP,Fabio Moscia
+,Matthew,,Said,,All Thread,matthews@allthread.com.au,SMTP,Matthew Said
+,tom.,,straw,,Gen offgrid,tom.straw@genoffgrid.com.au,SMTP,tom.straw@genoffgrid.com.au
+,mani.,,jeyachandran,,Enervest,mani.jeyachandran@enervest.com.au,SMTP,mani.jeyachandran@enervest.com.au
+,matt.,,herbert,,GHD,matt.herbert@ghd.com,SMTP,matt.herbert@ghd.com
+,Ricardo,,Robaina,,GHD,Ric.Robaina@ghd.com,SMTP,Ricardo Robaina
+,Tom,,Straw,,Gen Offgrid,tom.straw@genoffgrid.com,SMTP,Tom Straw
+,Philip,,Wu,,AGL,PWu@agl.com.au,SMTP,Philip Wu
+,Daniel,,Farnes,,AGL,DFarnes@agl.com.au,SMTP,Daniel Farnes
+,Paul,,Robertson,,AGL,PRobertson3@agl.com.au,SMTP,Paul Robertson
+,michael,,,,Meta Energy,michael@mettaenergy.com.au,SMTP,michael@mettaenergy.com.au
+,warren.,,scott,,Vena Energy,warren.scott@venaenergy.com,SMTP,warren.scott@venaenergy.com
+,Shaun,,Vagne,,Idamitsu,shaun.vagne@idemitsu.com.au,SMTP,Shaun Vagne
+,John,,James,,Pilecom,John.James@pilecom.com.au,SMTP,John James
+,Rhyse,,Maughan,,Aggreko,Rhyse.Maughan@aggreko.com,SMTP,Rhyse Maughan
+,Matt,,Culkin,,NGE Electrical,matt@ngelectrical.com.au,SMTP,Matt Culkin
+,Jonathan,,Lowe,,NGE Electrical,jonathan@ngelectrical.com.au,SMTP,Jonathan Lowe
+,Nickle,,Gubbins,,NGE Electrical,nicklegub@gmail.com,SMTP,Nickle Gubbins
+,Andrew,,Pearce,,Alinta Energy,Andrew.Pearce@alintaenergy.com.au,SMTP,"Pearce, Andrew"
+,Ross,,Frankcombe,,DTI,Ross.Frankcombe@dtinfrastructure.com.au,SMTP,Ross Frankcombe
+,David,,Melling,,DTI,David.Melling@dtinfrastructure.com.au,SMTP,David Melling
+,Andrew,,Smith,,DTI,AndrewSmith1@dtinfrastructure.com.au,SMTP,Andrew Smith
+,Peter,,West,,DTI,Peter.West@dtinfrastructure.com.au,SMTP,Peter West
+,Daniel,Gan :,UON,,UON,daniel.gan@uon.com.au,SMTP,Daniel Gan : UON
+,Peter,,Hülkenberg,,EDL Energy,Peter.Hulkenberg@edlenergy.com,SMTP,Peter Hülkenberg
+,Yogesh,,Bhardwaj,,Astroenergy,Yogesh.Bhardwaj@Astronergy.com,SMTP,Yogesh Bhardwaj
+,Ramesh,,Taterao,,Astroenergy,Ramesh@Astronergy.com,SMTP,Ramesh Taterao
+,Priyankar,,,,Astroenergy,Priyankar@Astronergy.com,SMTP,Priyankar
+,Suvadeep,,Dey,,Astroenergy,Suvadeep.Dey@Astronergy.com,SMTP,Suvadeep Dey
+,Brijesh,,,,Astroenergy,Brijesh@Astronergy.com,SMTP,Brijesh
+,Ben,,Larsson,,RE Partners,blarsson@repartners.com.au,SMTP,Ben Larsson
+,Luke,,Keys,,RE Partners,lkeys@repartners.com.au,SMTP,Luke Keys
+,Joel,,Cubol,,COBRA,joel.cubol@grupocobra.com,SMTP,Joel Cubol
+,KEVIN,,SWANDI,,COBRA,kevin.swandi@grupocobra.com,SMTP,KEVIN SWANDI
+,Daniel,Fernandez,Fernandez,,COBRA,danielfernandez@grupocobra.com,SMTP,Daniel Fernandez Fernandez
+,BONNY,,CYRIAC,,COBRA,bonny.cyriac@grupocobra.com,SMTP,BONNY CYRIAC
+,Richard.,,Simpson,,APA Perth,Richard.Simpson@apa.com.au,SMTP,Richard.Simpson@apa.com.au
+,neil.,,weston,,Ratch,neil.weston@ratchaustralia.com,SMTP,neil.weston@ratchaustralia.com
+,Jan,Thorsten,SCHNEIDER,,Total Energies H2,jan.t.schneider@te-h2.com,SMTP,Jan Thorsten SCHNEIDER
+,Andrew,,Baker,,DTI,Andrew.Baker@dtinfrastructure.com.au,SMTP,Andrew Baker
+,kurt.,,hang,,HD Renewables,kurt.hang@hdrenewables.com,SMTP,kurt.hang@hdrenewables.com
+,Siddhesh,,Chowkidar,,ACLE,s.chowkidar@acle.com.au,SMTP,Siddhesh Chowkidar
+,Hamish,,Wall,,Renew Cup,hamish.wall@renewcup.org,SMTP,Hamish Wall
+,Rory,,Lawrence,,Elgin Energy,rory.lawrence@elgin.com,SMTP,Rory Lawrence
+,piers,,,,Electrify Energy,piers@electrifyenergy.com.au,SMTP,piers@electrifyenergy.com.au
+,cassidy.,,prent,,Bright Fern,cassidy.prent@outlook.com,SMTP,'cassidy.prent'
+,Raj,,Kumar,,Brightfern,tech@brightfern.energy,SMTP,Raj Kumar
+,Justin,,Mowbray,,Ethical Power,Justin.Mowbray@ethical-power.com,SMTP,Justin Mowbray
+,Pardon,,Shagwai,,Alinta energy,Pardon.Shagwai@alintaenergy.com.au,SMTP,"Shagwai, Pardon"
+,BillionWattsAU,,,,Billion Watts,BillionWattsAU@billionwatts.com.tw,SMTP,BillionWattsAU@billionwatts.com.tw
+,Vadim,,Rybak,,OSOS,estimator@osos.global,SMTP,Vadim Rybak
+,Phoebe,,Triantopoulos,,APA,Phoebe.Triantopoulos@apa.com.au,SMTP,"Triantopoulos, Phoebe"
+,Sumit,,Singh,,APA,Sumit.Singh@apa.com.au,SMTP,"Singh, Sumit"
+,Inka,,Heile,,APA,Inka.Heile@apa.com.au,SMTP,"Heile, Inka"
+,Deepthi,,Polisetti,,APA,Deepthi.Polisetti@apa.com.au,SMTP,"Polisetti, Deepthi"
+,Pauline,,Yang,,APA,Pauline.Yang@apa.com.au,SMTP,"Yang, Pauline"
+,Courtney,,Saare,,APA,Courtney.Saare@apa.com.au,SMTP,"Saare, Courtney"
+,Ian,,Kirkham,,Metlen,Ian.Kirkham@metlengroup.com,SMTP,"Kirkham, Ian"
+,Parsa,,Enshaei,,CPP Australia,penshaei@cppwind.com,SMTP,Parsa Enshaei
+,Om,Prakash,,,ARK Energy,om.prakash@arkenergy.com.au,SMTP,Om Prakash <om.prakash@arkenergy.com.au>
+,Trevor,,Rice,(MFAO WGN),Mainfreight,trevor.rice@mainfreight.com,SMTP,Trevor Rice (MFAO WGN)
+,Amin,,Jabar,,ERS Energy,amin@ers.my,SMTP,Amin Jabar
+,JORGE,ALONSO,COTO,,EDP Renewables,JORGE.ALONSO@EDP.COM,SMTP,JORGE ALONSO COTO
+Eng,Hwee,Tan | Aquila,Capital,,Aquilla Capital,enghwee.tan@aquila-capital.com,SMTP,Eng Hwee Tan | Aquila Capital
+,Cillian,,Walker,,Meridian Energy,cillian.walker@meridianenergy.co.nz,SMTP,Cillian Walker
+,Iain,,Blanshard,,Meridian Energy,Iain.Blanshard@MeridianEnergy.co.nz,SMTP,Iain Blanshard
+,Jarrod,,Wyatt,,Meridian Energy,Jarrod.Wyatt@MeridianEnergy.co.nz,SMTP,Jarrod Wyatt
+,Benjamin,,Mossman,,Meridian Energy,Benjamin.Mossman@meridianenergy.co.nz,SMTP,Benjamin Mossman
+,Todd,,Mead,,Manawa Energy,Todd.Mead@manawaenergy.co.nz,SMTP,Todd Mead
+,Jim,,Pearson,,Manawa Energy,Jim.Pearson@manawaenergy.co.nz,SMTP,Jim Pearson
+,Craig,,Brown,,Genesis Energy,Craig.Brown@genesisenergy.co.nz,SMTP,Craig Brown
+,Kade,,Mace,,Genesis Energy,Kade.Mace@genesisenergy.co.nz,SMTP,Kade Mace
+,Leon,,Hayward,,Genesis Energy,Leon.Hayward@genesisenergy.co.nz,SMTP,Leon Hayward
+,Andrew,,Clennett,,Hiringa,aclennett@hiringa.co.nz,SMTP,Andrew Clennett
+,Alistair,,Tippett,,Hiringa,atippett@hiringa.co.nz,SMTP,Alistair Tippett
+,Owen,,Hobbs,,Hiringa,ohobbs@hiringa.com.au,SMTP,Owen Hobbs
+,Matt,,Luscombe,,Hiringa,mluscombe@hiringa.co.nz,SMTP,Matt Luscombe
+,Sarel,,Peens,,Harmony Energy NZD,sarel.peens@harmonyenergy.co.nz,SMTP,Sarel Peens
+,Ryno,,du Preez,,Harmony Energy NZD,ryno.dupreez@harmonyenergy.co.nz,SMTP,Ryno du Preez
+,Shane,,Humphreys,,ACE Power,shumphreys@acepower.com.au,SMTP,Shane Humphreys
+,Jim,Waterreus :,UON,,UON,jim.waterreus@uon.com.au,SMTP,Jim Waterreus : UON
+,David,,Nazareth,,Gentari,david.nazareth@gentari.com.au,SMTP,David Nazareth
+hyunsoo. ra,,,,,Samsung,hyunsoo.ra@samsung.com,SMTP,hyunsoo.ra@samsung.com
+,Ken,,Liu,,Atlas Renewables,ken.l@atlasrenewables.com.au,SMTP,Ken Liu
+,Stephen,Chan Tsz,Chun,,ERS,chan.stephen@ers.my,SMTP,Stephen Chan Tsz Chun
+,John,,Bishop,,JA Solar,John.Bishop@jasolar.com,SMTP,John Bishop
+,Jade,,Kowton,,VENA Energy,jade.kowton@venaenergy.com,SMTP,Jade Kowton
+,Tuna,,Kildis,,VENA Energy,tuna.kildis@venaenergy.com,SMTP,Tuna Kildis
+,Tanakit,,Theerametharutsiri,,VENA Energy,t.theerametharutsiri@venaenergy.com,SMTP,Tanakit Theerametharutsiri
+,Legacy,,Energy,,,info@legacyenergy.com.au,SMTP,Legacy Energy
+,Kristijan,,Jankoski,,Statika (Legacy Energy),info@statika.com.au,SMTP,Kristijan Jankoski
+,James,,Duckworth,,Smart Commercial Solar,James@smartcommercialsolar.com.au,SMTP,James Duckworth
+,Ryan,,McKenzie,,Volta,ryan@volta.com.au,SMTP,Ryan McKenzie
+,Sam,,Wanniarachchi,,Volta,sam.wanniarachchi@volta.com.au,SMTP,Sam Wanniarachchi
+,Tristan,,Raulings,,Birdwood Energy,tristan@birdwoodenergy.com,SMTP,Tristan Raulings
+,eurimbula,,,,,eurimbula@visioninfra.com.au,SMTP,eurimbula
+,tro,,,,Elements Green,tro@elementsgreen.com,SMTP,tro@elementsgreen.com
+,Sadie,,Cai,,VOLTA,sadie.cai@volta.com.au,SMTP,Sadie Cai
+,Shanuka,,Bandara,,VOLTA,shanuka.bandara@volta.com.au,SMTP,Shanuka Bandara
+,Harunobu,Ohmae :,UON,,UON,harunobu.ohmae@uon.com.au,SMTP,Harunobu Ohmae : UON
+,Sunil,,Bagga,,AGL,SBagga@agl.com.au,SMTP,Sunil Bagga
+,Arati,,Joshi,,Intercontinental Energy,arati.joshi@wgeh.com.au,SMTP,Arati Joshi
+,Dean,,Tanevski,,Legacy Energy,dean@legacyenergy.com.au,SMTP,Dean Tanevski
+,Pradeep,,Wijenayake,,Enerparc,P.Wijenayake@enerparc.com,SMTP,Pradeep Wijenayake
+,huangcw01,,,,TongWei,huangcw01@tongwei.com,SMTP,huangcw01@tongwei.com
+,Hsbautista,,,,First Balfour,Hsbautista@firstbalfour.com,SMTP,Hsbautista@firstbalfour.com
+,Eric,,Morell,,PCL,EJMorell@pcl.com,SMTP,Eric Morell
+,HenryKing,,Sicad,,ACE Energy,hk.sicad@acenergy.com.au,SMTP,HenryKing Sicad
+,Daniel,,Shen,,Fortescue,daniel.shen@fortescue.com,SMTP,Daniel Shen
+,Richard,,Metcalfe,,AGL,RMetcalfe@agl.com.au,SMTP,Richard Metcalfe
+,James,,BOYLE,,TOTAL Energy,james.boyle@te-h2.com,SMTP,James BOYLE
+,Roy,,MCGAVIN,,TOTAL Energy,roy.mcgavin@te-h2.com,SMTP,Roy MCGAVIN
+,Miguel,,,,Boar Power,miguel@boerpower.com,SMTP,Miguel
+,Chris,,Dowe,,Fortescue,chris.dowe@fortescue.com,SMTP,Chris Dowe
+,Adrian,,Mullan,,Fortescue,adrian.mullan@fortescue.com,SMTP,Adrian Mullan
+,Chris,,Nguyen,,AGL,CNguyen6@agl.com.au,SMTP,Chris Nguyen
+,Admin-Lumico,,,,Lumico,admin@lumico.com.au,SMTP,Admin-Lumico
+,Jewel,,,,Tongwei,WENJL03@tongwei.com,SMTP,温佳蕾
+,Jithin,,Menon,,ACLE,j.menon@acle.com.au,SMTP,Jithin Menon
+,Adam,,Farquer,,DTI Infrastructure,AdamFarquer@dtinfrastructure.com.au,SMTP,Adam Farquer
+,Jenya,,Khvatsky,,Enzen,jenya.khvatsky@enzen.com,SMTP,Jenya Khvatsky
+,Joe,,Johar,,Tobco,jjohar@tobco.com.au,SMTP,Joe Johar
+,Mitul,,Doshi,,Helios Energy - NZD,mdoshi@heliosenergy.co.nz,SMTP,Mitul Doshi
+,Luke,,Cousins,,Pilecom,luke.cousins@pilecom.com.au,SMTP,Luke Cousins
+,Umang,,Mandot,,Todd Energy,umandot@toddenergy.co.nz,SMTP,Umang Mandot
+,David,,Gilmour,,NOVA Energy,dgilmour@novaenergy.co.nz,SMTP,David Gilmour
+,Steve,,Wells,,NOVA Energy,SWells@novaenergy.co.nz,SMTP,Steve Wells
+,Louise,,Trewarne,,Birdwood,louise@birdwoodenergy.com,SMTP,Louise Trewarne
+,Eric,,Caesar,,Birdwood,eric@birdwoodenergy.com,SMTP,Eric Caesar
+,Michael,,Tan,,Precision Oxycut,michaelt@sellparker.com.au,SMTP,Michael Tan
+,Howard,,Wood,,Manawa Energy,Howard.Wood@manawaenergy.co.nz,SMTP,Howard Wood
+,Katherine,,Doerr,,Manawa Energy,Katherine.Doerr@manawaenergy.co.nz,SMTP,Katherine Doerr
+,Jorge,Mario Escorcia,Bornacelli,,European Energy,jbor@europeanenergy.com,SMTP,Jorge Mario Escorcia Bornacelli
+,Sam,Henderson | Santé,Group,,Sante' Group,Sam.Henderson@sante-group.com,SMTP,Sam Henderson | Santé Group
+,procurement,,,,Symal,procurement@symal.com.au,SMTP,procurement@symal.com.au
+,Shaun,,Maree,,Ratch,Shaun.Maree@ratchaustralia.com,SMTP,Shaun Maree
+,LIAM,,FOX,,EDP Renewables,LIAM.FOX@edp.com,SMTP,LIAM FOX
+,Dillon,,Houston,,PCL,DAHouston@pcl.com,SMTP,Dillon Houston
+,Terry,,Dang,,PCL,TADang@pcl.com,SMTP,Terry Dang
+,James,,Manning,,APA,James.Manning@apa.com.au,SMTP,"Manning, James"
+,Uğur,,Çetinkaya,,INTEC,u.cetinkaya@in-tecenergy.com,SMTP,Uğur Çetinkaya
+,cahern,,,,ACE Power,,,cahern@acepower.com.au.
+,Steven,,Rademaker,,BrightFern,steve@brightfern.energy,SMTP,Steven Rademaker
+,Craig,,Lusty,,BrightFern,craig@brightfern.energy,SMTP,Craig Lusty
+,Piers,,Klugman,,Brightfern,piers@brightfern.energy,SMTP,Piers Klugman
+,Cassidy,,Prent,,Brightfern,cassidy@brightfern.energy,SMTP,Cassidy Prent
+,Jason.,,Kerr,,Ratch,Jason.Kerr@ratchaustralia.com,SMTP,Jason.Kerr@ratchaustralia.com
+,Justin,,Low,,ERS,justin@ers.my,SMTP,Justin Low
+,Jarek,,Pole,,Coach NZD,jaroslawpole@gmail.com,SMTP,Jarek Pole
+,Glen,,Jacobsen,,Lightyears,glen.jacobsen@lightyearssolar.co.nz,SMTP,Glen Jacobsen
+,Puganesan,A/L,Thiruselvan,,Gamuda,puganesanthiruselvan@gamuda.com.my,SMTP,Puganesan A/L Thiruselvan
+,Joshua,Kong Sing,Hoe,,Gamuda,JoshuaSHKong@gamuda.com.my,SMTP,Joshua Kong Sing Hoe
+,zhenya.,,zhang,,TETRIS Energy,zhenya.zhang@tetrisenergy.com,SMTP,'zhenya.zhang@tetrisenergy.com'
+,santiago.,,rabelin,,TETRIS Energy,santiago.rabelin@tetrisenergy.com,SMTP,santiago.rabelin@tetrisenergy.com
+,Markus,,Heiss,,Elements Green,mh@elementsgreen.com,SMTP,Markus Heiss
+,Robert,,Manson,,Gripple,Robert@gripple.net.au,SMTP,Robert Manson
+,Pablo,,Daverio,,Infratech,pablo.daverio@infratec.co.nz,SMTP,Pablo Daverio
+,Kashif,,Ashraf,,Infratec,Kashif.Ashraf@infratec.co.nz,SMTP,Kashif Ashraf
+,Tim,,Parkin,,Infratec,tim.parkin@infratec.co.nz,SMTP,Tim Parkin
+,Leroi,,Fakraufon,,Elements Green,lf@elementsgreen.com,SMTP,Leroi Fakraufon
+,Ildo,,Agnetti,,HDF Energy,ildo.agnetti@hdf-energy.com,SMTP,Ildo Agnetti
+,Michael,,McCurrach,,Pacific Energy,michael.mccurrach@pacificenergy.com.au,SMTP,Michael McCurrach
+,Barry,,Bester,,FTC Solar,bbester@ftcsolar.com,SMTP,Barry Bester
+,Simon,,Reed,,Luxmore group,sreed@luxmoore.com.au,SMTP,Simon Reed
+,Will,,Reed,,Luxmore group,wreed@luxmoore.com.au,SMTP,Will Reed
+,Alex,,Godina,,Cubico,Alex.Godina@cubicoinvest.com,SMTP,Alex Godina
+,Lynch,,Darragh,,ENEL,darragh.lynch@enel.com,SMTP,Lynch Darragh
+,Southey,,Jaime,,ENEL,jaime.southey@enel.com,SMTP,Southey Jaime
+,Gifford,,Adam,,ENEL,adam.gifford@enel.com,SMTP,Gifford Adam
+,Parsaei,,Elham,,ENEL,elham.parsaei@enel.com,SMTP,Parsaei Elham
+,Bryan,,Dumail,,HDF Energy,bryan.dumail@hdf-energy.com,SMTP,Bryan Dumail
+,Tom,,Harrison,,Flow Power,Tom.Harrison@FlowPower.com.au,SMTP,Tom Harrison
+,roberto.,,galan,,EQUANS,roberto.galan@equans.com,SMTP,roberto.galan@equans.com
+,fernando.,,alves,,EQUANS,fernando.alves@equans.com,SMTP,fernando.alves@equans.com
+,marie.,,nguyen,,EQUANS,marie.nguyen@equans.com,SMTP,marie.nguyen@equans.com
+,antoine.,,grasland,,EQUANS,antoine.grasland@equans.com,SMTP,antoine.grasland@equans.com
+,KUI,LUN,TING,,EDPR,KUILUN.TING@EDP.COM,SMTP,KUI LUN TING
+,THIHA,,AUNG,,EDPR,THIHA.AUNG@EDP.COM,SMTP,THIHA AUNG
+,MICAH,,CHUA,,EDPR,MICAH.CHUA@EDP.COM,SMTP,MICAH CHUA
+,MINGJIN,,CHEN,,EDPR,MINGJIN.CHEN@EDP.COM,SMTP,MINGJIN CHEN
+,Rixit,,Patel,,Mirait,rpatel@mirait.com.au,SMTP,Rixit Patel
+,Wayne,,Sams-Hayes,,Pacific Energy,wayne.sams-hayes@pacificenergy.com.au,SMTP,Wayne Sams-Hayes
+,Trent,,Colyer,,Business INvestment,trent@businessinvestment.group,SMTP,Trent Colyer
+,Lloyd,,Mao,,Green Gold,lloyd.mao@greengoldenergy.com.au,SMTP,Lloyd Mao
+,nuebergang,,,,Revera Energy,nuebergang@revera.energy,SMTP,nuebergang@revera.energy
+,Sheryl,,Zhou,,AGL,HZhou@agl.com.au,SMTP,Sheryl Zhou
+,Gary,,Dagres,,OGP Group,g.dagres@ogpgroup.com,SMTP,Gary Dagres
+,danielhokl,,,,Gamuda,danielhokl@gamuda.com.au,SMTP,danielhokl@gamuda.com.au
+,Soleman,,Massoud,,Canadian Solar,soleman.massoud@csisolar.com,SMTP,Soleman Massoud
+,Chantelle,,Couret,,KT Construction,chantelle@kt-construction.com.au,SMTP,Chantelle Couret
+,Tobias,,Schulte,,KT Construction,toby@kt-construction.com.au,SMTP,Tobias Schulte
+,DA,,Li,,Siemens Energy,li.da@siemens-energy.com,SMTP,"Li, DA"
+,ANA,MAFALDA,CARDOSO,,EDP Renewables,ANAMAFALDA.CARDOSO@EDP.COM,SMTP,ANA MAFALDA CARDOSO
+,willem.,,vanhaersmabuma,,Genesis Energy NZD,willem.vanhaersmabuma@genesisenergy.co.nz,SMTP,willem.vanhaersmabuma@genesisenergy.co.nz
+,mitch.,,hodgson,,Genesis Energy,mitch.hodgson@genesisenergy.co.nz,SMTP,mitch.hodgson@genesisenergy.co.nz
+,Matt,,Zito,,Pilecom,Matt.Zito@pilecom.com.au,SMTP,Matt Zito
+,ed,,,,Arigo,ed@arigo.com.au,SMTP,ed@arigo.com.au
+,Art_Bulan,,TS/SPBG,,TRINA,artemiojr.bulan@trinasolar.com,SMTP,Art_Bulan TS/SPBG
+,Luca,Alberio | Aquila,Capital,,Aquila Capital,luca.alberio@aquila-capital.com,SMTP,Luca Alberio | Aquila Capital
+,poosit,,,,Infratech,poosit@infratechenergy.com,SMTP,poosit@infratechenergy.com
+,Johan,,Pienaar,,Lightsource BP,johan.pienaar@lightsourcebp.com,SMTP,Johan Pienaar
+,Jonathan,,Bocking,,Lightsource BP,jonathan.bocking@lightsourcebp.com,SMTP,Jonathan Bocking
+,chris.,,jovceski,,Lightsource BP,chris.jovceski@lightsourcebp.com,SMTP,chris.jovceski@lightsourcebp.com
+,Deepthi,,Raveendran,,Gransolar Construction Australia Pty Ltd,/o=ExchangeLabs/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Recipients/cn=279745c6c6fa4079934005642818798a-Deepth Rave,EX,Deepthi Raveendran (draveendran@gransolar.com)
+,Mehdi,,Garmroodi,,Samsung,mehdi.grd@samsung.com,SMTP,Mehdi Garmroodi
+,Emran,,Malhi,,Spring City,emranmalhi@springcity.com.au,SMTP,Emran Malhi
+,Pieter,,Van Staden,,PSD,pvanstaden@psdenergy.com,SMTP,Pieter Van Staden
+,Andy,,Lyon,,DTI ,Andy.Lyon@dtinfrastructure.com.au,SMTP,Andy Lyon
+,Nathan,,Richardson,,DTI,NathanRichardson@dtinfrastructure.com.au,SMTP,Nathan Richardson
+,Jason,,Flowerdew,,DTI,Jason.Flowerdew@dtinfrastructure.com.au,SMTP,Jason Flowerdew
+,Andrea,,Maddalozzo,,Pacific Energy,Andrea.Maddalozzo@pacificenergy.com.au,SMTP,Andrea Maddalozzo
+,Honey,,Eranedumaran,,Pacific Energy,Honey.Eranedumaran@pacificenergy.com.au,SMTP,Honey Eranedumaran
+,Finn,,MacDermott,,Aggreko,Finn.MacDermott@aggreko.com,SMTP,Finn MacDermott
+,Gabriel,,Malki,(GEA),Gamuda,GabrielMalki@gamuda.com.au,SMTP,Gabriel Malki (GEA)
+,Jimmy,Aui Yong Wei,Kang,(GEA),Gamuda,auiyong.weikang@gamuda.com.au,SMTP,Jimmy Aui Yong Wei Kang (GEA)
+,Balaji,,Ganesan,,SunPower,BALAJI.GANESAN@sunpowerglobal.com,SMTP,Balaji Ganesan
+,Aliraza,,Aga,,Galintel,aliraza.aga@nepean.com,SMTP,Aliraza Aga
+,Wookyeung,,Joe,,PVI,wjoe@pvinnovation.com.au,SMTP,Wookyeung Joe
+,christophe.,,denis,,EQUANS,christophe.denis@equans.com,SMTP,christophe.denis@equans.com
+,Clint,,Catchpole,,VENA Energy,clint.catchpole@venaenergy.com,SMTP,Clint Catchpole
+,John,,Cole,,Edify,john.cole@edifyenergy.com,SMTP,John Cole
+,Annalisa,,Fergnani,,Edify,annalisa.fergnani@edifyenergy.com,SMTP,Annalisa Fergnani
+,Elaine,,Chen,,Billion Watts,elainechen@billionwatts.com.tw,SMTP,Elaine Chen
+,Prashant,,Kumar,,Lightsource BP,prashant.kumar@lightsourcebp.com,SMTP,Prashant Kumar
+,sandeep.,,singla,,,sandeep.singla@perdaman.com,SMTP,sandeep.singla@perdaman.com
+,niraj.,,patil,,RES Group,niraj.patil@res-group.com,SMTP,niraj.patil@res-group.com
+,Mark,,Rathbone,,Pacific Blue,mrathbone@pacificblue.com.au,SMTP,Mark Rathbone
+,Simba,,Kuestler,,AGL,SKuestler@agl.com.au,SMTP,Simba Kuestler
+,ben,,,,Bam Bam,ben@bambampd.com.au,SMTP,ben@bambampd.com.au
+,Nithiyaa,A/P Vishwa,Nathan,,Gamuda,Nithiyaa@gamuda.com.my,SMTP,Nithiyaa A/P Vishwa Nathan
+,jamal.,,awar,,Yanara Power,jamal.awar@yanarapower.com,SMTP,jamal.awar@yanarapower.com
+,Sven,,Nickel,,BAM BAM,sven@bambampd.com.au,SMTP,Sven Nickel
+,Jessica,,Lee,,Billion Watts,jessicalee@billionwatts.com.tw,SMTP,Jessica Lee
+,rohan,,clarke,,EMRO,rohan@emro-eng.com.au,SMTP,rohan clarke
+,Rachel,,Bonnar,,BAM BAM,rachel@bambampd.com.au,SMTP,Rachel Bonnar
+,Ken,,Orenshaw,,BAM BAM,ken@bambampd.com.au,SMTP,Ken Orenshaw
+,Toby,,Marchant,,BAM BAM,toby@emro-eng.com.au,SMTP,Toby Marchant
+,Thomas,,Osmotherly,,Bison Energy,thomas.osmotherly@bisonenergy.net,SMTP,Thomas Osmotherly
+,Pat,,Lennon,,NXZEN,pat.lennon@nxzen.com,SMTP,Pat Lennon
+,Gerrard,,McCarthy,,Micropico Systems,gerrard@micropicosystems.com,SMTP,Gerrard McCarthy
+,Juan,Ruiz,tovar,,THJ Solar,jmruiz@thjsolar.com,SMTP,Juan Ruiz tovar
+,Latifa,,Smudja,,PCL,LKSmudja@pcl.com,SMTP,Latifa Smudja
+,Robert,,Gabdullin,,PCL,RGabdullin@pcl.com,SMTP,Robert Gabdullin
+,Arthur,,Arnold,,PCL,aarnold@pcl.com,SMTP,Arthur Arnold
+,Chris,Hayward - Reliance,Management,,Reliance,chris@reliancemgt.co.nz,SMTP,Chris Hayward - Reliance Management
+,Ian,,Murphy,,Monford,ian.m@monfordgroup.com,SMTP,Ian Murphy
+,Daniela,,Bravo,,,dabr@europeanenergy.com,SMTP,Daniela Bravo
+,Arthur,,Bringas,,GHD,Arthur.Bringas@ghd.com,SMTP,Arthur Bringas
+,Alberto,,Costa,,NECTR,alberto.costa@nectr.com.au,SMTP,Alberto Costa
+,Bea,Toribio,Lopez,,Lightsource BP,beatriz.lopez@lightsourcebp.com,SMTP,Bea Toribio Lopez
+,Harry,,Sposato,,Symal,harry.sposato@symal.com.au,SMTP,Harry Sposato
+,VICTOR,MENDEZ,RANGEL,,Elecnor,victor.mendez@elecnor.com,SMTP,VICTOR MENDEZ RANGEL
+,ASHLEY,JOHN,SMITH,,elecnor,ajsmith@elecnor.es,SMTP,ASHLEY JOHN SMITH
+,Robert,,Saunders,,Elecseed,Robert.saunders@elecseed.com.au,SMTP,Robert Saunders
+,Brice,,Fabregat,,PCL,BDFabregat@pcl.com,SMTP,Brice Fabregat
+,Jono,,Pye,,AGL,JPye2@agl.com.au,SMTP,Jono Pye
+,Martijn,,,,Chint,martijn.simons@Astronergy.com,SMTP,Martijn
+,Lin(林凯),,Kai,,Chint,kai.lin1@Astronergy.com,SMTP,Kai Lin(林凯)
+,Li(李勇华),,Eric,,Chint,yonghua.li@Astronergy.com,SMTP,Eric Li(李勇华)
+,Ethan,,Moulin,,CleanPeak Energy,ethan.moulin@cleanpeakenergy.com.au,SMTP,Ethan Moulin
+,ANITA,,ANTONY,,ELCNOR,anita.antony@elecnor.es,SMTP,ANITA ANTONY
+,Anthony,,Cornelius,,Weather watch,anthony@weatherwatch.net.au,SMTP,Anthony Cornelius
+,John,,Farquharson,,Infrabuild,john.farquharson@infrabuild.com,SMTP,John Farquharson
+,Virender,,Mann,,DTI Infrastructure,virendermann@dtinfrastructure.com.au,SMTP,Virender Mann
+,Matilda,,Wachsmann,,COBRA,matilda.wachsmann@grupocobra.com,SMTP,Matilda Wachsmann
+,Luis,Gamundi,Berenguer,,COBRA,luis.gamundi@grupocobra.com,SMTP,Luis Gamundi Berenguer
+,Joe,,Castellana,,DP World,/o=ExchangeLabs/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Recipients/cn=9c9db7d50db84055a42070d153a3edde-648d6e43-9a,EX,Joe Castellana (joe.castellana@dpworld.com)
+,Daniel,,Stewart,,DTI,DanielStewart@dtinfrastructure.com.au,SMTP,Daniel Stewart
+,Gustavo,,Sgrott,,TECO,Gustavo.Sgrott@teco.com.au,SMTP,Gustavo Sgrott
+,Felix,,Daddo,,Spark Renewables,felix.daddo@sparkrenewables.com,SMTP,Felix Daddo
+,Jonathan,,Lindley,,,JonathanLindley@dtinfrastructure.com.au,SMTP,Jonathan Lindley
+,Cate,,Carlson,,CleanPeak,cate.carlson@cleanpeakenergy.com.au,SMTP,Cate Carlson
+,Gavin,,Smith,,CleanPeak,gavin.smith@cleanpeakenergy.com.au,SMTP,Gavin Smith
+,Kevin,,Ratanawira,,Clean Peak,kevin.ratanawira@cleanpeakenergy.com.au,SMTP,Kevin Ratanawira
+,hassan.,,khafagy,,Photon Energy,hassan.khafagy@photonenergy.com,SMTP,hassan.khafagy@photonenergy.com
+,Leanne,,Lemierz,,Fortesque accounts,leanne.lemierz@fortescue.com,SMTP,Leanne Lemierz
+,DOUGLAS,NAVARRO,MÜLLER,,EDP,DOUGLAS.MULLERNAVARRO@EDP.COM,SMTP,DOUGLAS NAVARRO MÜLLER
+,Barry,|,Identimark,,Identimark,barry@Identimark.com,SMTP,Barry | Identimark
+,Percival_Andrew,,TS/SA,,TRINA,andrew.percival@trinasolar.com,SMTP,Percival_Andrew TS/SA
+,Boyd,,Cousins,,Pilecom Equipment,boyd@pilecomequipment.com.au,SMTP,Boyd Cousins
+,Karishma,,Lakhapate,,CleanPeak,karishma.lakhapate@cleanpeakenergy.com.au,SMTP,Karishma Lakhapate
+,jccobol,,,,Naturgy,jccobol@naturgy.com,SMTP,jccobol@naturgy.com
+,Vettel,,Wu,,Billion Watts,vettelwu@billionwatts.com.tw,SMTP,Vettel Wu
+,Elton,,Lin,,Billion Watts,eltonlin@billionwatts.com.tw,SMTP,'Elton Lin'
+,Jason,,Todd,,DTI,JasonTodd@dtinfrastructure.com.au,SMTP,Jason Todd
+,James,,Chandler,,DTI,JamesChandler@dtinfrastructure.com.au,SMTP,James Chandler
+,suzie.,,hunter,,Ranuigen,suzie.hunter@ranuigen.co.nz,SMTP,suzie.hunter@ranuigen.co.nz
+,Sunil,,Parash,,Metlen,Sunil.Parash@mytilineos.com,SMTP,"'Parash, Sunil'"
+,ALBERT,,NGO,,EDP Renewables,albert.ngo@edp.com,SMTP,ALBERT NGO
+,DAVID,ALGAR,PALACIOS,,Elecnor,dalgar@elecnor.com,SMTP,DAVID ALGAR PALACIOS
+,Robert,,Chew,(GEA),Gamuda,KahHinChew@gamuda.com.au,SMTP,Robert Chew (GEA)
+,Love,,Jadvani,,Astroenergy/Chint,Love.Jadvani@Astronergy.com,SMTP,Love Jadvani
+,Chen(陈亮),,Ben,,Astroenergy/Chint,Ben.Chen@Astronergy.com,SMTP,Ben Chen(陈亮)
+,Lu(芦星月),,Alanis,,Astroenergy/Chint,xingyue.lu@Astronergy.com,SMTP,Alanis Lu(芦星月)
+,Huang(黄瑞明),,Ruiming,,Astroenergy/Chint,ruiming.huang@Astronergy.com,SMTP,Ruiming Huang(黄瑞明)
+,Stuart,,Johnson,,Clean Peak,stuart.johnson@cleanpeakenergy.com.au,SMTP,Stuart Johnson
+,Behzad,,Farzipour,,PCL,bfarzipour@pcl.com,SMTP,Behzad Farzipour
+,Stephen,,March,,PCL,SMarch@pcl.com,SMTP,Stephen March
+,Andrew,,Karbowiak,,AUSTUBE Mills,andrew.karbowiak@austubemills.com,SMTP,Andrew Karbowiak
+,Balaji,,Rampoori,,BP Lightsource,balaji.rampoori@lightsourcebp.com,SMTP,Balaji Rampoori
+,ALBERTO,TORRES,ALBERT,,EDP Renewables,ALBERTO.TORRESALBERT@EDP.COM,SMTP,ALBERTO TORRES ALBERT
+,Niki,,Inokai,,Allset Energy,niki@allsetenergy.com.au,SMTP,Niki Inokai
+,Sasa,,Kikic,,Aggreko,sasa.kikic@aggreko.com,SMTP,Sasa Kikic
+,adrian.,,garcia,,Lightsource BP,adrian.garcia@lightsourcebp.com,SMTP,adrian.garcia@lightsourcebp.com
+,Taijas,,Kumar,,Lightsource BP,taijas.kumar@lightsourcebp.com,SMTP,Taijas Kumar
+,Kevin,,Jonas,,UGL,kevin.jonas@ugllimited.com,SMTP,Kevin Jonas
+,Alex,,Peacock,,Clean Peak,alex.peacock@cleanpeakenergy.com.au,SMTP,Alex Peacock
+,Jose,,Quizhpe,,SEARO,jose.quizhpe@searo.com.au,SMTP,Jose Quizhpe
+,artemio.,,bulan,,SHOALS,artemio.bulan@shoals.com,SMTP,artemio.bulan@shoals.com
+,Deng,,Chunjing,,Sungrow,dengchunjing@sungrow-re.com,SMTP,Deng Chunjing
+,Ryan,,Moon,,Samsung,ryan.moon@samsung.com,SMTP,문철환
+,James,,Timoney,,DP World,/o=ExchangeLabs/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Recipients/cn=2a177ffe2b454110ae088b39bdd8543e-7dceb849-25,EX,James Timoney (james.timoney@dpworld.com)
+,MISHKA,,TALENT,,EDP Renewables,MISHKA.TALENT@EDP.COM,SMTP,MISHKA TALENT
+,Leigh,,Newbery,,Birdwood,leigh@birdwoodenergy.com,SMTP,Leigh Newbery
+,Daniel,,Howard,,Birdwood Energy,daniel.howard@birdwoodenergy.com,SMTP,Daniel Howard
+,Tenzin,,Crouch,,Luminous,tcrouch@luminousrobotics.com,SMTP,Tenzin Crouch
+,Brian,,O'Rorke,,Ranui Generation,brian@ranuigen.co.nz,SMTP,Brian O'Rorke
+,,,Des Wilson,,Monford,des.w@monfordgroup.com,SMTP,Des Wilson
+,Zachory.,,c,,Monford,Zachory.c@monfordgroup.com,SMTP,Zachory.c@monfordgroup.com
+,Scott.,,k,,Monford,Scott.k@monfordgroup.com,SMTP,Scott.k@monfordgroup.com
+,Finnian,,McGowan,,Lightforce Solar,Finnian.McGowan@lightforce.co.nz,SMTP,Finnian  McGowan
