@@ -20,7 +20,7 @@
  * (POST /projects/enrich-contacts), never during scanning.
  */
 
-import { db, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable } from "@workspace/db";
+import { db, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable, pvhContactsTable, type PvhContact } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger";
 
@@ -1132,6 +1132,68 @@ function isEmailDomainRelated(email: string, companyName: string | null | undefi
   return false;
 }
 
+/**
+ * Match a developer/company name against the PVH contacts list.
+ * Returns the best-matching contact (by organization name) or null.
+ * Matching is case-insensitive and tolerates common suffixes (Pty, Ltd, Energy, etc.).
+ */
+function matchFallbackContact(
+  developer: string | null,
+  contacts: PvhContact[]
+): { name: string; email: string } | null {
+  if (!developer || contacts.length === 0) return null;
+
+  const normalize = (s: string) =>
+    s.toLowerCase()
+      .replace(/\b(pty|ltd|limited|group|holdings|inc|corp|co|company|australia|energy|solar|power|renewables|renewable|green|clean|au|nz)\b/g, "")
+      .replace(/[^a-z0-9]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const devNorm = normalize(developer);
+  if (!devNorm) return null;
+
+  let bestContact: PvhContact | null = null;
+  let bestScore = 0;
+
+  for (const c of contacts) {
+    if (!c.organizationName || !c.email1) continue;
+    const orgNorm = normalize(c.organizationName);
+    if (!orgNorm) continue;
+
+    let score = 0;
+
+    // Exact normalized match — highest score
+    if (devNorm === orgNorm) {
+      score = 100;
+    } else if (devNorm.includes(orgNorm) || orgNorm.includes(devNorm)) {
+      // One contains the other
+      score = 80;
+    } else {
+      // Word-overlap scoring
+      const devWords = devNorm.split(" ").filter(w => w.length >= 3);
+      const orgWords = new Set(orgNorm.split(" ").filter(w => w.length >= 3));
+      const overlap = devWords.filter(w => orgWords.has(w)).length;
+      if (overlap > 0) {
+        score = (overlap / Math.max(devWords.length, orgWords.size)) * 60;
+      }
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestContact = c;
+    }
+  }
+
+  // Require at least a reasonable match threshold
+  if (bestScore < 40 || !bestContact?.email1) return null;
+
+  const nameParts = [bestContact.firstName, bestContact.lastName].filter(Boolean);
+  const name = nameParts.length > 0 ? nameParts.join(" ") : (bestContact.organizationName ?? "");
+
+  return { name, email: bestContact.email1 };
+}
+
 function extractEmailsFromHtml(html: string): Array<{ email: string; context: string }> {
   const text = html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -1737,6 +1799,9 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       if (r.sourceUrl) existingByUrl.set(r.sourceUrl, r.id);
     }
 
+    // Load PVH fallback contacts once for the whole scan
+    const pvhContacts = await db.select().from(pvhContactsTable);
+
     // Insert / record every project found by this scan (deduplicate by sourceUrl)
     for (const project of allScraped) {
       // Pre-insert quality gate — skip noise
@@ -1768,6 +1833,20 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
 
       try {
         if (isNew) {
+          // Apply PVH fallback contact if the project has no contact info
+          let contactName = project.contactName;
+          let contactEmail = project.contactEmail;
+          let contactPhone = project.contactPhone;
+
+          if (!contactEmail && !contactName && project.developer) {
+            const fallback = matchFallbackContact(project.developer, pvhContacts);
+            if (fallback) {
+              contactName = fallback.name;
+              contactEmail = fallback.email;
+              logger.info({ project: project.name, developer: project.developer, fallbackEmail: fallback.email }, "Applied PVH fallback contact");
+            }
+          }
+
           const [inserted] = await db.insert(projectsTable).values({
             name: project.name,
             description: project.description,
@@ -1780,9 +1859,9 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
             sourceUrl: project.sourceUrl,
             sourceName: project.sourceName,
             announcedDate: project.announcedDate,
-            contactName: project.contactName,
-            contactEmail: project.contactEmail,
-            contactPhone: project.contactPhone,
+            contactName,
+            contactEmail,
+            contactPhone,
             scanId,
           }).returning({ id: projectsTable.id });
           projectId = inserted.id;
