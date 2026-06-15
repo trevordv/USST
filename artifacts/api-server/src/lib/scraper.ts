@@ -607,8 +607,8 @@ async function fetchAltEnergyArticleBody(url: string): Promise<string> {
 
 /** Solar-related keywords to check in AltEnergy article titles */
 const SOLAR_TITLE_KEYWORDS = [
-  "solar", "pv", "photovoltaic", "renewable", "wind farm", "battery",
-  "bess", "energy storage", "green energy", "clean energy",
+  "solar", "pv", "photovoltaic", "hybrid solar",
+  "solar farm", "solar park", "solar project", "solar and battery", "solar bess",
 ];
 
 // ---------------------------------------------------------------------------
@@ -844,19 +844,41 @@ export async function scrapeAltEnergy(
       seenUrls.add(newsletter.url);
 
       try {
-        const text = await fetchWattNewsArticleText(newsletter.url);
-        // Extract "NEW PROJECT:" and "PROJECT UPDATE:" sections from the newsletter text
+        const newsletterHtml = await fetchAltEnergy(newsletter.url);
+
+        // 3a. Parse the Project Milestones Summary table (top of every newsletter).
+        //     This catches all newly-added projects even if they have no dedicated article section.
+        const milestoneProjs = parseWattNewsMilestonesTable(newsletterHtml, newsletter.date, newsletter.url);
+        for (const p of milestoneProjs) {
+          if (!seenUrls.has(p.sourceUrl)) {
+            seenUrls.add(p.sourceUrl);
+            projects.push(p);
+            logger.info({ name: p.name }, "Watt News milestones table: project found");
+          }
+        }
+
+        // 3b. Parse "NEW PROJECT:" and "PROJECT UPDATE:" article sections from the body text.
+        //     Strip HTML and increase limit to capture full newsletter content.
+        const text = newsletterHtml
+          .replace(/<script[\s\S]*?<\/script>/gi, " ")
+          .replace(/<style[\s\S]*?<\/style>/gi, " ")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 10000);
+
         const sections = text.split(/(?=NEW PROJECT:|PROJECT UPDATE:|PROJECT MILESTONE:)/i);
         for (const section of sections) {
           const isNew = /^NEW PROJECT:/i.test(section);
           const isUpdate = /^PROJECT UPDATE:/i.test(section);
           if (!isNew && !isUpdate) continue;
 
-          const snippet = section.slice(0, 500);
+          const snippet = section.slice(0, 700);
           const sectionLower = snippet.toLowerCase();
+
+          // Must have a solar keyword in the section
           if (!SOLAR_TITLE_KEYWORDS.some((kw) => sectionLower.includes(kw))) continue;
 
-          // Extract project name from first line after the label
           const nameMatch = section.match(/^(?:NEW PROJECT|PROJECT UPDATE|PROJECT MILESTONE):\s*([^\n.]+)/i);
           const name = nameMatch?.[1]?.trim();
           if (!name || name.length < 5) continue;
@@ -865,16 +887,19 @@ export async function scrapeAltEnergy(
           if (seenUrls.has(projectUrl)) continue;
           seenUrls.add(projectUrl);
 
+          const capacityMw = extractCapacity(snippet);
+          if (capacityMw == null || capacityMw < 5) continue;
+
           projects.push({
             name,
             description: snippet.replace(/^[^\n]+\n/, "").trim().slice(0, 600),
-            capacityMw: extractCapacity(snippet),
+            capacityMw,
             developer: extractDeveloper(snippet),
             location: extractLocation(snippet, "AU"),
             country: "AU",
             status: isNew ? "announced" : "under_development",
-            sourceUrl: newsletter.url,
-            sourceName: "AltEnergy Watts News",
+            sourceUrl: projectUrl,
+            sourceName: "AltEnergy – Watts News",
             announcedDate: newsletter.date,
             contactName: null,
             contactEmail: null,
@@ -1044,6 +1069,95 @@ function isWindProject(name: string, description?: string | null): boolean {
   const desc = (description ?? "").toLowerCase();
   if (desc.includes("turbine")) return true;
   return false;
+}
+
+/**
+ * Returns true only if the project has a solar component (solar-only or solar+BESS hybrid).
+ * Standalone BESS / battery-only projects return false and are rejected at ingest.
+ */
+function hasSolarComponent(name: string, description?: string | null): boolean {
+  const text = `${name} ${description ?? ""}`;
+  return /\b(solar|photovoltaic|\bpv\b)\b/i.test(text);
+}
+
+/**
+ * Parse the Project Milestones Summary table from raw Watts News HTML.
+ * This table appears at the top of every newsletter and lists all projects
+ * that changed status in the past week, including newly-added ones.
+ * Extracts solar/hybrid projects that are newly proposed or under assessment.
+ */
+function parseWattNewsMilestonesTable(
+  html: string,
+  newsletterDate: string,
+  newsletterUrl: string
+): ScrapedProject[] {
+  const projects: ScrapedProject[] = [];
+
+  for (const tableMatch of html.matchAll(/<table[^>]*>([\s\S]*?)<\/table>/gi)) {
+    const rows = [...tableMatch[1].matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
+
+    for (const rowMatch of rows) {
+      const cells = [...rowMatch[1].matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi)]
+        .map(c =>
+          c[1]
+            .replace(/<[^>]+>/g, " ")
+            .replace(/&amp;/g, "&")
+            .replace(/&nbsp;/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+        );
+
+      if (cells.length < 4) continue;
+
+      const [projectName, statusRaw, stateRaw, developerRaw, descRaw = ""] = cells;
+
+      if (!projectName || projectName.length < 4) continue;
+      // Skip header rows
+      if (/^\s*(project|status|developer|state|country)\s*$/i.test(projectName)) continue;
+
+      // Only newly added / proposed / being assessed — skip Generating / Approved / Withdrawn
+      const statusLower = statusRaw.toLowerCase();
+      const isNewOrProposed =
+        statusLower.includes("added to") ||
+        statusLower.includes("proposed") ||
+        statusLower.includes("being assessed") ||
+        statusLower.includes("under assessment") ||
+        statusLower.includes("split from");
+      if (!isNewOrProposed) continue;
+
+      const fullText = `${projectName} ${descRaw}`;
+
+      // Must have a solar component
+      if (!hasSolarComponent(projectName, descRaw)) continue;
+      // Reject wind
+      if (isWindProject(projectName, descRaw)) continue;
+
+      const capacityMw = extractCapacity(fullText);
+      if (capacityMw == null || capacityMw < 5) continue;
+
+      const country: "AU" | "NZ" = /\bNZ\b/.test(stateRaw) ? "NZ" : "AU";
+      const developer = developerRaw.length > 1 && developerRaw.length < 100 ? developerRaw : null;
+      const isUnderDev = statusLower.includes("being assessed") || statusLower.includes("under assessment");
+
+      projects.push({
+        name: projectName,
+        description: (descRaw || fullText).slice(0, 600),
+        capacityMw,
+        developer,
+        location: stateRaw && stateRaw.length < 30 ? stateRaw : null,
+        country,
+        status: isUnderDev ? "under_development" : "announced",
+        sourceUrl: `${newsletterUrl}#milestone-${encodeURIComponent(projectName.slice(0, 40))}`,
+        sourceName: "AltEnergy – Watts News",
+        announcedDate: newsletterDate,
+        contactName: null,
+        contactEmail: null,
+        contactPhone: null,
+      });
+    }
+  }
+
+  return projects;
 }
 
 /**
@@ -1821,6 +1935,12 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       }
       // No wind projects — catch turbines even when name doesn't contain "wind"
       if (isWindProject(project.name, project.description)) {
+        if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
+        continue;
+      }
+      // Only solar or hybrid (solar + BESS) — reject standalone BESS / battery-only projects
+      if (!hasSolarComponent(project.name, project.description)) {
+        logger.info({ project: project.name }, "Quality gate: no solar component — BESS-only rejected");
         if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
         continue;
       }

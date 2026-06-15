@@ -92,7 +92,8 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 
 ## User preferences
 
-- Target: AU/NZ utility-scale solar and BESS projects ≥5MW. No wind.
+- Target: AU/NZ **utility-scale solar and hybrid (solar + BESS) projects ≥5MW only**. No standalone BESS/battery-only projects. No wind (or wind + BESS).
+- A project must have a solar component (solar-only or solar+BESS hybrid) to be ingested. The `hasSolarComponent()` gate in `scraper.ts` enforces this at ingest.
 - List only projects where the capacity is mentioned for example 100MW.
 - Clean data is paramount — no news articles, no operational updates, no non-AU/NZ projects.
 - The scan must be restricted to **only the approved sources listed above**. No broad Google Search, no developer page scraping, no ad-hoc sites.
