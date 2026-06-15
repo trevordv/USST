@@ -6,6 +6,7 @@ export const accessTokensTable = pgTable("access_tokens", {
   id: serial("id").primaryKey(),
   token: text("token").notNull().unique(),
   label: text("label"),
+  recipientEmail: text("recipient_email"),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   revoked: boolean("revoked").notNull().default(false),
