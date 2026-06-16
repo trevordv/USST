@@ -1454,20 +1454,30 @@ interface LushaContact {
 }
 
 interface LushaEnrichedContact {
-  emails?: Array<{ email: string; type?: string }>;
-  phones?: Array<{ localNumber?: string; internationalNumber?: string; type?: string }>;
   firstName?: string;
   lastName?: string;
+  emails?: Array<{ email: string; type?: string; confidence?: string }>;
+  phones?: Array<{ number?: string; type?: string; doNotCall?: boolean }>;
 }
 
 interface LushaResponse {
-  data?: {
-    contacts?: Record<string, LushaEnrichedContact>;
-  };
+  results?: LushaEnrichedContact[];
+  billing?: { creditsCharged?: number; resultsReturned?: number };
 }
 
 /**
  * Call Lusha v3 search-and-enrich in batches of up to 100 contacts.
+ *
+ * Real API shape (confirmed):
+ *   POST https://api.lusha.com/v3/contacts/search-and-enrich
+ *   Header: api_key: <key>
+ *   Body:   { contacts: [...], reveal: ["emails", "phones"] }
+ *   Response: { results: [ { emails: [{email, type, confidence}], phones: [{number, type}], firstName, lastName }, ... ] }
+ *
+ * Results are positionally aligned with the input contacts array.
+ * Phone numbers may be partially masked (e.g. "+61 415...") on lower-tier plans —
+ * those are discarded so we never save truncated data.
+ *
  * Returns a map from input index → enriched result (email + phone + name).
  */
 async function callLushaBulkEnrich(
@@ -1490,7 +1500,7 @@ async function callLushaBulkEnrich(
         },
         body: JSON.stringify({
           contacts: batch,
-          reveal: { revealEmails: true, revealPhones: true },
+          reveal: ["emails", "phones"],
         }),
         signal: AbortSignal.timeout(30_000),
       });
@@ -1502,40 +1512,40 @@ async function callLushaBulkEnrich(
       }
 
       const json = (await resp.json()) as LushaResponse;
-      const enriched = json?.data?.contacts ?? {};
+      const enrichedList = json?.results ?? [];
 
-      // Lusha returns contacts keyed by their index (0-based) within this batch
-      for (const [idxStr, contact] of Object.entries(enriched)) {
-        const batchIdx = parseInt(idxStr, 10);
-        const globalIdx = start + batchIdx;
+      let batchFound = 0;
+      for (let i = 0; i < enrichedList.length; i++) {
+        const contact = enrichedList[i];
+        if (!contact) continue;
 
         const emails = contact.emails ?? [];
         const phones = contact.phones ?? [];
 
-        // Prefer personal/direct emails; fall back to first available
+        // Prefer work emails with highest confidence; fall back to any valid address
         const bestEmail =
-          emails.find((e) => e.type === "personal")?.email ??
+          emails.find((e) => e.confidence === "A+" && e.type === "work")?.email ??
           emails.find((e) => e.type === "work")?.email ??
           emails[0]?.email;
 
         if (!bestEmail) continue;
 
-        const bestPhone =
-          phones.find((p) => p.type === "mobile")?.internationalNumber ??
-          phones.find((p) => p.type === "mobile")?.localNumber ??
-          phones[0]?.internationalNumber ??
-          phones[0]?.localNumber ??
+        // Discard truncated/masked phone numbers (Lusha shows "+61 415..." on some plans)
+        const fullPhone =
+          phones.find((p) => p.type === "mobile" && p.number && !p.number.includes("..."))?.number ??
+          phones.find((p) => p.number && !p.number.includes("..."))?.number ??
           null;
 
         const firstName = contact.firstName ?? "";
         const lastName = contact.lastName ?? "";
         const name = [firstName, lastName].filter(Boolean).join(" ") || null;
 
-        results.set(globalIdx, { name, email: bestEmail, phone: bestPhone ?? null });
+        results.set(start + i, { name, email: bestEmail, phone: fullPhone ?? null });
+        batchFound++;
       }
 
       logger.info(
-        { batchStart: start, batchSize: batch.length, found: Object.keys(enriched).length },
+        { batchStart: start, batchSize: batch.length, found: batchFound, credits: json?.billing?.creditsCharged },
         "Lusha batch enrichment complete",
       );
     } catch (err) {
