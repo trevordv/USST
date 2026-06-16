@@ -1444,11 +1444,114 @@ async function scrapeUrlForContact(url: string, companyName?: string | null): Pr
 
 type ContactResult = { name: string | null; email: string; phone: string | null };
 
+// ── Lusha API types ────────────────────────────────────────────────────────
+
+interface LushaContact {
+  firstName?: string;
+  lastName?: string;
+  companyName?: string;
+  companyDomain?: string;
+}
+
+interface LushaEnrichedContact {
+  emails?: Array<{ email: string; type?: string }>;
+  phones?: Array<{ localNumber?: string; internationalNumber?: string; type?: string }>;
+  firstName?: string;
+  lastName?: string;
+}
+
+interface LushaResponse {
+  data?: {
+    contacts?: Record<string, LushaEnrichedContact>;
+  };
+}
+
+/**
+ * Call Lusha v3 search-and-enrich in batches of up to 100 contacts.
+ * Returns a map from input index → enriched result (email + phone + name).
+ */
+async function callLushaBulkEnrich(
+  contacts: LushaContact[],
+): Promise<Map<number, ContactResult>> {
+  const apiKey = process.env.LUSHA_API_KEY;
+  if (!apiKey || contacts.length === 0) return new Map();
+
+  const results = new Map<number, ContactResult>();
+  const BATCH_SIZE = 100;
+
+  for (let start = 0; start < contacts.length; start += BATCH_SIZE) {
+    const batch = contacts.slice(start, start + BATCH_SIZE);
+    try {
+      const resp = await fetch("https://api.lusha.com/v3/contacts/search-and-enrich", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "api_key": apiKey,
+        },
+        body: JSON.stringify({
+          contacts: batch,
+          reveal: { revealEmails: true, revealPhones: true },
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+
+      if (!resp.ok) {
+        const body = await resp.text();
+        logger.warn({ status: resp.status, body }, "Lusha API error response");
+        continue;
+      }
+
+      const json = (await resp.json()) as LushaResponse;
+      const enriched = json?.data?.contacts ?? {};
+
+      // Lusha returns contacts keyed by their index (0-based) within this batch
+      for (const [idxStr, contact] of Object.entries(enriched)) {
+        const batchIdx = parseInt(idxStr, 10);
+        const globalIdx = start + batchIdx;
+
+        const emails = contact.emails ?? [];
+        const phones = contact.phones ?? [];
+
+        // Prefer personal/direct emails; fall back to first available
+        const bestEmail =
+          emails.find((e) => e.type === "personal")?.email ??
+          emails.find((e) => e.type === "work")?.email ??
+          emails[0]?.email;
+
+        if (!bestEmail) continue;
+
+        const bestPhone =
+          phones.find((p) => p.type === "mobile")?.internationalNumber ??
+          phones.find((p) => p.type === "mobile")?.localNumber ??
+          phones[0]?.internationalNumber ??
+          phones[0]?.localNumber ??
+          null;
+
+        const firstName = contact.firstName ?? "";
+        const lastName = contact.lastName ?? "";
+        const name = [firstName, lastName].filter(Boolean).join(" ") || null;
+
+        results.set(globalIdx, { name, email: bestEmail, phone: bestPhone ?? null });
+      }
+
+      logger.info(
+        { batchStart: start, batchSize: batch.length, found: Object.keys(enriched).length },
+        "Lusha batch enrichment complete",
+      );
+    } catch (err) {
+      logger.warn({ err, batchStart: start }, "Lusha bulk enrich request failed");
+    }
+  }
+
+  return results;
+}
+
 /**
  * Enrich projects that are missing personal contact details.
- * Phase 1: Scrape developer/project websites directly.
- * Phase 2: Apify Google Search → visit top result URLs.
- * Phase 3: LinkedIn profile search for developers with generic contacts.
+ * Phase 1:   Scrape developer/project websites directly.
+ * Phase 2:   Apify Google Search → visit top result URLs.
+ * Phase 2.5: Lusha bulk search-and-enrich (company name + domain).
+ * Phase 3:   LinkedIn profile search for developers with generic contacts.
  */
 export async function enrichMissingContacts(runId?: number): Promise<{ checked: number; updated: number }> {
   const GENERIC_PREFIXES = [
@@ -1615,6 +1718,46 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
       }
     } catch (err) {
       logger.warn({ err }, "Contact enrichment: Phase 2 Apify failed");
+    }
+  }
+
+  // ── Phase 2.5: Lusha bulk search-and-enrich ──────────────────────────────
+  const lushaKey = process.env.LUSHA_API_KEY;
+  const phaseTwoPointFive = noDomainGroups.filter(([k]) => !enrichedKeys.has(k));
+  if (phaseTwoPointFive.length > 0 && lushaKey) {
+    logger.info({ count: phaseTwoPointFive.length }, "Contact enrichment: Phase 2.5 Lusha bulk enrich");
+
+    const lushaContacts: LushaContact[] = phaseTwoPointFive.map(([, g]) => {
+      const dev = g.projects[0].developer ?? undefined;
+      const domain = g.domain ?? undefined;
+      return {
+        companyName: dev,
+        companyDomain: domain,
+      };
+    });
+
+    try {
+      const lushaResults = await callLushaBulkEnrich(lushaContacts);
+
+      for (const [idx, result] of lushaResults) {
+        const entry = phaseTwoPointFive[idx];
+        if (!entry) continue;
+        const [devKey, g] = entry;
+        if (enrichedKeys.has(devKey)) continue;
+
+        await applyContact(g, {
+          name: result.name ?? g.existingName ?? null,
+          email: result.email,
+          phone: result.phone,
+        });
+        enrichedKeys.add(devKey);
+        logger.info(
+          { devKey, email: result.email, phone: result.phone, name: result.name },
+          "Contact enriched via Lusha",
+        );
+      }
+    } catch (err) {
+      logger.warn({ err }, "Contact enrichment: Phase 2.5 Lusha failed");
     }
   }
 
