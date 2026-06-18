@@ -1740,10 +1740,20 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     const lushaContacts: LushaContact[] = phaseTwoPointFive.map(([, g]) => {
       const dev = g.projects[0].developer ?? undefined;
       const domain = g.domain ?? undefined;
-      return {
-        companyName: dev,
-        companyDomain: domain,
-      };
+      const contact: LushaContact = { companyName: dev, companyDomain: domain };
+
+      // If we already have a person name (e.g. from AltEnergy), pass it to Lusha
+      // for a much more precise match. Split on the first space only.
+      const fullName = g.existingName?.trim();
+      if (fullName && !/team|group|office|crew|solar|renewables|energy/i.test(fullName)) {
+        const spaceIdx = fullName.indexOf(" ");
+        if (spaceIdx > 0) {
+          contact.firstName = fullName.slice(0, spaceIdx);
+          contact.lastName = fullName.slice(spaceIdx + 1);
+        }
+      }
+
+      return contact;
     });
 
     try {
