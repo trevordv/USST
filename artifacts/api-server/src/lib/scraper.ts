@@ -1453,6 +1453,18 @@ interface LushaContact {
   companyDomain?: string;
 }
 
+interface LushaProspectingContact {
+  firstName?: string;
+  lastName?: string;
+  jobTitle?: string;
+}
+
+interface LushaProspectingResponse {
+  data?: { contacts?: LushaProspectingContact[] };
+  contacts?: LushaProspectingContact[];
+  results?: LushaProspectingContact[];
+}
+
 interface LushaEnrichedContact {
   firstName?: string;
   lastName?: string;
@@ -1557,11 +1569,142 @@ async function callLushaBulkEnrich(
 }
 
 /**
+ * Lusha Prospecting: find contacts at a company where we don't know the person's name.
+ *
+ * Three-step flow (confirmed endpoint shapes):
+ *   1. POST /prospecting/filters/companies/names  { text }  → resolves company ID + fqdn
+ *   2. POST /prospecting/contact/search  { filters.companies.include.names: [name] }  → list of contacts (no PII)
+ *   3. POST /v3/contacts/search-and-enrich  { firstName, lastName, companyName, companyDomain }  → emails + phones
+ *
+ * Picks the most sales-relevant contact (Business Developer > Project Director > CEO > Engineer).
+ * Returns null if no credits, company not found, or no contacts.
+ */
+async function callLushaProspecting(
+  companyName: string,
+  companyDomain: string | null,
+): Promise<ContactResult | null> {
+  const apiKey = process.env.LUSHA_API_KEY;
+  if (!apiKey) return null;
+
+  // Job-title relevance scores — higher = better sales contact
+  const TITLE_SCORES: Array<[RegExp, number]> = [
+    [/business develop/i, 10],
+    [/project director|head of (project|develop)/i, 9],
+    [/development director|director of develop/i, 9],
+    [/managing director|chief executive|^ceo$/i, 8],
+    [/general manager|country manager/i, 7],
+    [/project manager|development manager/i, 6],
+    [/commercial manager|bd manager/i, 5],
+  ];
+
+  function titleScore(title: string): number {
+    for (const [re, score] of TITLE_SCORES) {
+      if (re.test(title)) return score;
+    }
+    return 1;
+  }
+
+  try {
+    // Step 1 — resolve company ID
+    const compResp = await fetch("https://api.lusha.com/prospecting/filters/companies/names", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "api_key": apiKey },
+      body: JSON.stringify({ text: companyName }),
+    });
+    if (!compResp.ok) {
+      logger.warn({ status: compResp.status, companyName }, "Lusha: company name lookup failed");
+      return null;
+    }
+    const companies = (await compResp.json()) as Array<{
+      companyId?: number; name?: string; fqdn?: string; has_prospecting_contacts?: boolean;
+    }>;
+    const co = companies[0];
+    if (!co?.companyId || !co.has_prospecting_contacts) return null;
+
+    // Step 2 — search contacts at this company (no PII returned, no credits charged)
+    const searchResp = await fetch("https://api.lusha.com/prospecting/contact/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "api_key": apiKey },
+      body: JSON.stringify({
+        filters: {
+          companies: { include: { names: [co.name ?? companyName] } },
+        },
+        pages: { page: 0, size: 10 },
+      }),
+    });
+    if (!searchResp.ok) {
+      logger.warn({ status: searchResp.status, companyName }, "Lusha: prospecting contact search failed");
+      return null;
+    }
+    const searchData = (await searchResp.json()) as LushaProspectingResponse;
+    const candidates: LushaProspectingContact[] =
+      searchData.data?.contacts ?? searchData.contacts ?? searchData.results ?? [];
+    if (candidates.length === 0) return null;
+
+    // Pick the most sales-relevant contact
+    const best = candidates
+      .filter((c) => c.firstName && c.lastName)
+      .sort((a, b) => titleScore(b.jobTitle ?? "") - titleScore(a.jobTitle ?? ""))[0];
+    if (!best?.firstName || !best.lastName) return null;
+
+    logger.info(
+      { companyName, firstName: best.firstName, lastName: best.lastName, title: best.jobTitle },
+      "Lusha prospecting: enriching best contact",
+    );
+
+    // Step 3 — enrich that specific person to reveal email + phone
+    const enrichResp = await fetch("https://api.lusha.com/v3/contacts/search-and-enrich", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "api_key": apiKey },
+      body: JSON.stringify({
+        contacts: [{
+          firstName: best.firstName,
+          lastName: best.lastName,
+          companyName: co.name ?? companyName,
+          companyDomain: co.fqdn ?? companyDomain ?? undefined,
+        }],
+        reveal: ["emails", "phones"],
+      }),
+    });
+    if (!enrichResp.ok) {
+      logger.warn({ status: enrichResp.status, companyName }, "Lusha: prospecting enrich step failed");
+      return null;
+    }
+    const enrichData = (await enrichResp.json()) as LushaResponse;
+    const enriched = enrichData.results?.[0];
+    if (!enriched || ("error" in enriched)) return null;
+
+    const emails = enriched.emails ?? [];
+    const phones = enriched.phones ?? [];
+
+    const bestEmail =
+      emails.find((e) => e.confidence === "A+" && e.type === "work")?.email ??
+      emails.find((e) => e.type === "work")?.email ??
+      emails[0]?.email;
+    if (!bestEmail) return null;
+
+    const fullPhone =
+      phones.find((p) => p.type === "mobile" && p.number && !p.number.includes("..."))?.number ??
+      phones.find((p) => p.number && !p.number.includes("..."))?.number ??
+      null;
+
+    const name = [enriched.firstName ?? best.firstName, enriched.lastName ?? best.lastName]
+      .filter(Boolean).join(" ") || null;
+
+    return { name, email: bestEmail, phone: fullPhone ?? null };
+  } catch (err) {
+    logger.warn({ err, companyName }, "Lusha prospecting threw");
+    return null;
+  }
+}
+
+/**
  * Enrich projects that are missing personal contact details.
- * Phase 1:   Scrape developer/project websites directly.
- * Phase 2:   Apify Google Search → visit top result URLs.
- * Phase 2.5: Lusha bulk search-and-enrich (company name + domain).
- * Phase 3:   LinkedIn profile search for developers with generic contacts.
+ * Phase 1:    Scrape developer/project websites directly.
+ * Phase 2:    Apify Google Search → visit top result URLs.
+ * Phase 2.5a: Lusha search-and-enrich for contacts where we already have a person name.
+ * Phase 2.5b: Lusha Prospecting for companies where we have no person name at all.
+ * Phase 3:    LinkedIn profile search for developers with generic contacts.
  */
 export async function enrichMissingContacts(runId?: number): Promise<{ checked: number; updated: number }> {
   const GENERIC_PREFIXES = [
@@ -1731,53 +1874,89 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     }
   }
 
-  // ── Phase 2.5: Lusha bulk search-and-enrich ──────────────────────────────
+  // ── Phase 2.5a: Lusha search-and-enrich (contacts with a known person name) ─
+  //   search-and-enrich REQUIRES firstName + lastName — sending company-only returns 400.
   const lushaKey = process.env.LUSHA_API_KEY;
-  const phaseTwoPointFive = noDomainGroups.filter(([k]) => !enrichedKeys.has(k));
-  if (phaseTwoPointFive.length > 0 && lushaKey) {
-    logger.info({ count: phaseTwoPointFive.length }, "Contact enrichment: Phase 2.5 Lusha bulk enrich");
+  const lushaPool = noDomainGroups.filter(([k]) => !enrichedKeys.has(k));
 
-    const lushaContacts: LushaContact[] = phaseTwoPointFive.map(([, g]) => {
-      const dev = g.projects[0].developer ?? undefined;
+  if (lushaPool.length > 0 && lushaKey) {
+    // Split: known-name entries go to bulk search-and-enrich; nameless entries go to prospecting
+    type NamedEntry  = { idx: number; devKey: string; g: GroupEntry; contact: LushaContact };
+    const namedEntries: NamedEntry[] = [];
+    const namelessEntries: Array<[string, GroupEntry]> = [];
+
+    for (let i = 0; i < lushaPool.length; i++) {
+      const [devKey, g] = lushaPool[i];
+      const dev    = g.projects[0].developer ?? undefined;
       const domain = g.domain ?? undefined;
       const contact: LushaContact = { companyName: dev, companyDomain: domain };
 
-      // If we already have a person name (e.g. from AltEnergy), pass it to Lusha
-      // for a much more precise match. Split on the first space only.
       const fullName = g.existingName?.trim();
       if (fullName && !/team|group|office|crew|solar|renewables|energy/i.test(fullName)) {
         const spaceIdx = fullName.indexOf(" ");
         if (spaceIdx > 0) {
           contact.firstName = fullName.slice(0, spaceIdx);
-          contact.lastName = fullName.slice(spaceIdx + 1);
+          contact.lastName  = fullName.slice(spaceIdx + 1);
         }
       }
 
-      return contact;
-    });
-
-    try {
-      const lushaResults = await callLushaBulkEnrich(lushaContacts);
-
-      for (const [idx, result] of lushaResults) {
-        const entry = phaseTwoPointFive[idx];
-        if (!entry) continue;
-        const [devKey, g] = entry;
-        if (enrichedKeys.has(devKey)) continue;
-
-        await applyContact(g, {
-          name: result.name ?? g.existingName ?? null,
-          email: result.email,
-          phone: result.phone,
-        });
-        enrichedKeys.add(devKey);
-        logger.info(
-          { devKey, email: result.email, phone: result.phone, name: result.name },
-          "Contact enriched via Lusha",
-        );
+      if (contact.firstName && contact.lastName) {
+        namedEntries.push({ idx: i, devKey, g, contact });
+      } else {
+        namelessEntries.push([devKey, g]);
       }
-    } catch (err) {
-      logger.warn({ err }, "Contact enrichment: Phase 2.5 Lusha failed");
+    }
+
+    logger.info(
+      { namedCount: namedEntries.length, namelessCount: namelessEntries.length },
+      "Contact enrichment: Phase 2.5 Lusha split",
+    );
+
+    // 2.5a — bulk search-and-enrich for contacts we already have a name for
+    if (namedEntries.length > 0) {
+      try {
+        const lushaResults = await callLushaBulkEnrich(namedEntries.map((e) => e.contact));
+        for (const [batchIdx, result] of lushaResults) {
+          const entry = namedEntries[batchIdx];
+          if (!entry || enrichedKeys.has(entry.devKey)) continue;
+          await applyContact(entry.g, {
+            name: result.name ?? entry.g.existingName ?? null,
+            email: result.email,
+            phone: result.phone,
+          });
+          enrichedKeys.add(entry.devKey);
+          logger.info(
+            { devKey: entry.devKey, email: result.email, phone: result.phone },
+            "Contact enriched via Lusha search-and-enrich",
+          );
+        }
+      } catch (err) {
+        logger.warn({ err }, "Contact enrichment: Phase 2.5a Lusha search-and-enrich failed");
+      }
+    }
+
+    // 2.5b — prospecting for companies where we have no person name at all
+    if (namelessEntries.length > 0) {
+      logger.info({ count: namelessEntries.length }, "Contact enrichment: Phase 2.5b Lusha prospecting");
+      for (const [devKey, g] of namelessEntries) {
+        if (enrichedKeys.has(devKey)) continue;
+        const dev    = g.projects[0].developer;
+        const domain = g.domain;
+        if (!dev) continue;
+        try {
+          const result = await callLushaProspecting(dev, domain);
+          if (result) {
+            await applyContact(g, result);
+            enrichedKeys.add(devKey);
+            logger.info(
+              { devKey, email: result.email, phone: result.phone, name: result.name },
+              "Contact enriched via Lusha prospecting",
+            );
+          }
+        } catch (err) {
+          logger.warn({ err, devKey }, "Contact enrichment: Phase 2.5b prospecting entry failed");
+        }
+      }
     }
   }
 
