@@ -73,10 +73,13 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 | | ESD News | https://esdnews.com.au |
 | | RenewMap | https://renewmap.com.au |
 | | ARENA | https://arena.gov.au |
-| **Government** | Clean Energy Regulator | https://cer.gov.au |
-| | AEMO | https://www.aemo.com.au |
-| | Capacity Investment Scheme | https://www.dcceew.gov.au |
+| **Government** | Clean Energy Regulator – large-scale data | https://cer.gov.au/markets/reports-and-data/large-scale-renewable-energy-data |
+| | AEMO – Generation Information | https://www.aemo.com.au/energy-systems/electricity/national-electricity-market-nem/nem-forecasting-and-planning/forecasting-and-planning-data/generation-information |
+| | Capacity Investment Scheme | https://www.dcceew.gov.au/energy/renewable/capacity-investment-scheme/closed-cis-tenders |
+| | DCCEEW – Renewable energy & EPBC approvals | https://www.dcceew.gov.au/environment/epbc/advice/renewable-energy-projects |
+| | National Renewable Energy Priority List | https://www.dcceew.gov.au/energy/renewable/priority-list |
 | | EPBC Act Referrals | https://epbcpublicportal.environment.gov.au |
+| | EPBC Act – All Notices | https://epbcpublicportal.environment.gov.au/all-notices/ |
 | | NSW Planning Portal | https://www.planningportal.nsw.gov.au |
 | | NSW Planning – Renewable Energy | https://www.planning.nsw.gov.au |
 | | Planning Victoria | https://www.planning.vic.gov.au |
@@ -85,6 +88,10 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 | | WA EPA | https://www.epa.wa.gov.au |
 | | NT Development Applications | https://www.ntlis.nt.gov.au |
 | | Tasmania EPA | https://epa.tas.gov.au |
+| **Industry / Data** | Planning Alerts Australia | https://www.planningalerts.org.au |
+| | Clean Energy Council – Large-scale Solar | https://cleanenergycouncil.org.au/advocacy/large-scale-solar |
+| | Clean Energy Council – Industry Snapshot | https://cleanenergycouncil.org.au/advocacy/industry-snapshot |
+| | Clean Energy Council – Clean Energy Australia Report | https://cleanenergycouncil.org.au/news-resources/clean-energy-australia-report-2026 |
 | **NZ** | NZ Electricity Authority | https://www.ea.govt.nz |
 | | Transpower NZ | https://www.transpower.co.nz |
 | | NZ Fast-track | https://www.fasttrack.govt.nz |
@@ -98,6 +105,17 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 - Clean data is paramount — no news articles, no operational updates, no non-AU/NZ projects.
 - The scan must be restricted to **only the approved sources listed above**. No broad Google Search, no developer page scraping, no ad-hoc sites.
 - AltEnergy is a subscription site requiring login credentials (`ALTENERGY_USERNAME` / `ALTENERGY_PASSWORD`) to access the project database and news sections.
+
+## Required env vars
+
+| Variable | Required for |
+|----------|-------------|
+| `DATABASE_URL` | All — Postgres connection |
+| `ALTENERGY_USERNAME` / `ALTENERGY_PASSWORD` | AltEnergy authenticated scrape |
+| `APIFY_API_TOKEN` | Contact enrichment Phase 2 (Google Search) |
+| `LUSHA_API_KEY` | Contact enrichment Phase 2.5 (Lusha enrich + prospecting) |
+| `FIRECRAWL_API_KEY` | Scanning Firecrawl sources (EPBC, DCCEEW, Planning Alerts, CEC) |
+| `SESSION_SECRET` | Express session signing |
 
 ## Gotchas
 

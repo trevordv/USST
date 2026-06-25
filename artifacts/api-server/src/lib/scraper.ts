@@ -202,6 +202,12 @@ interface ScrapeSource {
   authenticated?: boolean;
   /** Extra URLs to scrape in addition to searchUrl (e.g. category pages) */
   extraUrls?: string[];
+  /**
+   * If true, use the Firecrawl API (FIRECRAWL_API_KEY) instead of raw fetch+Cheerio.
+   * Firecrawl renders JavaScript and returns clean markdown — ideal for government
+   * portals and industry sites that don't expose a usable RSS feed or HTML article list.
+   */
+  firecrawl?: boolean;
 }
 
 /**
@@ -269,11 +275,20 @@ const SOURCES: ScrapeSource[] = [
     name: "Capacity Investment Scheme",
     country: "AU",
     searchUrl: "https://www.dcceew.gov.au/energy/renewable/capacity-investment-scheme/closed-cis-tenders",
+    extraUrls: [
+      "https://www.dcceew.gov.au/environment/epbc/advice/renewable-energy-projects",
+      "https://www.dcceew.gov.au/energy/renewable/priority-list",
+    ],
+    firecrawl: true,
   },
   {
     name: "EPBC Act Referrals",
     country: "AU",
     searchUrl: "https://epbcpublicportal.environment.gov.au/",
+    extraUrls: [
+      "https://epbcpublicportal.environment.gov.au/all-notices/",
+    ],
+    firecrawl: true,
   },
   {
     name: "NSW Planning Portal",
@@ -314,6 +329,23 @@ const SOURCES: ScrapeSource[] = [
     name: "Tasmania EPA",
     country: "AU",
     searchUrl: "https://epa.tas.gov.au/business-industry/assessment/proposals-assessed-by-the-epa",
+  },
+  // ── Industry / Data Platforms ─────────────────────────────────────────────
+  {
+    name: "Planning Alerts Australia",
+    country: "AU",
+    searchUrl: "https://www.planningalerts.org.au/",
+    firecrawl: true,
+  },
+  {
+    name: "Clean Energy Council",
+    country: "AU",
+    searchUrl: "https://cleanenergycouncil.org.au/advocacy/large-scale-solar",
+    extraUrls: [
+      "https://cleanenergycouncil.org.au/advocacy/industry-snapshot",
+      "https://cleanenergycouncil.org.au/news-resources/clean-energy-australia-report-2026",
+    ],
+    firecrawl: true,
   },
   {
     name: "NZ Electricity Authority",
@@ -978,6 +1010,147 @@ function parseHtmlPage(
   }
 
   return projects;
+}
+
+// ──────────────────────────────────────────────────────────────
+// Firecrawl helpers
+// ──────────────────────────────────────────────────────────────
+
+interface FirecrawlScrapeResponse {
+  success: boolean;
+  data?: {
+    markdown?: string;
+    metadata?: { sourceURL?: string; title?: string };
+  };
+  error?: string;
+}
+
+/**
+ * Parse Firecrawl markdown output into ScrapedProject records.
+ *
+ * Firecrawl returns clean markdown with headings (`## Name`) and paragraphs.
+ * We split by heading, filter for solar + capacity, and apply the same
+ * noise-filtering and extraction helpers used for HTML pages.
+ */
+function parseFirecrawlMarkdown(
+  markdown: string,
+  source: ScrapeSource,
+  pageUrl: string,
+  startDate?: string,
+  endDate?: string,
+): ScrapedProject[] {
+  const projects: ScrapedProject[] = [];
+
+  // Split at every heading line (H1–H3) to get one section per potential project
+  const sections = markdown.split(/\n(?=#{1,3} )/);
+
+  for (const section of sections) {
+    const lower = section.toLowerCase();
+
+    // Must mention solar/PV
+    if (!lower.includes("solar") && !lower.includes("photovoltaic") && !lower.includes(" pv ")) continue;
+    // Must have a capacity figure
+    const capacity = extractCapacity(section);
+    if (capacity === null) continue;
+    // Must read as early-stage (not operational)
+    if (!isEarlyStage(section)) continue;
+
+    // Project name — prefer heading, fall back to first substantive line
+    const headingMatch = section.match(/^#{1,3} (.+)/m);
+    let name = (headingMatch?.[1] ?? "").replace(/\*|\[|\]|`/g, "").trim();
+    if (!name || name.length < 5) {
+      name = section.split("\n").find((l) => l.trim().length > 10)?.trim() ?? "";
+    }
+    if (!name || name.length < 5) continue;
+    if (isNoisyProjectName(name)) continue;
+    if (!hasSolarComponent(name + " " + section)) continue;
+
+    // Prefer an in-text hyperlink, otherwise fall back to the page URL
+    const linkMatch = section.match(/\[.*?\]\((https?:\/\/[^)]+)\)/);
+    const sourceUrl = linkMatch?.[1] ?? pageUrl;
+
+    // Date extraction
+    const dateMatch = section.match(/(\d{4}-\d{2}-\d{2})|(\w+ \d{1,2},? \d{4})/);
+    let announcedDate: string;
+    try {
+      const d = dateMatch ? new Date(dateMatch[0]) : new Date();
+      announcedDate = isNaN(d.getTime()) ? new Date().toISOString().slice(0, 10) : d.toISOString().slice(0, 10);
+    } catch {
+      announcedDate = new Date().toISOString().slice(0, 10);
+    }
+    if (startDate && announcedDate < startDate) continue;
+    if (endDate && announcedDate > endDate) continue;
+
+    projects.push({
+      name,
+      description: section.replace(/^#{1,3} .+\n?/m, "").slice(0, 500).trim(),
+      capacityMw: capacity,
+      developer: extractDeveloper(section),
+      location: extractLocation(section, source.country),
+      country: source.country,
+      status: determineStatus(section),
+      sourceUrl,
+      sourceName: source.name,
+      announcedDate,
+      contactName: null,
+      contactEmail: null,
+      contactPhone: null,
+    });
+  }
+
+  return projects;
+}
+
+/**
+ * Fetch a single URL via the Firecrawl API and return parsed projects.
+ * Requires FIRECRAWL_API_KEY environment variable.
+ * Returns [] and logs a warning if the key is absent or the request fails.
+ */
+async function scrapeWithFirecrawl(
+  url: string,
+  source: ScrapeSource,
+  startDate?: string,
+  endDate?: string,
+): Promise<ScrapedProject[]> {
+  const apiKey = process.env.FIRECRAWL_API_KEY;
+  if (!apiKey) {
+    logger.warn({ source: source.name, url }, "FIRECRAWL_API_KEY not set — skipping Firecrawl source");
+    return [];
+  }
+
+  try {
+    const resp = await fetch("https://api.firecrawl.dev/v1/scrape", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        url,
+        formats: ["markdown"],
+        onlyMainContent: true,
+      }),
+    });
+
+    if (!resp.ok) {
+      logger.warn({ status: resp.status, url, source: source.name }, "Firecrawl API request failed");
+      return [];
+    }
+
+    const data = (await resp.json()) as FirecrawlScrapeResponse;
+    if (!data.success || !data.data?.markdown) {
+      logger.warn({ url, error: data.error, source: source.name }, "Firecrawl returned no markdown");
+      return [];
+    }
+
+    const pageUrl = data.data.metadata?.sourceURL ?? url;
+    const results = parseFirecrawlMarkdown(data.data.markdown, source, pageUrl, startDate, endDate);
+    logger.info({ source: source.name, url, found: results.length }, "Firecrawl scrape complete");
+    return results;
+  } catch (err) {
+    logger.warn({ err, url, source: source.name }, "Firecrawl scrape threw");
+    return [];
+  }
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -2170,25 +2343,42 @@ async function scrapeSource(
   }
 
   try {
-    // 1. Try RSS feed first — best structured data
-    if (source.feedUrl) {
-      const xml = await fetchForSource(source, source.feedUrl);
-      addUnique(parseRssFeed(xml, source, startDate, endDate));
-      logger.info({ source: source.name, rssCount: projects.length }, "RSS scraped");
-    }
+    if (source.firecrawl) {
+      // ── Firecrawl path ────────────────────────────────────────────────────
+      // Calls the Firecrawl API which renders JS and returns clean markdown.
+      addUnique(await scrapeWithFirecrawl(source.searchUrl, source, startDate, endDate));
 
-    // 2. Scrape the primary search URL
-    const searchHtml = await fetchForSource(source, source.searchUrl);
-    addUnique(parseHtmlPage(searchHtml, source, startDate, endDate));
+      if (source.extraUrls) {
+        for (const url of source.extraUrls) {
+          try {
+            addUnique(await scrapeWithFirecrawl(url, source, startDate, endDate));
+          } catch (err) {
+            logger.warn({ err, url, source: source.name }, "Firecrawl extra URL scrape failed");
+          }
+        }
+      }
+    } else {
+      // ── Standard fetch + Cheerio path ────────────────────────────────────
+      // 1. Try RSS feed first — best structured data
+      if (source.feedUrl) {
+        const xml = await fetchForSource(source, source.feedUrl);
+        addUnique(parseRssFeed(xml, source, startDate, endDate));
+        logger.info({ source: source.name, rssCount: projects.length }, "RSS scraped");
+      }
 
-    // 3. Scrape extra URLs (authenticated category/search pages for AltEnergy)
-    if (source.extraUrls) {
-      for (const url of source.extraUrls) {
-        try {
-          const html = await fetchForSource(source, url);
-          addUnique(parseHtmlPage(html, source, startDate, endDate));
-        } catch (err) {
-          logger.warn({ err, url, source: source.name }, "Extra URL scrape failed");
+      // 2. Scrape the primary search URL
+      const searchHtml = await fetchForSource(source, source.searchUrl);
+      addUnique(parseHtmlPage(searchHtml, source, startDate, endDate));
+
+      // 3. Scrape extra URLs (authenticated category/search pages for AltEnergy)
+      if (source.extraUrls) {
+        for (const url of source.extraUrls) {
+          try {
+            const html = await fetchForSource(source, url);
+            addUnique(parseHtmlPage(html, source, startDate, endDate));
+          } catch (err) {
+            logger.warn({ err, url, source: source.name }, "Extra URL scrape failed");
+          }
         }
       }
     }
