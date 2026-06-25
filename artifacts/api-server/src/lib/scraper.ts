@@ -512,14 +512,26 @@ function parseRssFeed(xml: string, source: ScrapeSource, startDate?: string, end
 
     // Parse date
     let announcedDate: string;
+    let dateParsed = false;
     try {
-      const d = pubDate ? new Date(pubDate) : new Date();
-      announcedDate = d.toISOString().slice(0, 10);
+      if (pubDate) {
+        const d = new Date(pubDate);
+        if (!isNaN(d.getTime())) {
+          announcedDate = d.toISOString().slice(0, 10);
+          dateParsed = true;
+        } else {
+          announcedDate = new Date().toISOString().slice(0, 10);
+        }
+      } else {
+        announcedDate = new Date().toISOString().slice(0, 10);
+      }
     } catch {
       announcedDate = new Date().toISOString().slice(0, 10);
     }
 
-    // Apply date range filter
+    // When a date-range filter is active, skip items with no parseable publication date.
+    // Without this, the new Date() fallback always passes the startDate check.
+    if (!dateParsed && (startDate || endDate)) continue;
     if (startDate && announcedDate < startDate) continue;
     if (endDate && announcedDate > endDate) continue;
 
@@ -981,14 +993,24 @@ function parseHtmlPage(
     if (!rawTitle || rawTitle.length < 10) continue;
 
     let announcedDate: string;
+    let dateParsed = false;
     try {
-      const d = dateMatch ? new Date(dateMatch[0]) : new Date();
-      if (isNaN(d.getTime())) throw new Error("invalid");
-      announcedDate = d.toISOString().slice(0, 10);
+      if (dateMatch) {
+        const d = new Date(dateMatch[0]);
+        if (!isNaN(d.getTime())) {
+          announcedDate = d.toISOString().slice(0, 10);
+          dateParsed = true;
+        } else {
+          announcedDate = new Date().toISOString().slice(0, 10);
+        }
+      } else {
+        announcedDate = new Date().toISOString().slice(0, 10);
+      }
     } catch {
       announcedDate = new Date().toISOString().slice(0, 10);
     }
 
+    if (!dateParsed && (startDate || endDate)) continue;
     if (startDate && announcedDate < startDate) continue;
     if (endDate && announcedDate > endDate) continue;
 
@@ -1090,12 +1112,23 @@ function parseFirecrawlMarkdown(
     // Date extraction
     const dateMatch = section.match(/(\d{4}-\d{2}-\d{2})|(\w+ \d{1,2},? \d{4})/);
     let announcedDate: string;
+    let dateParsed = false;
     try {
-      const d = dateMatch ? new Date(dateMatch[0]) : new Date();
-      announcedDate = isNaN(d.getTime()) ? new Date().toISOString().slice(0, 10) : d.toISOString().slice(0, 10);
+      if (dateMatch) {
+        const d = new Date(dateMatch[0]);
+        if (!isNaN(d.getTime())) {
+          announcedDate = d.toISOString().slice(0, 10);
+          dateParsed = true;
+        } else {
+          announcedDate = new Date().toISOString().slice(0, 10);
+        }
+      } else {
+        announcedDate = new Date().toISOString().slice(0, 10);
+      }
     } catch {
       announcedDate = new Date().toISOString().slice(0, 10);
     }
+    if (!dateParsed && (startDate || endDate)) continue;
     if (startDate && announcedDate < startDate) continue;
     if (endDate && announcedDate > endDate) continue;
 
