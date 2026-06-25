@@ -1052,6 +1052,24 @@ function parseFirecrawlMarkdown(
     // Must have a capacity figure
     const capacity = extractCapacity(section);
     if (capacity === null) continue;
+
+    // Reject if the capacity only appears as an industry-wide aggregate statistic
+    // (e.g. "10 GW cumulative large-scale solar capacity in Australia")
+    // rather than as a specific project's rated capacity.
+    const STAT_CONTEXT_RE =
+      /\d+(?:\.\d+)?\s*(?:mw|gw|megawatt|gigawatt)\s+(?:cumulative|total|installed|of (?:solar|renewable|wind|bess|battery)|capacity in australia|capacity in new zealand|across australia)/i;
+    if (STAT_CONTEXT_RE.test(section)) {
+      // Only skip if there is NO separate project-specific capacity mention
+      // (i.e. the only capacity match is the statistic sentence)
+      const allCapMatches = [...section.matchAll(/(\d+(?:\.\d+)?)\s*(mw|gw|megawatt|gigawatt)/gi)];
+      const nonStatMatches = allCapMatches.filter((m) => {
+        const idx = m.index ?? 0;
+        const surroundingText = section.slice(Math.max(0, idx - 60), idx + 80).toLowerCase();
+        return !STAT_CONTEXT_RE.test(surroundingText);
+      });
+      if (nonStatMatches.length === 0) continue;
+    }
+
     // Must read as early-stage (not operational)
     if (!isEarlyStage(section)) continue;
 
@@ -1560,6 +1578,28 @@ const NOISY_PROJECT_RE = new RegExp(
     "the power behind",
     "bess boom",
     "^.{0,3}$",               // very short names (1-3 chars)
+    // Industry-report / guide / snapshot headings (not projects)
+    "careers? guide",
+    "industry snapshot",
+    "^clean energy australia",
+    "^annual report",
+    "^working in ",
+    "^find out more",
+    "^use our ",
+    "^discover ",
+    "^about (?:us|our|the )",
+    "^get in touch",
+    "^join (?:us|the|our)",
+    "^read the",
+    "^download (?:the|our)",
+    "^subscribe",
+    "^newsletter",
+    "^media release$",
+    "^fact sheet",
+    "^faqs?$",
+    "^resources?$",
+    "^publications?$",
+    "^contact us",
     // Non-AU/NZ geographies in the title
     "\\b(?:liberia|africa|india|china|uk |united kingdom|usa |united states|europe|middle east|kenya|nigeria|ghana|pakistan|indonesia|vietnam|philippines|bangladesh|myanmar|cambodia|laos|thailand|malaysia|singapore|taiwan|korea|japan|new mexico|colorado|california|texas|florida)\\b",
   ].join("|"),
