@@ -101,8 +101,10 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 | **News** | Energy Magazine | https://www.energymagazine.com.au |
 | **NZ** | NZ Electricity Authority | https://www.ea.govt.nz |
 | | Transpower NZ | https://www.transpower.co.nz |
-| | NZ Fast-track | https://www.fasttrack.govt.nz |
-| | NZ EPA | https://www.epa.govt.nz |
+| | NZ Fast-track Approvals (current regime) | https://www.fasttrack.govt.nz/projects/ |
+| | NZ EPA – Fast-track Projects (legacy COVID-era/NBEA) | https://www.epa.govt.nz/fast-track-consenting/fast-track-projects/ |
+| | NZ EPA – RMA Proposals of National Significance | https://www.epa.govt.nz/industry-areas/rma-proposals/ |
+| | NZ EPA – Public Consultations | https://www.epa.govt.nz/public-consultations/ |
 | | NZ Ministry for the Environment – Fast-track | https://environment.govt.nz/acts-and-regulations/acts/fast-track-approvals/fast-track-projects/ |
 
 ## User preferences

@@ -398,17 +398,39 @@ const SOURCES: ScrapeSource[] = [
     searchUrl: "https://www.transpower.co.nz/connections/whats-latest-grid-connections",
   },
   {
+    // Cloudflare-protected — requires Browse.AI robot.
+    // Set browseAiRobotId once the robot is created at https://app.browse.ai
+    // Robot columns: Project Name | Capacity | Status | Region | Developer | URL
     name: "NZ Fast-track",
     country: "NZ",
-    searchUrl: "https://www.fasttrack.govt.nz/projects",
+    searchUrl: "https://www.fasttrack.govt.nz/projects/",
+    // browseAiRobotId: "TODO",
   },
   {
-    name: "NZ EPA",
+    // Legacy COVID-era / NBEA fast-track consenting referrals.
+    // Cloudflare-protected — requires Browse.AI robot.
+    name: "NZ EPA – Fast-track Projects",
     country: "NZ",
-    searchUrl: "https://www.epa.govt.nz/fast-track-consenting/",
+    searchUrl: "https://www.epa.govt.nz/fast-track-consenting/fast-track-projects/",
+    // browseAiRobotId: "TODO",
   },
   {
-    // JS-rendered govt page — Firecrawl consistently times out. Plain HTML used instead.
+    // Pre-2024 pathway: RMA Proposals of National Significance.
+    // Cloudflare-protected — requires Browse.AI robot.
+    name: "NZ EPA – RMA Proposals",
+    country: "NZ",
+    searchUrl: "https://www.epa.govt.nz/industry-areas/rma-proposals/",
+    // browseAiRobotId: "TODO",
+  },
+  {
+    // Broader EPA consultations aggregator — catches projects not listed elsewhere.
+    // Cloudflare-protected — requires Browse.AI robot.
+    name: "NZ EPA – Public Consultations",
+    country: "NZ",
+    searchUrl: "https://www.epa.govt.nz/public-consultations/",
+    // browseAiRobotId: "TODO",
+  },
+  {
     name: "NZ Ministry for the Environment",
     country: "NZ",
     searchUrl: "https://environment.govt.nz/acts-and-regulations/acts/fast-track-approvals/fast-track-projects/",
