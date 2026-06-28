@@ -40,9 +40,15 @@ function buildWhereConditions(
   conditions.push(not(ilike(projectsTable.name, "%wind%")));
   // Only AU and NZ
   conditions.push(inArray(projectsTable.country, ["AU", "NZ"]));
-  // Must have capacity (no null capacity projects) and utility scale: >=5 MW
-  conditions.push(isNotNull(projectsTable.capacityMw));
-  conditions.push(gte(projectsTable.capacityMw, "5"));
+  // Utility-scale gate: ≥5 MW.
+  // Projects imported from government databases (e.g. EPBC) may have unknown
+  // capacity stored as 0 — allow those through alongside normal ≥5 MW projects.
+  conditions.push(
+    or(
+      eq(projectsTable.capacityMw, "0"),
+      gte(projectsTable.capacityMw, "5"),
+    )!,
+  );
 
   // ── User-supplied filters ──────────────────────────────────
   if (startDate && endDate) {
