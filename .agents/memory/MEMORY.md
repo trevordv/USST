@@ -1,2 +1,3 @@
 - [AltEnergy data sources](altenergy-data-sources.md) — Three distinct section types: newsandviews (article cards), kilowatt_subcribers (inline project JSON), watt_news (newsletters)
 - [Apify Google Search integration](apify-integration.md) — actor `apify~google-search-scraper`, countryCode must be lowercase "au", quality filtering needed
+- [Scraper source strategy](scraper-source-strategy.md) — which source types work (RSS, HTML) and which to avoid (Firecrawl on gov portals)

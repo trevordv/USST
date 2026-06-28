@@ -232,13 +232,13 @@ const SOURCES: ScrapeSource[] = [
     name: "EcoGeneration",
     country: "AU",
     searchUrl: "https://www.ecogeneration.com.au/category/projects/solar-projects/",
-    firecrawl: true,
+    feedUrl: "https://www.ecogeneration.com.au/category/projects/solar-projects/feed/",
   },
   {
     name: "Utility Magazine",
     country: "AU",
     searchUrl: "https://utilitymagazine.com.au/category/electricity/solar/",
-    firecrawl: true,
+    feedUrl: "https://utilitymagazine.com.au/category/electricity/solar/feed/",
   },
   {
     name: "ESD News",
@@ -247,21 +247,22 @@ const SOURCES: ScrapeSource[] = [
     feedUrl: "https://esdnews.com.au/feed/",
   },
   {
+    // RenewMap is a JS map app — static fetch won't work; use their resources feed instead
     name: "RenewMap",
     country: "AU",
-    searchUrl: "https://renewmap.com.au/project-map/",
-    firecrawl: true,
+    searchUrl: "https://renewmap.com.au/resources/",
+    feedUrl: "https://renewmap.com.au/feed/",
   },
   // AltEnergy is handled by scrapeAltEnergy() — omit from generic SOURCES
   // so it doesn't go through the generic HTML parser
   {
     name: "ARENA",
     country: "AU",
-    searchUrl: "https://arena.gov.au/projects/?status=funded&technology=solar",
+    searchUrl: "https://arena.gov.au/news/?s=solar+project",
+    feedUrl: "https://arena.gov.au/feed/",
     extraUrls: [
-      "https://arena.gov.au/blog/?category=solar",
+      "https://arena.gov.au/news/?s=solar+farm",
     ],
-    firecrawl: true,
   },
   // ── Government / Regulatory ──────────────────────────────────────────────
   {
@@ -275,6 +276,7 @@ const SOURCES: ScrapeSource[] = [
     searchUrl: "https://www.aemo.com.au/energy-systems/electricity/national-electricity-market-nem/nem-forecasting-and-planning/forecasting-and-planning-data/generation-information",
   },
   {
+    // DCCEEW pages are government portals — Firecrawl consistently times out on these URLs.
     name: "Capacity Investment Scheme",
     country: "AU",
     searchUrl: "https://www.dcceew.gov.au/energy/renewable/capacity-investment-scheme/closed-cis-tenders",
@@ -282,25 +284,18 @@ const SOURCES: ScrapeSource[] = [
       "https://www.dcceew.gov.au/environment/epbc/advice/renewable-energy-projects",
       "https://www.dcceew.gov.au/energy/renewable/priority-list",
     ],
-    firecrawl: true,
   },
   {
+    // EPBC portal is a JS-rendered search app — static fetch yields no project rows.
     name: "EPBC Act Referrals",
     country: "AU",
-    searchUrl: "https://epbcpublicportal.environment.gov.au/",
-    extraUrls: [
-      "https://epbcpublicportal.environment.gov.au/all-referrals/",
-      "https://epbcpublicportal.environment.gov.au/all-notices/",
-    ],
-    firecrawl: true,
+    searchUrl: "https://epbcpublicportal.environment.gov.au/all-referrals/",
   },
   {
-    // GIS/CSV dataset catalogue page — Firecrawl extracts the referral summary table
-    // and any linked project-level pages. Full CSV download requires a separate pipeline.
+    // data.gov.au dataset catalogue page — static HTML, no per-project MW data inline.
     name: "EPBC Referrals Spatial Database",
     country: "AU",
     searchUrl: "https://data.gov.au/data/dataset/referrals-spatial-database",
-    firecrawl: true,
   },
   {
     name: "NSW Planning Portal",
@@ -313,13 +308,10 @@ const SOURCES: ScrapeSource[] = [
     searchUrl: "https://www.planning.nsw.gov.au/policy-and-legislation/renewable-energy",
   },
   {
+    // JS-rendered planning portal — Firecrawl consistently times out.
     name: "Planning Victoria",
     country: "AU",
     searchUrl: "https://www.planning.vic.gov.au/guides-and-resources/guides/all-guides/renewable-energy-facilities/solar-energy-facilities",
-    extraUrls: [
-      "https://www.planning.vic.gov.au/environmental-assessments/browse-projects",
-    ],
-    firecrawl: true,
   },
   {
     name: "QLD Coordinator-General",
@@ -348,33 +340,29 @@ const SOURCES: ScrapeSource[] = [
   },
   // ── Industry / Data Platforms ─────────────────────────────────────────────
   {
+    // JS-rendered app — Firecrawl times out; plain HTML also returns nothing useful.
     name: "Planning Alerts Australia",
     country: "AU",
     searchUrl: "https://www.planningalerts.org.au/",
-    firecrawl: true,
   },
   {
+    // CEC pages are JS-rendered membership portals / PDF downloads — Firecrawl consistently
+    // times out (30 s) and returns 0 projects even when it does respond. Use plain HTML.
     name: "Clean Energy Council",
     country: "AU",
     searchUrl: "https://cleanenergycouncil.org.au/advocacy/large-scale-solar",
-    extraUrls: [
-      "https://cleanenergycouncil.org.au/resources/project-tracker",
-      "https://cleanenergycouncil.org.au/advocacy/industry-snapshot",
-      "https://cleanenergycouncil.org.au/news-resources/clean-energy-australia-report-2026",
-    ],
-    firecrawl: true,
   },
   {
+    // QLD Planning is a JS-rendered gov portal — Firecrawl times out consistently.
     name: "QLD Planning – Renewable Energy",
     country: "AU",
     searchUrl: "https://www.planning.qld.gov.au/planning-issues-and-interests/renewable-energy",
-    firecrawl: true,
   },
   {
     name: "Smart Energy Council",
     country: "AU",
     searchUrl: "https://smartenergy.org.au/news/",
-    firecrawl: true,
+    feedUrl: "https://smartenergy.org.au/feed/",
   },
   {
     name: "Energy Magazine",
@@ -403,10 +391,10 @@ const SOURCES: ScrapeSource[] = [
     searchUrl: "https://www.epa.govt.nz/fast-track-consenting/",
   },
   {
+    // JS-rendered govt page — Firecrawl consistently times out. Plain HTML used instead.
     name: "NZ Ministry for the Environment",
     country: "NZ",
     searchUrl: "https://environment.govt.nz/acts-and-regulations/acts/fast-track-approvals/fast-track-projects/",
-    firecrawl: true,
   },
 ];
 
@@ -1154,8 +1142,9 @@ function parseFirecrawlMarkdown(
       if (nonStatMatches.length === 0) continue;
     }
 
-    // Must read as early-stage (not operational)
-    if (!isEarlyStage(section)) continue;
+    // Exclude confirmed-operational content — don't require an explicit early-stage keyword
+    // (government portals use language like "under assessment" or "referred" not in keyword list)
+    if (EXCLUDE_KEYWORDS.some((kw) => lower.includes(kw))) continue;
 
     // Project name — prefer heading, fall back to first substantive line
     const headingMatch = section.match(/^#{1,3} (.+)/m);
@@ -1295,6 +1284,70 @@ function parseFirecrawlMarkdown(
     }
   }
 
+  // ── Bullet / list-item parsing ───────────────────────────────────────────
+  // Government portals (ARENA, planning portals, CEC) often render project
+  // listings as markdown bullet lists:
+  //   - [Sunraysia Solar Farm](link) – 255 MW – Under assessment
+  //   * Coppabella Solar 80MW – application lodged
+  // Each bullet is a self-contained project candidate.
+  const bulletRe = /^[\*\-]\s+(.+)$/gm;
+  for (const bulletMatch of markdown.matchAll(bulletRe)) {
+    const line = bulletMatch[1].trim();
+    const lower = line.toLowerCase();
+
+    if (!lower.includes("solar") && !lower.includes("photovoltaic") && !lower.includes(" pv ")) continue;
+
+    const capacity = extractCapacity(line);
+    if (capacity === null) continue;
+
+    if (EXCLUDE_KEYWORDS.some((kw) => lower.includes(kw))) continue;
+
+    // Strip markdown link syntax for the name
+    let name = line.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/[*_`]/g, "").trim();
+    // Drop trailing MW/GW annotation and status phrases (e.g. " – 255 MW – Under assessment")
+    name = name.replace(/\s*[–\-]\s*\d[\d,.]*\s*(?:mw|gw|megawatt|gigawatt).*$/i, "").trim();
+    name = name.replace(/\s*[–\-]\s*(under assessment|application|referred|approved|proposed|development|planning).*$/i, "").trim();
+    if (!name || name.length < 5) continue;
+    if (isNoisyProjectName(name)) continue;
+    if (!hasSolarComponent(name + " " + line)) continue;
+
+    // Skip if this project was already captured by heading or table parser
+    if (projects.some((p) => p.name.toLowerCase() === name.toLowerCase())) continue;
+
+    const linkMatch = line.match(/\[.*?\]\((https?:\/\/[^)]+)\)/);
+    const sourceUrl = linkMatch?.[1] ?? pageUrl;
+
+    const dateMatch = line.match(/(\d{4}-\d{2}-\d{2})|(\w+ \d{1,2},? \d{4})/);
+    let announcedDate = new Date().toISOString().slice(0, 10);
+    let dateParsed = false;
+    if (dateMatch) {
+      const d = new Date(dateMatch[0]);
+      if (!isNaN(d.getTime())) {
+        announcedDate = d.toISOString().slice(0, 10);
+        dateParsed = true;
+      }
+    }
+    if (!dateParsed && (startDate || endDate)) continue;
+    if (startDate && announcedDate < startDate) continue;
+    if (endDate && announcedDate > endDate) continue;
+
+    projects.push({
+      name,
+      description: line.slice(0, 500),
+      capacityMw: capacity,
+      developer: extractDeveloper(line),
+      location: extractLocation(line, source.country),
+      country: source.country,
+      status: determineStatus(line),
+      sourceUrl,
+      sourceName: source.name,
+      announcedDate,
+      contactName: null,
+      contactEmail: null,
+      contactPhone: null,
+    });
+  }
+
   return projects;
 }
 
@@ -1327,6 +1380,7 @@ async function scrapeWithFirecrawl(
         formats: ["markdown"],
         onlyMainContent: true,
       }),
+      signal: AbortSignal.timeout(30_000), // 30 s hard cap per Firecrawl request
     });
 
     if (!resp.ok) {
@@ -2564,17 +2618,14 @@ async function scrapeSource(
   try {
     if (source.firecrawl) {
       // ── Firecrawl path ────────────────────────────────────────────────────
-      // Calls the Firecrawl API which renders JS and returns clean markdown.
-      addUnique(await scrapeWithFirecrawl(source.searchUrl, source, startDate, endDate));
-
-      if (source.extraUrls) {
-        for (const url of source.extraUrls) {
-          try {
-            addUnique(await scrapeWithFirecrawl(url, source, startDate, endDate));
-          } catch (err) {
-            logger.warn({ err, url, source: source.name }, "Firecrawl extra URL scrape failed");
-          }
-        }
+      // Run the primary URL + all extraUrls in parallel (each has a 30 s timeout).
+      const allUrls = [source.searchUrl, ...(source.extraUrls ?? [])];
+      const fcResults = await Promise.allSettled(
+        allUrls.map((url) => scrapeWithFirecrawl(url, source, startDate, endDate)),
+      );
+      for (const result of fcResults) {
+        if (result.status === "fulfilled") addUnique(result.value);
+        else logger.warn({ err: result.reason, source: source.name }, "Firecrawl URL failed");
       }
     } else {
       // ── Standard fetch + Cheerio path ────────────────────────────────────
@@ -2585,19 +2636,17 @@ async function scrapeSource(
         logger.info({ source: source.name, rssCount: projects.length }, "RSS scraped");
       }
 
-      // 2. Scrape the primary search URL
-      const searchHtml = await fetchForSource(source, source.searchUrl);
-      addUnique(parseHtmlPage(searchHtml, source, startDate, endDate));
-
-      // 3. Scrape extra URLs (authenticated category/search pages for AltEnergy)
-      if (source.extraUrls) {
-        for (const url of source.extraUrls) {
-          try {
-            const html = await fetchForSource(source, url);
-            addUnique(parseHtmlPage(html, source, startDate, endDate));
-          } catch (err) {
-            logger.warn({ err, url, source: source.name }, "Extra URL scrape failed");
-          }
+      // 2. Scrape primary + extra URLs in parallel
+      const htmlUrls = [source.searchUrl, ...(source.extraUrls ?? [])];
+      const htmlResults = await Promise.allSettled(
+        htmlUrls.map((url) => fetchForSource(source, url)),
+      );
+      for (let i = 0; i < htmlResults.length; i++) {
+        const result = htmlResults[i];
+        if (result.status === "fulfilled") {
+          addUnique(parseHtmlPage(result.value, source, startDate, endDate));
+        } else {
+          logger.warn({ err: result.reason, url: htmlUrls[i], source: source.name }, "HTML URL fetch failed");
         }
       }
     }
