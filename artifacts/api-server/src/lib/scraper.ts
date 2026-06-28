@@ -286,8 +286,17 @@ const SOURCES: ScrapeSource[] = [
     country: "AU",
     searchUrl: "https://epbcpublicportal.environment.gov.au/",
     extraUrls: [
+      "https://epbcpublicportal.environment.gov.au/all-referrals/",
       "https://epbcpublicportal.environment.gov.au/all-notices/",
     ],
+    firecrawl: true,
+  },
+  {
+    // GIS/CSV dataset catalogue page — Firecrawl extracts the referral summary table
+    // and any linked project-level pages. Full CSV download requires a separate pipeline.
+    name: "EPBC Referrals Spatial Database",
+    country: "AU",
+    searchUrl: "https://data.gov.au/data/dataset/referrals-spatial-database",
     firecrawl: true,
   },
   {
@@ -304,6 +313,10 @@ const SOURCES: ScrapeSource[] = [
     name: "Planning Victoria",
     country: "AU",
     searchUrl: "https://www.planning.vic.gov.au/guides-and-resources/guides/all-guides/renewable-energy-facilities/solar-energy-facilities",
+    extraUrls: [
+      "https://www.planning.vic.gov.au/environmental-assessments/browse-projects",
+    ],
+    firecrawl: true,
   },
   {
     name: "QLD Coordinator-General",
@@ -342,10 +355,29 @@ const SOURCES: ScrapeSource[] = [
     country: "AU",
     searchUrl: "https://cleanenergycouncil.org.au/advocacy/large-scale-solar",
     extraUrls: [
+      "https://cleanenergycouncil.org.au/resources/project-tracker",
       "https://cleanenergycouncil.org.au/advocacy/industry-snapshot",
       "https://cleanenergycouncil.org.au/news-resources/clean-energy-australia-report-2026",
     ],
     firecrawl: true,
+  },
+  {
+    name: "QLD Planning – Renewable Energy",
+    country: "AU",
+    searchUrl: "https://www.planning.qld.gov.au/planning-issues-and-interests/renewable-energy",
+    firecrawl: true,
+  },
+  {
+    name: "Smart Energy Council",
+    country: "AU",
+    searchUrl: "https://smartenergy.org.au/news/",
+    firecrawl: true,
+  },
+  {
+    name: "Energy Magazine",
+    country: "AU",
+    searchUrl: "https://www.energymagazine.com.au/category/solar/",
+    feedUrl: "https://www.energymagazine.com.au/feed/",
   },
   {
     name: "NZ Electricity Authority",
@@ -366,6 +398,12 @@ const SOURCES: ScrapeSource[] = [
     name: "NZ EPA",
     country: "NZ",
     searchUrl: "https://www.epa.govt.nz/fast-track-consenting/",
+  },
+  {
+    name: "NZ Ministry for the Environment",
+    country: "NZ",
+    searchUrl: "https://environment.govt.nz/acts-and-regulations/acts/fast-track-approvals/fast-track-projects/",
+    firecrawl: true,
   },
 ];
 

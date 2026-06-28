@@ -79,10 +79,14 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 | | DCCEEW – Renewable energy & EPBC approvals | https://www.dcceew.gov.au/environment/epbc/advice/renewable-energy-projects |
 | | National Renewable Energy Priority List | https://www.dcceew.gov.au/energy/renewable/priority-list |
 | | EPBC Act Referrals | https://epbcpublicportal.environment.gov.au |
+| | EPBC Act – All Referrals | https://epbcpublicportal.environment.gov.au/all-referrals/ |
 | | EPBC Act – All Notices | https://epbcpublicportal.environment.gov.au/all-notices/ |
+| | EPBC Referrals Spatial Database | https://data.gov.au/data/dataset/referrals-spatial-database |
 | | NSW Planning Portal | https://www.planningportal.nsw.gov.au |
 | | NSW Planning – Renewable Energy | https://www.planning.nsw.gov.au |
 | | Planning Victoria | https://www.planning.vic.gov.au |
+| | VIC DEECA – Environmental Assessments | https://www.planning.vic.gov.au/environmental-assessments/browse-projects |
+| | QLD Planning – Renewable Energy | https://www.planning.qld.gov.au/planning-issues-and-interests/renewable-energy |
 | | QLD Coordinator-General | https://www.coordinatorgeneral.qld.gov.au |
 | | SA – Energy & Mining | https://www.energymining.sa.gov.au |
 | | WA EPA | https://www.epa.wa.gov.au |
@@ -90,12 +94,16 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 | | Tasmania EPA | https://epa.tas.gov.au |
 | **Industry / Data** | Planning Alerts Australia | https://www.planningalerts.org.au |
 | | Clean Energy Council – Large-scale Solar | https://cleanenergycouncil.org.au/advocacy/large-scale-solar |
+| | Clean Energy Council – Project Tracker | https://cleanenergycouncil.org.au/resources/project-tracker |
 | | Clean Energy Council – Industry Snapshot | https://cleanenergycouncil.org.au/advocacy/industry-snapshot |
 | | Clean Energy Council – Clean Energy Australia Report | https://cleanenergycouncil.org.au/news-resources/clean-energy-australia-report-2026 |
+| | Smart Energy Council | https://smartenergy.org.au |
+| **News** | Energy Magazine | https://www.energymagazine.com.au |
 | **NZ** | NZ Electricity Authority | https://www.ea.govt.nz |
 | | Transpower NZ | https://www.transpower.co.nz |
 | | NZ Fast-track | https://www.fasttrack.govt.nz |
 | | NZ EPA | https://www.epa.govt.nz |
+| | NZ Ministry for the Environment – Fast-track | https://environment.govt.nz/acts-and-regulations/acts/fast-track-approvals/fast-track-projects/ |
 
 ## User preferences
 
