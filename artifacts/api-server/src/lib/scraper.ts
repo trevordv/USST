@@ -232,11 +232,13 @@ const SOURCES: ScrapeSource[] = [
     name: "EcoGeneration",
     country: "AU",
     searchUrl: "https://www.ecogeneration.com.au/category/projects/solar-projects/",
+    firecrawl: true,
   },
   {
     name: "Utility Magazine",
     country: "AU",
     searchUrl: "https://utilitymagazine.com.au/category/electricity/solar/",
+    firecrawl: true,
   },
   {
     name: "ESD News",
@@ -247,18 +249,19 @@ const SOURCES: ScrapeSource[] = [
   {
     name: "RenewMap",
     country: "AU",
-    searchUrl: "https://renewmap.com.au/resources/",
+    searchUrl: "https://renewmap.com.au/project-map/",
+    firecrawl: true,
   },
   // AltEnergy is handled by scrapeAltEnergy() — omit from generic SOURCES
   // so it doesn't go through the generic HTML parser
   {
     name: "ARENA",
     country: "AU",
-    searchUrl: "https://arena.gov.au/news/?s=solar",
+    searchUrl: "https://arena.gov.au/projects/?status=funded&technology=solar",
     extraUrls: [
-      "https://arena.gov.au/blog/",
-      "https://arena.gov.au/projects/",
+      "https://arena.gov.au/blog/?category=solar",
     ],
+    firecrawl: true,
   },
   // ── Government / Regulatory ──────────────────────────────────────────────
   {
@@ -409,11 +412,30 @@ const SOURCES: ScrapeSource[] = [
 
 // Keywords that indicate a project is in early stage (not yet generating)
 const EARLY_STAGE_KEYWORDS = [
-  "announced", "proposed", "plans to build", "planning approval",
-  "resource consent", "development approval", "da approved",
-  "under development", "under construction", "planning",
-  "feasibility", "pre-development", "early stage", "new project",
+  // Announcement / proposal
+  "announced", "proposed", "proposes", "proposal", "plans to build",
+  "new project", "new solar", "new bess", "new battery",
+  // Approval / consent
+  "planning approval", "resource consent", "development approval", "da approved",
+  "approved", "approval", "receives approval", "gets approval", "granted",
+  "permit", "permits", "consent", "consented",
+  "planning permit", "planning consent",
+  // Application / referral
+  "application", "applies", "applied", "lodged", "lodges",
+  "referral", "referred", "da lodged", "eis lodged",
+  "environmental impact", "eis", "epbc referral",
+  // Development stages
+  "under development", "under construction", "in development",
+  "planning", "feasibility", "pre-development", "early stage",
   "to build", "will build", "breaking ground", "scoping",
+  // Investment / commitment signals
+  "commits", "committed", "invest", "investment", "selected",
+  "awarded", "awarded contract", "reaches financial close",
+  "financial close", "reaches fc",
+  // Construction commencement
+  "commences", "commence", "begins construction", "begin construction",
+  "construction begins", "construction commences", "starts construction",
+  "breaks ground", "groundbreaking",
 ];
 
 // Keywords that indicate a project is generating (exclude these)
@@ -545,8 +567,10 @@ function parseRssFeed(xml: string, source: ScrapeSource, startDate?: string, end
     const lower = fullText.toLowerCase();
     if (!lower.includes("solar") && !lower.includes("photovoltaic") && !lower.includes(" pv ")) continue;
 
-    // Check if it's early stage
-    if (!isEarlyStage(fullText)) continue;
+    // Exclude clearly operational articles (commissioned, now generating, etc.)
+    // Don't require positive early-stage keywords — news articles from trusted
+    // solar publications are implicitly project-relevant if they mention solar.
+    if (EXCLUDE_KEYWORDS.some((kw) => lower.includes(kw))) continue;
 
     // Parse date
     let announcedDate: string;
@@ -1185,6 +1209,90 @@ function parseFirecrawlMarkdown(
       contactEmail: null,
       contactPhone: null,
     });
+  }
+
+  // ── Markdown table parsing ────────────────────────────────────────────────
+  // Government portals and structured listing pages (EPBC, CEC, DCCEEW, etc.)
+  // render HTML tables. Firecrawl converts these to pipe-delimited markdown
+  // tables — split-by-heading misses them entirely, so we parse them here.
+  const tableBlockRe = /(\|[^\n]+\|\n)((?:\|[^\n]+\|\n)+)/g;
+  for (const tableMatch of markdown.matchAll(tableBlockRe)) {
+    const headerRow = tableMatch[1];
+    const bodyRows = tableMatch[2].split("\n").filter((r) => r.trim().startsWith("|"));
+
+    const headers = headerRow
+      .split("|")
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean);
+
+    const nameIdx = headers.findIndex((h) =>
+      h.includes("name") || h.includes("project") || h.includes("title") || h.includes("proponent")
+    );
+    const capIdx = headers.findIndex((h) =>
+      h.includes("capacity") || h.includes("mw") || h.includes("size") || h.includes("power")
+    );
+
+    for (const row of bodyRows) {
+      // Skip separator rows like |---|---|
+      if (/^\|[\s\-|]+\|$/.test(row.trim())) continue;
+
+      const cells = row.split("|").map((c) => c.trim()).filter(Boolean);
+      if (cells.length < 2) continue;
+
+      const rowText = cells.join(" ");
+      const rowLower = rowText.toLowerCase();
+
+      if (!rowLower.includes("solar") && !rowLower.includes("photovoltaic") && !rowLower.includes(" pv ")) continue;
+      if (EXCLUDE_KEYWORDS.some((kw) => rowLower.includes(kw))) continue;
+
+      // Try to extract capacity from dedicated column first, then full row
+      let capacity: number | null = null;
+      if (capIdx >= 0 && cells[capIdx]) capacity = extractCapacity(cells[capIdx]);
+      if (capacity === null) capacity = extractCapacity(rowText);
+      if (capacity === null) continue;
+
+      // Project name: prefer named column, else first cell
+      let name = (nameIdx >= 0 && cells[nameIdx]) ? cells[nameIdx] : cells[0];
+      // Strip markdown links
+      name = name.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/[*_`]/g, "").trim();
+      if (!name || name.length < 5) continue;
+      if (isNoisyProjectName(name)) continue;
+      if (!hasSolarComponent(name + " " + rowText)) continue;
+
+      // Date: scan whole row for a date pattern
+      const dateMatch = rowText.match(/(\d{4}-\d{2}-\d{2})|(\w+ \d{1,2},? \d{4})/);
+      let announcedDate = new Date().toISOString().slice(0, 10);
+      let dateParsed = false;
+      if (dateMatch) {
+        const d = new Date(dateMatch[0]);
+        if (!isNaN(d.getTime())) {
+          announcedDate = d.toISOString().slice(0, 10);
+          dateParsed = true;
+        }
+      }
+      if (!dateParsed && (startDate || endDate)) continue;
+      if (startDate && announcedDate < startDate) continue;
+      if (endDate && announcedDate > endDate) continue;
+
+      const linkMatch = rowText.match(/\[.*?\]\((https?:\/\/[^)]+)\)/);
+      const sourceUrl = linkMatch?.[1] ?? pageUrl;
+
+      projects.push({
+        name,
+        description: rowText.slice(0, 500),
+        capacityMw: capacity,
+        developer: extractDeveloper(rowText),
+        location: extractLocation(rowText, source.country),
+        country: source.country,
+        status: determineStatus(rowText),
+        sourceUrl,
+        sourceName: source.name,
+        announcedDate,
+        contactName: null,
+        contactEmail: null,
+        contactPhone: null,
+      });
+    }
   }
 
   return projects;
