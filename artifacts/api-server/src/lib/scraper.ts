@@ -208,6 +208,23 @@ interface ScrapeSource {
    * portals and industry sites that don't expose a usable RSS feed or HTML article list.
    */
   firecrawl?: boolean;
+  /**
+   * Browse.AI robot ID to use for this source.
+   * The robot must be pre-configured in the Browse.AI dashboard
+   * (https://browse.ai) with an `originUrl` input parameter.
+   * When set, the robot is run against searchUrl (and each extraUrl if present).
+   * Browse.AI renders full JavaScript and returns structured table data — ideal for
+   * government planning portals that block standard scrapers.
+   *
+   * Required column names in the Browse.AI robot (case-insensitive, partial match):
+   *   "name" / "project name" / "title"  → project name
+   *   "capacity" / "mw" / "size"         → MW capacity
+   *   "status" / "stage" / "phase"       → development status
+   *   "state" / "location" / "region"    → location
+   *   "developer" / "proponent" / "applicant" → developer
+   *   "url" / "link"                     → project detail URL
+   */
+  browseAiRobotId?: string;
 }
 
 /**
@@ -1400,6 +1417,207 @@ async function scrapeWithFirecrawl(
     return results;
   } catch (err) {
     logger.warn({ err, url, source: source.name }, "Firecrawl scrape threw");
+    return [];
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// Browse.AI integration
+// ──────────────────────────────────────────────────────────────
+
+interface BrowseAiTaskResponse {
+  statusCode: number;
+  messageCode: string;
+  result?: {
+    id?: string;
+    status?: "successful" | "failed" | "running" | "pending";
+    capturedLists?: Record<string, Array<Record<string, string>>>;
+    capturedTexts?: Record<string, string>;
+  };
+}
+
+/** Column-name fragments Browse.AI robots use for each field (case-insensitive substring match). */
+const BA_NAME_COLS    = ["project name", "name", "title", "project", "development name"];
+const BA_CAP_COLS     = ["capacity", " mw", "size", "megawatt"];
+const BA_STATUS_COLS  = ["status", "stage", "phase", "assessment stage", "development stage"];
+const BA_LOC_COLS     = ["location", "state", "region", "address", "suburb", "area"];
+const BA_DEV_COLS     = ["developer", "proponent", "applicant", "company", "organisation", "organization", "operator", "sponsor"];
+const BA_URL_COLS     = ["url", "link", "href", "detail"];
+
+function browseAiMatchCol(row: Record<string, string>, patterns: string[]): string | undefined {
+  for (const key of Object.keys(row)) {
+    const kl = key.toLowerCase();
+    if (patterns.some((p) => kl.includes(p))) {
+      const v = row[key];
+      return v && v.trim() ? v.trim() : undefined;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Parse Browse.AI task result into ScrapedProject records.
+ * Browse.AI returns `capturedLists` — a dict of list-name → array of row dicts.
+ * Column names are defined by the robot configuration in the Browse.AI dashboard.
+ */
+function parseBrowseAiResult(
+  result: NonNullable<BrowseAiTaskResponse["result"]>,
+  source: ScrapeSource,
+  pageUrl: string,
+  startDate?: string,
+  endDate?: string,
+): ScrapedProject[] {
+  const projects: ScrapedProject[] = [];
+  if (!result.capturedLists) return projects;
+
+  for (const rows of Object.values(result.capturedLists)) {
+    if (!Array.isArray(rows)) continue;
+
+    for (const row of rows) {
+      const allValues = Object.values(row).join(" ");
+      const allLower = allValues.toLowerCase();
+
+      // Must mention solar / photovoltaic / PV
+      if (!allLower.includes("solar") && !allLower.includes("photovoltaic") && !/\bpv\b/.test(allLower)) continue;
+      // Skip exclusion keywords (operational, commissioned, etc.)
+      if (EXCLUDE_KEYWORDS.some((kw) => allLower.includes(kw))) continue;
+
+      // Must have an extractable MW capacity
+      const capacityMw = extractCapacity(allValues);
+      if (capacityMw === null) continue;
+
+      // --- Project name ---
+      let name = browseAiMatchCol(row, BA_NAME_COLS) ?? "";
+      if (!name) {
+        name = Object.values(row).find(
+          (v) => typeof v === "string" && v.length > 5 && !v.startsWith("http") && !/^\d+$/.test(v.trim()),
+        ) ?? "";
+      }
+      name = name.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").trim(); // strip markdown links
+      if (!name || name.length < 5) continue;
+      if (isNoisyProjectName(name)) continue;
+      if (!hasSolarComponent(name, allValues)) continue;
+
+      // --- Source URL ---
+      const rowUrl =
+        browseAiMatchCol(row, BA_URL_COLS) ??
+        Object.values(row).find((v) => typeof v === "string" && v.startsWith("http")) ??
+        pageUrl;
+
+      // --- Date (government listing pages rarely include one — fall back to today) ---
+      let announcedDate = new Date().toISOString().slice(0, 10);
+      const dateMatch = allValues.match(/(\d{4}-\d{2}-\d{2})|(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/);
+      if (dateMatch) {
+        const d = new Date(dateMatch[0].replace(/\//g, "-"));
+        if (!isNaN(d.getTime())) announcedDate = d.toISOString().slice(0, 10);
+      }
+      if (startDate && announcedDate < startDate) continue;
+      if (endDate && announcedDate > endDate) continue;
+
+      projects.push({
+        name,
+        description: allValues.slice(0, 600),
+        capacityMw,
+        developer: browseAiMatchCol(row, BA_DEV_COLS) ?? extractDeveloper(allValues),
+        location: browseAiMatchCol(row, BA_LOC_COLS) ?? extractLocation(allValues, source.country),
+        country: source.country,
+        status: determineStatus(browseAiMatchCol(row, BA_STATUS_COLS) ?? allValues),
+        sourceUrl: typeof rowUrl === "string" ? rowUrl : pageUrl,
+        sourceName: source.name,
+        announcedDate,
+        contactName: null,
+        contactEmail: null,
+        contactPhone: null,
+      });
+    }
+  }
+
+  return projects;
+}
+
+/**
+ * Run a Browse.AI robot against a URL and return extracted solar projects.
+ *
+ * Flow:
+ *  1. POST /v2/robots/{robotId}/tasks  — create task with originUrl
+ *  2. Poll GET /v2/robots/{robotId}/tasks/{taskId} every 5 s (max 90 s)
+ *  3. Parse capturedLists from the completed task
+ *
+ * The robot must be created and configured in the Browse.AI dashboard with
+ * an `originUrl` input parameter and the column names listed in ScrapeSource.browseAiRobotId.
+ */
+async function scrapeWithBrowseAi(
+  robotId: string,
+  url: string,
+  source: ScrapeSource,
+  startDate?: string,
+  endDate?: string,
+): Promise<ScrapedProject[]> {
+  const apiKey = process.env.BROWSE_AI_API_KEY;
+  if (!apiKey) {
+    logger.warn({ source: source.name, url }, "BROWSE_AI_API_KEY not set — skipping Browse.AI source");
+    return [];
+  }
+
+  try {
+    // 1. Create task
+    const createResp = await fetch(`https://api.browse.ai/v2/robots/${robotId}/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ inputParameters: { originUrl: url } }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!createResp.ok) {
+      const body = await createResp.text().catch(() => "");
+      logger.warn({ status: createResp.status, robotId, url, body }, "Browse.AI task creation failed");
+      return [];
+    }
+
+    const createData = (await createResp.json()) as BrowseAiTaskResponse;
+    const taskId = createData.result?.id;
+    if (!taskId) {
+      logger.warn({ createData, robotId }, "Browse.AI: no task ID in creation response");
+      return [];
+    }
+
+    logger.info({ robotId, taskId, url, source: source.name }, "Browse.AI task created — polling");
+
+    // 2. Poll for completion (max 90 s, every 5 s = 18 attempts)
+    for (let attempt = 0; attempt < 18; attempt++) {
+      await new Promise((r) => setTimeout(r, 5_000));
+
+      const pollResp = await fetch(`https://api.browse.ai/v2/robots/${robotId}/tasks/${taskId}`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+
+      if (!pollResp.ok) {
+        logger.warn({ status: pollResp.status, attempt, robotId, taskId }, "Browse.AI poll HTTP error — retrying");
+        continue;
+      }
+
+      const pollData = (await pollResp.json()) as BrowseAiTaskResponse;
+      const status = pollData.result?.status;
+
+      if (status === "successful") {
+        const results = parseBrowseAiResult(pollData.result!, source, url, startDate, endDate);
+        logger.info({ robotId, url, found: results.length, source: source.name }, "Browse.AI task complete");
+        return results;
+      }
+
+      if (status === "failed") {
+        logger.warn({ robotId, taskId, url, source: source.name }, "Browse.AI task failed");
+        return [];
+      }
+
+      logger.info({ attempt, status, robotId, taskId }, "Browse.AI task still running");
+    }
+
+    logger.warn({ robotId, taskId, url, source: source.name }, "Browse.AI task timed out after 90 s");
+    return [];
+  } catch (err) {
+    logger.warn({ err, robotId, url, source: source.name }, "Browse.AI scrape threw");
     return [];
   }
 }
@@ -2616,7 +2834,19 @@ async function scrapeSource(
   }
 
   try {
-    if (source.firecrawl) {
+    if (source.browseAiRobotId) {
+      // ── Browse.AI path ────────────────────────────────────────────────────
+      // Run the primary URL + all extraUrls sequentially (each task takes 5–90 s).
+      // Sequential (not parallel) to avoid hammering the robot's task queue.
+      const allUrls = [source.searchUrl, ...(source.extraUrls ?? [])];
+      for (const url of allUrls) {
+        try {
+          addUnique(await scrapeWithBrowseAi(source.browseAiRobotId, url, source, startDate, endDate));
+        } catch (err) {
+          logger.warn({ err, url, source: source.name }, "Browse.AI URL failed");
+        }
+      }
+    } else if (source.firecrawl) {
       // ── Firecrawl path ────────────────────────────────────────────────────
       // Run the primary URL + all extraUrls in parallel (each has a 30 s timeout).
       const allUrls = [source.searchUrl, ...(source.extraUrls ?? [])];
