@@ -122,23 +122,12 @@ export default function ScanDetail() {
             )}
           </div>
 
-          {/* Historical scan notice */}
+          {/* No-new-projects notice */}
           {projects && projects.length === 0 && (scan.projectsFound ?? 0) > 0 && (
-            <div className="px-4 py-6 bg-amber-50/60 border-b border-amber-200 text-sm text-amber-800">
-              <p className="font-semibold">
-                This scan ran before full project tracking was enabled.
-              </p>
-              <p className="text-xs text-amber-700 mt-1.5 leading-relaxed">
-                Only scans run after this update will show the complete list of all projects found.
-                {(scan.newProjects ?? 0) > 0 && (
-                  <span>
-                    You can still view the{" "}
-                    <Link href={`/projects?scanId=${scan.id}`} className="underline font-medium">
-                      {scan.newProjects} new project{(scan.newProjects ?? 0) !== 1 ? "s" : ""}
-                    </Link>{" "}
-                    discovered by this scan.
-                  </span>
-                )}
+            <div className="px-4 py-6 bg-muted/40 border-b text-sm text-muted-foreground">
+              <p className="font-semibold text-foreground">No new projects found.</p>
+              <p className="mt-1">
+                {scan.projectsFound} project{scan.projectsFound !== 1 ? "s" : ""} were encountered across {scan.sourcesScanned} sources, but all already exist in the database.
               </p>
             </div>
           )}
