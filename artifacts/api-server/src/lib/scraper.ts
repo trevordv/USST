@@ -2634,13 +2634,19 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
           projectId = existingByUrl.get(project.sourceUrl!)!;
         }
 
-        // Record this scan↔project relationship
-        await db.insert(scanProjectsTable).values({
-          scanId,
-          projectId,
-          projectName: project.name,
-          isNew,
-        });
+        // Only record genuinely new projects in the scan↔project relationship.
+        // Existing projects re-encountered from sources without per-item dates
+        // (e.g. government portals, AltEnergy project DB) would otherwise show
+        // up in scan results with their original (old) announced dates, making
+        // date-range-filtered scans appear broken.
+        if (isNew) {
+          await db.insert(scanProjectsTable).values({
+            scanId,
+            projectId,
+            projectName: project.name,
+            isNew: true,
+          });
+        }
       } catch (err) {
         logger.warn({ err, project: project.name }, "Failed to insert project or scan relationship");
       }

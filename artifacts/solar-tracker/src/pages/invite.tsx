@@ -39,7 +39,10 @@ export default function InvitePage() {
     setCreatedToken(null);
     try {
       const result = await createToken.mutateAsync({
-        data: { label: label.trim() || undefined },
+        data: {
+          label: label.trim() || undefined,
+          expiresAt: addDays(new Date(), 30).toISOString(),
+        },
       });
       setCreatedToken(result.token);
       setLabel("");

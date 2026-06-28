@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { format } from "date-fns";
-import { ArrowLeft, Sparkles, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2 } from "lucide-react";
 
 export default function ScanDetail() {
   const params = useParams();
@@ -98,12 +98,12 @@ export default function ScanDetail() {
                 <div className="text-xl font-mono font-bold">{scan.sourcesScanned}</div>
               </div>
               <div className="text-right">
-                <div className="text-sm text-muted-foreground">Total found</div>
-                <div className="text-xl font-mono font-bold">{projects?.length ?? 0}</div>
+                <div className="text-sm text-muted-foreground">Encountered</div>
+                <div className="text-xl font-mono font-bold">{scan.projectsFound ?? 0}</div>
               </div>
               <div className="text-right">
                 <div className="text-sm text-muted-foreground">New</div>
-                <div className="text-xl font-mono font-bold text-primary">+{newCount}</div>
+                <div className="text-xl font-mono font-bold text-primary">+{projects?.length ?? 0}</div>
               </div>
             </div>
           </div>
@@ -113,12 +113,11 @@ export default function ScanDetail() {
         <div className="border rounded-lg bg-card overflow-hidden shadow-sm">
           <div className="px-4 py-3 border-b bg-muted/50 flex items-center justify-between">
             <h2 className="font-semibold text-sm">
-              All projects discovered ({projects?.length ?? 0})
+              New projects from this scan ({projects?.length ?? 0})
             </h2>
-            {newCount > 0 && (
-              <div className="flex items-center gap-1.5 text-xs text-primary">
-                <Sparkles className="h-3.5 w-3.5" />
-                <span>{newCount} new project{newCount !== 1 ? "s" : ""} highlighted</span>
+            {(projects?.length ?? 0) === 0 && (scan.projectsFound ?? 0) === 0 && (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span>No new projects found</span>
               </div>
             )}
           </div>
@@ -147,7 +146,6 @@ export default function ScanDetail() {
           <Table>
             <TableHeader>
               <TableRow className="bg-muted/50 hover:bg-muted/50">
-                <TableHead className="w-12"></TableHead>
                 <TableHead>Project</TableHead>
                 <TableHead>Capacity</TableHead>
                 <TableHead>Location</TableHead>
@@ -160,23 +158,8 @@ export default function ScanDetail() {
                 projects.map((project) => (
                   <TableRow
                     key={project.id}
-                    className={`group cursor-pointer transition-colors ${
-                      project.isNew
-                        ? "bg-green-50/60 hover:bg-green-100/70 dark:bg-green-950/20 dark:hover:bg-green-900/30"
-                        : "hover:bg-muted/50"
-                    }`}
+                    className="group cursor-pointer transition-colors hover:bg-muted/50"
                   >
-                    <TableCell className="text-center">
-                      {project.isNew && (
-                        <Badge
-                          variant="outline"
-                          className="border-green-300 bg-green-100 text-green-700 text-[10px] uppercase tracking-wider"
-                        >
-                          <Sparkles className="h-3 w-3 mr-0.5" />
-                          New
-                        </Badge>
-                      )}
-                    </TableCell>
                     <TableCell>
                       <Link href={`/projects/${project.id}`} className="block">
                         <div className="font-medium text-foreground">{project.name}</div>
@@ -232,9 +215,9 @@ export default function ScanDetail() {
                 ))
               ) : (
                 <TableRow>
-                  <TableCell colSpan={6} className="h-48 text-center text-muted-foreground">
+                  <TableCell colSpan={5} className="h-48 text-center text-muted-foreground">
                     <CheckCircle2 className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                    <p>No projects found for this scan.</p>
+                    <p>No new projects found in this scan.</p>
                   </TableCell>
                 </TableRow>
               )}
