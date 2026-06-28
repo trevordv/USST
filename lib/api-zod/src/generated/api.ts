@@ -179,7 +179,10 @@ export const GetProjectStatsResponse = zod.object({
 export const ExportProjectsQueryParams = zod.object({
   "startDate": zod.coerce.string().optional(),
   "endDate": zod.coerce.string().optional(),
-  "country": zod.coerce.string().optional()
+  "country": zod.coerce.string().optional(),
+  "search": zod.coerce.string().optional(),
+  "scanId": zod.coerce.number().optional(),
+  "hasContact": zod.coerce.boolean().optional()
 })
 
 

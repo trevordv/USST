@@ -10,4 +10,7 @@ export type ExportProjectsParams = {
 startDate?: string;
 endDate?: string;
 country?: string;
+search?: string;
+scanId?: number;
+hasContact?: boolean;
 };

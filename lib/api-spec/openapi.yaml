@@ -204,6 +204,21 @@ paths:
           required: false
           schema:
             type: string
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: scanId
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: hasContact
+          in: query
+          required: false
+          schema:
+            type: boolean
       responses:
         "200":
           description: CSV file

@@ -84,15 +84,15 @@ export default function Projects() {
 
   const handleExport = async () => {
     try {
-      // Create export directly or via hook
-      // Since useExportProjects is a query hook, we probably should fetch it imperatively
-      // But standard approach for downloads is just opening the url or fetching blob
-      const url = `/api/projects/export?${new URLSearchParams({
-        ...(startDate && { startDate }),
-        ...(endDate && { endDate }),
-        ...(country !== "ALL" && { country })
-      }).toString()}`;
-      
+      const params: Record<string, string> = {};
+      if (startDate) params.startDate = startDate;
+      if (endDate) params.endDate = endDate;
+      if (country !== "ALL") params.country = country;
+      if (search) params.search = search;
+      if (scanId != null) params.scanId = String(scanId);
+      if (contactOnly) params.hasContact = "true";
+
+      const url = `/api/projects/export?${new URLSearchParams(params).toString()}`;
       window.location.href = url;
     } catch (e) {
       console.error(e);

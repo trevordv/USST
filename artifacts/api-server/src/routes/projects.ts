@@ -163,8 +163,8 @@ router.get("/projects/export", async (req, res): Promise<void> => {
     return;
   }
 
-  const { startDate, endDate, country } = parsed.data;
-  const conditions = buildWhereConditions(startDate, endDate, country, null);
+  const { startDate, endDate, country, search, scanId, hasContact } = parsed.data;
+  const conditions = buildWhereConditions(startDate, endDate, country, search ?? null, scanId ?? null, hasContact ?? null);
 
   const projects = await db
     .select()
