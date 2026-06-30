@@ -1,8 +1,13 @@
 import { Router, type IRouter } from "express";
 import { db, epbcProjectsTable, projectsTable } from "@workspace/db";
-import { eq, ilike, or, and, isNull, not, sql } from "drizzle-orm";
+import { eq, ilike, or, and, sql } from "drizzle-orm";
+import multer from "multer";
+import * as xlsx from "xlsx";
 import { fetchEpbcRecords } from "../lib/epbc-scraper";
+import { classifyEpbc, classifyApproval, extractMw } from "../lib/epbc-scraper";
 import { logger } from "../lib/logger";
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 const router: IRouter = Router();
 
@@ -62,6 +67,133 @@ router.get("/epbc/meta", async (_req, res): Promise<void> => {
     lastScrapedAt: latest?.scrapedAt?.toISOString() ?? null,
     total: Number(counts?.total ?? 0),
   });
+});
+
+// ── POST /epbc/upload (xlsx file) ─────────────────────────────────────────────
+
+/** Convert Excel serial date → YYYY-MM-DD string */
+function excelDateToIso(serial: number): string {
+  const date = new Date(Math.round((serial - 25569) * 86400 * 1000));
+  return date.toISOString().slice(0, 10);
+}
+
+function cellToString(val: unknown): string {
+  if (val == null) return "";
+  return String(val).trim();
+}
+
+function parseReferralDate(val: unknown): string | null {
+  if (val == null || val === "") return null;
+  if (typeof val === "number") return excelDateToIso(val);
+  const s = String(val).trim();
+  if (!s) return null;
+  // try ISO-like formats
+  const m = s.match(/(\d{4})[/-](\d{1,2})[/-](\d{1,2})/) ?? s.match(/(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
+  if (m) return new Date(s).toISOString().slice(0, 10);
+  return s.slice(0, 10);
+}
+
+// Accepted column name aliases (xlsx files use varying headers)
+const COL_ALIASES: Record<string, string[]> = {
+  epbcNumber:    ["epbc number", "epbc no", "referral number", "epbc"],
+  projectName:   ["project", "project name", "title"],
+  proponent:     ["proposer", "proposer/approval holder", "proponent", "approval holder"],
+  location:      ["location"],
+  industryType:  ["industry type", "industry"],
+  referralDate:  ["valid date", "referral date", "date referred", "referral started"],
+  projectStatus: ["project status", "status"],
+  state:         ["primary jurisdiction", "jurisdiction", "state"],
+  decisionStatus:["decision status", "decision"],
+};
+
+function findCol(headers: string[], aliases: string[]): number {
+  for (const alias of aliases) {
+    const idx = headers.findIndex((h) => h.toLowerCase().trim() === alias.toLowerCase());
+    if (idx !== -1) return idx;
+  }
+  return -1;
+}
+
+router.post("/epbc/upload", upload.single("file") as unknown as Parameters<typeof router.post>[1], async (req, res): Promise<void> => {
+  const file = (req as unknown as { file?: Express.Multer.File }).file;
+  if (!file) { res.status(400).json({ error: "No file uploaded" }); return; }
+
+  let wb: xlsx.WorkBook;
+  try {
+    wb = xlsx.read(file.buffer, { type: "buffer", cellDates: false });
+  } catch {
+    res.status(400).json({ error: "Could not parse xlsx file" });
+    return;
+  }
+
+  const sheetName = wb.SheetNames[0];
+  const ws = wb.Sheets[sheetName];
+  const rows = xlsx.utils.sheet_to_json<string[]>(ws, { header: 1, raw: true }) as unknown[][];
+
+  if (rows.length < 2) { res.status(400).json({ error: "Xlsx has no data rows" }); return; }
+
+  // Map headers
+  const headers = (rows[0] as unknown[]).map((h) => cellToString(h));
+  const colMap: Record<string, number> = {};
+  for (const [field, aliases] of Object.entries(COL_ALIASES)) {
+    colMap[field] = findCol(headers, aliases);
+  }
+
+  let newCount = 0;
+  let updatedCount = 0;
+  let skipped = 0;
+
+  for (const row of rows.slice(1)) {
+    const cells = row as unknown[];
+    const epbcNumber = cellToString(cells[colMap.epbcNumber]);
+    if (!epbcNumber || !/\d/.test(epbcNumber)) { skipped++; continue; }
+
+    const projectName = cellToString(cells[colMap.projectName]) || epbcNumber;
+    const proponent   = colMap.proponent   >= 0 ? cellToString(cells[colMap.proponent])   || null : null;
+    const location    = colMap.location    >= 0 ? cellToString(cells[colMap.location])    || null : null;
+    const industryType= colMap.industryType>= 0 ? cellToString(cells[colMap.industryType])|| null : null;
+    const projectStatus= colMap.projectStatus>=0? cellToString(cells[colMap.projectStatus])|| null: null;
+    const state       = colMap.state       >= 0 ? cellToString(cells[colMap.state])       || null : null;
+    const decisionStatus= colMap.decisionStatus>=0? cellToString(cells[colMap.decisionStatus])||null:null;
+    const referralDate= colMap.referralDate >= 0 ? parseReferralDate(cells[colMap.referralDate]) : null;
+
+    const { technologyType, isRenewable, isSolar, relevanceStatus } = classifyEpbc(projectName, null);
+    const isApproved = classifyApproval(projectStatus, decisionStatus);
+    const sizeMw = extractMw(projectName);
+
+    const referralNum = epbcNumber.replace(/\//g, "-");
+    const sourceUrl = `https://epbcpublicportal.environment.gov.au/public-register/referral-detail/${referralNum}`;
+
+    try {
+      const existing = await db
+        .select({ id: epbcProjectsTable.id })
+        .from(epbcProjectsTable)
+        .where(eq(epbcProjectsTable.epbcNumber, epbcNumber))
+        .limit(1);
+
+      if (existing.length === 0) {
+        await db.insert(epbcProjectsTable).values({
+          epbcNumber, projectName, proponent, industryType, projectStatus, decisionStatus,
+          state, location, technologyType,
+          sizeMw: sizeMw != null ? String(sizeMw) : null,
+          referralDate, sourceUrl,
+          isRenewable, isSolar, isApproved, relevanceStatus,
+        });
+        newCount++;
+      } else {
+        await db.update(epbcProjectsTable)
+          .set({ projectStatus, decisionStatus, isApproved, updatedAt: new Date() })
+          .where(eq(epbcProjectsTable.epbcNumber, epbcNumber));
+        updatedCount++;
+      }
+    } catch (err) {
+      logger.warn({ err, epbcNumber }, "Failed to upsert EPBC xlsx row");
+      skipped++;
+    }
+  }
+
+  req.log.info({ newCount, updatedCount, skipped }, "EPBC xlsx upload complete");
+  res.json({ newCount, updatedCount, skipped, total: rows.length - 1 });
 });
 
 // ── POST /epbc/sync ───────────────────────────────────────────────────────────

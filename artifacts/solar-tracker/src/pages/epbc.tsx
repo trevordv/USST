@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -25,7 +25,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { RefreshCw, ExternalLink, Sun, XCircle, Download, Search } from "lucide-react";
+import { RefreshCw, ExternalLink, Sun, XCircle, Download, Search, Upload } from "lucide-react";
 import { format } from "date-fns";
 import { useDebounce } from "@/lib/use-debounce";
 
@@ -122,6 +122,7 @@ export default function EpbcPage() {
   const [relevanceStatus, setRelevanceStatus] = useState("all");
   const [approvalStatus, setApprovalStatus] = useState("all");
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const debouncedSearch = useDebounce(search, 300);
 
@@ -167,6 +168,29 @@ export default function EpbcPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["epbc-projects"] }),
   });
 
+  const uploadMutation = useMutation<{ newCount: number; updatedCount: number; skipped: number; total: number }, Error, File>({
+    mutationFn: async (file) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`${BASE}/api/epbc/upload`, { method: "POST", body: fd });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      return res.json() as Promise<{ newCount: number; updatedCount: number; skipped: number; total: number }>;
+    },
+    onSuccess: (data) => {
+      setSyncMsg(`Upload complete: ${data.newCount} new, ${data.updatedCount} updated, ${data.skipped} skipped`);
+      qc.invalidateQueries({ queryKey: ["epbc-projects"] });
+      qc.invalidateQueries({ queryKey: ["epbc-meta"] });
+      setTimeout(() => setSyncMsg(null), 7000);
+    },
+    onError: (err: Error) => {
+      setSyncMsg(`Upload failed: ${err.message}`);
+      setTimeout(() => setSyncMsg(null), 6000);
+    },
+  });
+
   const importMutation = useMutation<{ projectId: number; message: string }, Error, number>({
     mutationFn: (id) =>
       apiFetch<{ projectId: number; message: string }>(`/api/epbc/projects/${id}/import`, {
@@ -209,19 +233,57 @@ export default function EpbcPage() {
               </p>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap justify-end">
               {syncMsg && (
-                <span className="text-xs text-muted-foreground animate-fade-in">{syncMsg}</span>
+                <span className="text-xs text-muted-foreground">{syncMsg}</span>
               )}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => syncMutation.mutate()}
-                disabled={syncMutation.isPending}
-              >
-                <RefreshCw className={`h-4 w-4 mr-2 ${syncMutation.isPending ? "animate-spin" : ""}`} />
-                {syncMutation.isPending ? "Syncing…" : "Refresh EPBC Data"}
-              </Button>
+
+              {/* Hidden file input */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) uploadMutation.mutate(file);
+                  e.target.value = "";
+                }}
+              />
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploadMutation.isPending}
+                  >
+                    <Upload className={`h-4 w-4 mr-2 ${uploadMutation.isPending ? "animate-pulse" : ""}`} />
+                    {uploadMutation.isPending ? "Importing…" : "Upload XLSX"}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-xs text-xs">
+                  Download the XLSX export from the EPBC portal, then upload it here to import all records.
+                </TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => syncMutation.mutate()}
+                    disabled={syncMutation.isPending}
+                  >
+                    <RefreshCw className={`h-4 w-4 mr-2 ${syncMutation.isPending ? "animate-spin" : ""}`} />
+                    {syncMutation.isPending ? "Trying…" : "Try Live Sync"}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-xs text-xs">
+                  Attempts to scrape the EPBC portal directly. The portal uses Power Pages (Microsoft) which often blocks automated access — use Upload XLSX for reliable imports.
+                </TooltipContent>
+              </Tooltip>
             </div>
           </div>
 
