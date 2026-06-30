@@ -326,3 +326,111 @@ export const ValidateAccessTokenResponse = zod.object({
 })
 
 
+/**
+ * @summary List EPBC projects with optional filters
+ */
+export const ListEpbcProjectsQueryParams = zod.object({
+  "search": zod.coerce.string().optional(),
+  "state": zod.coerce.string().optional(),
+  "technology": zod.coerce.string().optional(),
+  "relevanceStatus": zod.coerce.string().optional(),
+  "approvalStatus": zod.coerce.string().optional()
+})
+
+export const ListEpbcProjectsResponseItem = zod.object({
+  "id": zod.number(),
+  "epbcNumber": zod.string(),
+  "projectName": zod.string(),
+  "proponent": zod.string().nullish(),
+  "industryType": zod.string().nullish(),
+  "projectStatus": zod.string().nullish(),
+  "decisionStatus": zod.string().nullish(),
+  "state": zod.string().nullish(),
+  "location": zod.string().nullish(),
+  "technologyType": zod.string().nullish(),
+  "sizeMw": zod.number().nullish(),
+  "referralDate": zod.string().nullish(),
+  "approvalDate": zod.string().nullish(),
+  "sourceUrl": zod.string().nullish(),
+  "rawDescription": zod.string().nullish(),
+  "isRenewable": zod.boolean(),
+  "isSolar": zod.boolean(),
+  "isApproved": zod.boolean(),
+  "relevanceStatus": zod.string(),
+  "scrapedAt": zod.string(),
+  "updatedAt": zod.string()
+})
+export const ListEpbcProjectsResponse = zod.array(ListEpbcProjectsResponseItem)
+
+
+/**
+ * @summary Get EPBC sync metadata (last scraped date, total count)
+ */
+export const GetEpbcMetaResponse = zod.object({
+  "lastScrapedAt": zod.string().nullish(),
+  "total": zod.number()
+})
+
+
+/**
+ * @summary Trigger a manual EPBC portal sync
+ */
+export const SyncEpbcResponse = zod.object({
+  "newCount": zod.number(),
+  "updatedCount": zod.number(),
+  "total": zod.number()
+})
+
+
+/**
+ * @summary Update classification fields on an EPBC project
+ */
+export const UpdateEpbcProjectParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const UpdateEpbcProjectBody = zod.object({
+  "relevanceStatus": zod.string().optional(),
+  "isSolar": zod.boolean().optional(),
+  "isApproved": zod.boolean().optional(),
+  "technologyType": zod.string().optional()
+})
+
+export const UpdateEpbcProjectResponse = zod.object({
+  "id": zod.number(),
+  "epbcNumber": zod.string(),
+  "projectName": zod.string(),
+  "proponent": zod.string().nullish(),
+  "industryType": zod.string().nullish(),
+  "projectStatus": zod.string().nullish(),
+  "decisionStatus": zod.string().nullish(),
+  "state": zod.string().nullish(),
+  "location": zod.string().nullish(),
+  "technologyType": zod.string().nullish(),
+  "sizeMw": zod.number().nullish(),
+  "referralDate": zod.string().nullish(),
+  "approvalDate": zod.string().nullish(),
+  "sourceUrl": zod.string().nullish(),
+  "rawDescription": zod.string().nullish(),
+  "isRenewable": zod.boolean(),
+  "isSolar": zod.boolean(),
+  "isApproved": zod.boolean(),
+  "relevanceStatus": zod.string(),
+  "scrapedAt": zod.string(),
+  "updatedAt": zod.string()
+})
+
+
+/**
+ * @summary Import an EPBC project into the main projects table
+ */
+export const ImportEpbcProjectParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const ImportEpbcProjectResponse = zod.object({
+  "projectId": zod.number(),
+  "message": zod.string()
+})
+
+

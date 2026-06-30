@@ -24,9 +24,15 @@ import type {
   AccessTokenInput,
   AccessTokenValidation,
   ContactEnrichment,
+  EpbcImportResult,
+  EpbcMeta,
+  EpbcProject,
+  EpbcProjectPatch,
+  EpbcSyncResult,
   ExportProjectsParams,
   GetProjectStatsParams,
   HealthStatus,
+  ListEpbcProjectsParams,
   ListProjectsParams,
   Project,
   ProjectInput,
@@ -1337,5 +1343,378 @@ export const useValidateAccessToken = <TError = ErrorType<void>,
         TContext
       > => {
       return useMutation(getValidateAccessTokenMutationOptions(options));
+    }
+
+export const getListEpbcProjectsUrl = (params?: ListEpbcProjectsParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : value.toString())
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/epbc/projects?${stringifiedParams}` : `/api/epbc/projects`
+}
+
+/**
+ * @summary List EPBC projects with optional filters
+ */
+export const listEpbcProjects = async (params?: ListEpbcProjectsParams, options?: RequestInit): Promise<EpbcProject[]> => {
+
+  return customFetch<EpbcProject[]>(getListEpbcProjectsUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListEpbcProjectsQueryKey = (params?: ListEpbcProjectsParams,) => {
+    return [
+    `/api/epbc/projects`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getListEpbcProjectsQueryOptions = <TData = Awaited<ReturnType<typeof listEpbcProjects>>, TError = ErrorType<unknown>>(params?: ListEpbcProjectsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listEpbcProjects>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListEpbcProjectsQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listEpbcProjects>>> = ({ signal }) => listEpbcProjects(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listEpbcProjects>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListEpbcProjectsQueryResult = NonNullable<Awaited<ReturnType<typeof listEpbcProjects>>>
+export type ListEpbcProjectsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List EPBC projects with optional filters
+ */
+
+export function useListEpbcProjects<TData = Awaited<ReturnType<typeof listEpbcProjects>>, TError = ErrorType<unknown>>(
+ params?: ListEpbcProjectsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listEpbcProjects>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListEpbcProjectsQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getGetEpbcMetaUrl = () => {
+
+
+
+
+  return `/api/epbc/meta`
+}
+
+/**
+ * @summary Get EPBC sync metadata (last scraped date, total count)
+ */
+export const getEpbcMeta = async ( options?: RequestInit): Promise<EpbcMeta> => {
+
+  return customFetch<EpbcMeta>(getGetEpbcMetaUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetEpbcMetaQueryKey = () => {
+    return [
+    `/api/epbc/meta`
+    ] as const;
+    }
+
+
+export const getGetEpbcMetaQueryOptions = <TData = Awaited<ReturnType<typeof getEpbcMeta>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getEpbcMeta>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetEpbcMetaQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getEpbcMeta>>> = ({ signal }) => getEpbcMeta({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getEpbcMeta>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetEpbcMetaQueryResult = NonNullable<Awaited<ReturnType<typeof getEpbcMeta>>>
+export type GetEpbcMetaQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Get EPBC sync metadata (last scraped date, total count)
+ */
+
+export function useGetEpbcMeta<TData = Awaited<ReturnType<typeof getEpbcMeta>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getEpbcMeta>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetEpbcMetaQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getSyncEpbcUrl = () => {
+
+
+
+
+  return `/api/epbc/sync`
+}
+
+/**
+ * @summary Trigger a manual EPBC portal sync
+ */
+export const syncEpbc = async ( options?: RequestInit): Promise<EpbcSyncResult> => {
+
+  return customFetch<EpbcSyncResult>(getSyncEpbcUrl(),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+export const getSyncEpbcMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof syncEpbc>>, TError,void, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof syncEpbc>>, TError,void, TContext> => {
+
+const mutationKey = ['syncEpbc'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof syncEpbc>>, void> = () => {
+
+
+          return  syncEpbc(requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type SyncEpbcMutationResult = NonNullable<Awaited<ReturnType<typeof syncEpbc>>>
+
+    export type SyncEpbcMutationError = ErrorType<void>
+
+    /**
+ * @summary Trigger a manual EPBC portal sync
+ */
+export const useSyncEpbc = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof syncEpbc>>, TError,void, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof syncEpbc>>,
+        TError,
+        void,
+        TContext
+      > => {
+      return useMutation(getSyncEpbcMutationOptions(options));
+    }
+
+export const getUpdateEpbcProjectUrl = (id: number,) => {
+
+
+
+
+  return `/api/epbc/projects/${id}`
+}
+
+/**
+ * @summary Update classification fields on an EPBC project
+ */
+export const updateEpbcProject = async (id: number,
+    epbcProjectPatch: EpbcProjectPatch, options?: RequestInit): Promise<EpbcProject> => {
+
+  return customFetch<EpbcProject>(getUpdateEpbcProjectUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      epbcProjectPatch,)
+  }
+);}
+
+
+
+
+export const getUpdateEpbcProjectMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateEpbcProject>>, TError,{id: number;data: BodyType<EpbcProjectPatch>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateEpbcProject>>, TError,{id: number;data: BodyType<EpbcProjectPatch>}, TContext> => {
+
+const mutationKey = ['updateEpbcProject'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateEpbcProject>>, {id: number;data: BodyType<EpbcProjectPatch>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateEpbcProject(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateEpbcProjectMutationResult = NonNullable<Awaited<ReturnType<typeof updateEpbcProject>>>
+    export type UpdateEpbcProjectMutationBody = BodyType<EpbcProjectPatch>
+    export type UpdateEpbcProjectMutationError = ErrorType<void>
+
+    /**
+ * @summary Update classification fields on an EPBC project
+ */
+export const useUpdateEpbcProject = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateEpbcProject>>, TError,{id: number;data: BodyType<EpbcProjectPatch>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateEpbcProject>>,
+        TError,
+        {id: number;data: BodyType<EpbcProjectPatch>},
+        TContext
+      > => {
+      return useMutation(getUpdateEpbcProjectMutationOptions(options));
+    }
+
+export const getImportEpbcProjectUrl = (id: number,) => {
+
+
+
+
+  return `/api/epbc/projects/${id}/import`
+}
+
+/**
+ * @summary Import an EPBC project into the main projects table
+ */
+export const importEpbcProject = async (id: number, options?: RequestInit): Promise<EpbcImportResult> => {
+
+  return customFetch<EpbcImportResult>(getImportEpbcProjectUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+export const getImportEpbcProjectMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof importEpbcProject>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof importEpbcProject>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['importEpbcProject'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof importEpbcProject>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  importEpbcProject(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ImportEpbcProjectMutationResult = NonNullable<Awaited<ReturnType<typeof importEpbcProject>>>
+
+    export type ImportEpbcProjectMutationError = ErrorType<void>
+
+    /**
+ * @summary Import an EPBC project into the main projects table
+ */
+export const useImportEpbcProject = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof importEpbcProject>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof importEpbcProject>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getImportEpbcProjectMutationOptions(options));
     }
 

@@ -405,6 +405,113 @@ paths:
         "401":
           description: Invalid or expired token
 
+  /epbc/projects:
+    get:
+      operationId: listEpbcProjects
+      tags: [epbc]
+      summary: List EPBC projects with optional filters
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          schema: { type: string }
+        - name: technology
+          in: query
+          schema: { type: string }
+        - name: relevanceStatus
+          in: query
+          schema: { type: string }
+        - name: approvalStatus
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: List of EPBC projects
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EpbcProject"
+
+  /epbc/meta:
+    get:
+      operationId: getEpbcMeta
+      tags: [epbc]
+      summary: Get EPBC sync metadata (last scraped date, total count)
+      responses:
+        "200":
+          description: Metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpbcMeta"
+
+  /epbc/sync:
+    post:
+      operationId: syncEpbc
+      tags: [epbc]
+      summary: Trigger a manual EPBC portal sync
+      responses:
+        "200":
+          description: Sync result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpbcSyncResult"
+        "502":
+          description: Portal unavailable
+
+  /epbc/projects/{id}:
+    patch:
+      operationId: updateEpbcProject
+      tags: [epbc]
+      summary: Update classification fields on an EPBC project
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EpbcProjectPatch"
+      responses:
+        "200":
+          description: Updated project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpbcProject"
+        "404":
+          description: Not found
+
+  /epbc/projects/{id}/import:
+    post:
+      operationId: importEpbcProject
+      tags: [epbc]
+      summary: Import an EPBC project into the main projects table
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Import result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpbcImportResult"
+        "404":
+          description: EPBC record not found
+        "409":
+          description: Already imported
+
 components:
   schemas:
     HealthStatus:
@@ -682,4 +789,92 @@ components:
         label:
           type: ["string", "null"]
         expiresAt:
+          type: string
+
+    EpbcProject:
+      type: object
+      required: [id, epbcNumber, projectName, isRenewable, isSolar, isApproved, relevanceStatus, scrapedAt, updatedAt]
+      properties:
+        id:
+          type: integer
+        epbcNumber:
+          type: string
+        projectName:
+          type: string
+        proponent:
+          type: ["string", "null"]
+        industryType:
+          type: ["string", "null"]
+        projectStatus:
+          type: ["string", "null"]
+        decisionStatus:
+          type: ["string", "null"]
+        state:
+          type: ["string", "null"]
+        location:
+          type: ["string", "null"]
+        technologyType:
+          type: ["string", "null"]
+        sizeMw:
+          type: ["number", "null"]
+        referralDate:
+          type: ["string", "null"]
+        approvalDate:
+          type: ["string", "null"]
+        sourceUrl:
+          type: ["string", "null"]
+        rawDescription:
+          type: ["string", "null"]
+        isRenewable:
+          type: boolean
+        isSolar:
+          type: boolean
+        isApproved:
+          type: boolean
+        relevanceStatus:
+          type: string
+        scrapedAt:
+          type: string
+        updatedAt:
+          type: string
+
+    EpbcMeta:
+      type: object
+      required: [total]
+      properties:
+        lastScrapedAt:
+          type: ["string", "null"]
+        total:
+          type: integer
+
+    EpbcSyncResult:
+      type: object
+      required: [newCount, updatedCount, total]
+      properties:
+        newCount:
+          type: integer
+        updatedCount:
+          type: integer
+        total:
+          type: integer
+
+    EpbcProjectPatch:
+      type: object
+      properties:
+        relevanceStatus:
+          type: string
+        isSolar:
+          type: boolean
+        isApproved:
+          type: boolean
+        technologyType:
+          type: string
+
+    EpbcImportResult:
+      type: object
+      required: [projectId, message]
+      properties:
+        projectId:
+          type: integer
+        message:
           type: string

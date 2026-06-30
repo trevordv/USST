@@ -260,6 +260,66 @@ export interface AccessTokenValidation {
   expiresAt: string;
 }
 
+export interface EpbcProject {
+  id: number;
+  epbcNumber: string;
+  projectName: string;
+  /** @nullable */
+  proponent?: string | null;
+  /** @nullable */
+  industryType?: string | null;
+  /** @nullable */
+  projectStatus?: string | null;
+  /** @nullable */
+  decisionStatus?: string | null;
+  /** @nullable */
+  state?: string | null;
+  /** @nullable */
+  location?: string | null;
+  /** @nullable */
+  technologyType?: string | null;
+  /** @nullable */
+  sizeMw?: number | null;
+  /** @nullable */
+  referralDate?: string | null;
+  /** @nullable */
+  approvalDate?: string | null;
+  /** @nullable */
+  sourceUrl?: string | null;
+  /** @nullable */
+  rawDescription?: string | null;
+  isRenewable: boolean;
+  isSolar: boolean;
+  isApproved: boolean;
+  relevanceStatus: string;
+  scrapedAt: string;
+  updatedAt: string;
+}
+
+export interface EpbcMeta {
+  /** @nullable */
+  lastScrapedAt?: string | null;
+  total: number;
+}
+
+export interface EpbcSyncResult {
+  newCount: number;
+  updatedCount: number;
+  total: number;
+}
+
+export interface EpbcProjectPatch {
+  relevanceStatus?: string;
+  isSolar?: boolean;
+  isApproved?: boolean;
+  technologyType?: string;
+}
+
+export interface EpbcImportResult {
+  projectId: number;
+  message: string;
+}
+
 export type ListProjectsParams = {
 /**
  * ISO date string (YYYY-MM-DD)
@@ -303,5 +363,13 @@ hasContact?: boolean;
 
 export type ValidateAccessTokenBody = {
   token: string;
+};
+
+export type ListEpbcProjectsParams = {
+search?: string;
+state?: string;
+technology?: string;
+relevanceStatus?: string;
+approvalStatus?: string;
 };
 

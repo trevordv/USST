@@ -7,6 +7,7 @@ import {
   Activity,
   KeyRound,
   LogOut,
+  FileSearch,
 } from "lucide-react";
 
 export function Layout({ children }: { children: ReactNode }) {
@@ -17,6 +18,7 @@ export function Layout({ children }: { children: ReactNode }) {
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
     { href: "/projects", label: "Projects", icon: Database },
     { href: "/scans", label: "Scan History", icon: Activity },
+    { href: "/epbc", label: "EPBC Projects", icon: FileSearch },
     { href: "/invite", label: "Invites", icon: KeyRound },
   ];
 

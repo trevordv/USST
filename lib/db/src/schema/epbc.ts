@@ -1,0 +1,25 @@
+import { pgTable, serial, text, boolean, timestamp, numeric } from "drizzle-orm/pg-core";
+
+export const epbcProjectsTable = pgTable("epbc_projects", {
+  id: serial("id").primaryKey(),
+  epbcNumber: text("epbc_number").unique().notNull(),
+  projectName: text("project_name").notNull(),
+  proponent: text("proponent"),
+  industryType: text("industry_type"),
+  projectStatus: text("project_status"),
+  decisionStatus: text("decision_status"),
+  state: text("state"),
+  location: text("location"),
+  technologyType: text("technology_type"),
+  sizeMw: numeric("size_mw"),
+  referralDate: text("referral_date"),
+  approvalDate: text("approval_date"),
+  sourceUrl: text("source_url"),
+  rawDescription: text("raw_description"),
+  isRenewable: boolean("is_renewable").notNull().default(false),
+  isSolar: boolean("is_solar").notNull().default(false),
+  isApproved: boolean("is_approved").notNull().default(false),
+  relevanceStatus: text("relevance_status").notNull().default("pending"),
+  scrapedAt: timestamp("scraped_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});

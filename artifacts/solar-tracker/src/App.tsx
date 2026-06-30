@@ -12,6 +12,7 @@ import Scans from "./pages/scans";
 import ScanDetail from "./pages/scan-detail";
 import TokenGate from "./pages/token-gate";
 import InvitePage from "./pages/invite";
+import EpbcPage from "./pages/epbc";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -45,6 +46,7 @@ function AuthRouter() {
       <Route path="/projects/:id" component={ProjectDetail} />
       <Route path="/scans" component={Scans} />
       <Route path="/scans/:id" component={ScanDetail} />
+      <Route path="/epbc" component={EpbcPage} />
       <Route path="/invite" component={InvitePage} />
       <Route component={NotFound} />
     </Switch>

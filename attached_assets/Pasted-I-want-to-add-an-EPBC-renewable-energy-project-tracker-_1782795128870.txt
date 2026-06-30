@@ -1,0 +1,87 @@
+I want to add an EPBC renewable energy project tracker to my existing USST solar project tracking app.
+
+Please build this as a new ingestion module, not a separate app.
+
+Requirements:
+
+1. Add a database table called epbc_projects with fields:
+- id
+- epbc_number, unique
+- project_name
+- proponent
+- industry_type
+- project_status
+- decision_status
+- state
+- location
+- technology_type
+- size_mw
+- referral_date
+- approval_date
+- source_url
+- raw_description
+- is_renewable
+- is_solar
+- is_approved
+- relevance_status
+- scraped_at
+- updated_at
+
+2. Create a scraper module for the EPBC Public Portal:
+https://epbcpublicportal.environment.gov.au/all-referrals/
+
+The scraper should collect projects from the public EPBC portal where Industry Type is Energy Generation and Supply renewable.
+
+It should extract:
+- EPBC number
+- project name
+- proponent if available
+- project status
+- decision status
+- state / jurisdiction
+- project description
+- project URL
+- referral started date
+- any approval or decision date if available
+- MW size if stated in the description
+
+3. Use Playwright if the portal table is dynamically loaded. If a direct API endpoint is discoverable from browser network calls, use the API endpoint instead of page scraping.
+
+4. Add cautious classification:
+- solar if the name or description contains solar, photovoltaic, PV, solar farm
+- hybrid solar if solar and BESS / battery / storage are both present
+- wind if wind farm or turbine is present
+- pure BESS if battery / BESS / storage is present but solar is not present
+- transmission if transmission, substation, interconnector, powerline are present
+
+5. Add cautious approval logic:
+- is_approved true only where status clearly indicates approval
+- false if withdrawn, expired, under assessment, open for public comment, or not yet decided
+- if uncertain, set relevance_status to Needs Review
+
+6. Add an admin page called EPBC Projects with:
+- searchable table
+- filters for State, Technology, Approval Status, Relevance Status
+- source URL link
+- button to refresh EPBC data manually
+- button to mark as Solar
+- button to mark as Not Relevant
+- button to import into the main USST projects table
+
+7. Add a backend route:
+POST /api/epbc/sync
+This should run the scraper manually and return number of new records and updated records.
+
+8. Add a scheduled job script:
+server/jobs/syncEpbcProjects
+This should run the scraper and upsert records into the database.
+
+9. Add error handling and logging:
+- Do not crash the app if EPBC portal is unavailable
+- Save scrape errors to the console
+- Rate limit requests to avoid aggressive scraping
+- Do not duplicate records with the same EPBC number
+
+10. Add a "last scraped date" display on the EPBC Projects admin page.
+
+Please implement this in the current tech stack of my app and keep the code simple and maintainable.
