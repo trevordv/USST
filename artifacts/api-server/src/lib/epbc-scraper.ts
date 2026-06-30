@@ -222,78 +222,154 @@ interface GptReferral {
   comment_close_date?: string;
 }
 
-/**
- * Use OpenAI's Responses API with the built-in web_search_preview tool to find
- * recent EPBC solar/BESS referrals. ChatGPT can access indexed EPBC pages that
- * are blocked to headless browsers.
- */
-async function scrapeViaChatGpt(): Promise<PortalReferral[]> {
-  const { openai } = await import("@workspace/integrations-openai-ai-server");
+type GptOpenAI = {
+  responses: {
+    create: (opts: {
+      model: string;
+      tools: { type: string }[];
+      input: string;
+      max_output_tokens: number;
+    }) => Promise<{ output_text?: string; output?: { type: string; text?: string }[] }>;
+  };
+};
 
-  const today = new Date().toISOString().slice(0, 10);
-
-  const response = await (openai as unknown as {
-    responses: {
-      create: (opts: {
-        model: string;
-        tools: { type: string }[];
-        input: string;
-        max_output_tokens: number;
-      }) => Promise<{ output_text?: string; output?: { type: string; text?: string }[] }>;
-    };
-  }).responses.create({
-    model: "gpt-5.4",
-    tools: [{ type: "web_search_preview" }],
-    input: `Today is ${today}. Search the Australian EPBC Public Portal (epbcpublicportal.environment.gov.au) for all current solar energy and solar+BESS battery storage project referrals.
-
-Find as many referrals as possible — include projects at any EPBC status (under assessment, open for comment, approved, etc). Focus on energy/electricity generation referrals containing solar, photovoltaic, PV, or solar+BESS/battery terms.
-
-Return ONLY a JSON array (no markdown fences, no explanatory text) with objects in this exact shape:
-[
+const JSON_SCHEMA_EXAMPLE = `[
   {
-    "epbc_number": "2026/10533",
-    "project_name": "Milpulling Solar Farm",
+    "epbc_number": "2024/10123",
+    "project_name": "Example Solar Farm",
     "proponent": "Acme Energy Pty Ltd",
     "technology": "Solar",
     "state": "NSW",
     "capacity_mw": 150,
     "status": "Referral Decision — Open for Public Comment",
-    "notice_date": "2026-06-24",
-    "comment_close_date": "2026-07-09"
+    "notice_date": "2024-03-15",
+    "comment_close_date": "2024-04-05"
   }
-]
+]`;
+
+function buildSearchPrompt(focus: string, today: string): string {
+  return `Today is ${today}. Your task: find EPBC Act referrals for solar energy and solar+BESS projects from the Australian EPBC Public Portal.
+
+Search focus: ${focus}
+
+Search the EPBC portal (epbcpublicportal.environment.gov.au), government registers, and news sources to compile a comprehensive list. Look at:
+- The "All Referrals" table filtered by Energy industry type
+- Individual referral detail pages for solar/PV projects
+- Public notice pages (open for comment, assessment notices)
+- Any accessible government lists of EPBC renewable energy referrals
+
+Include ALL statuses: under assessment, open for public comment, approved, conditions varied, completed. Do NOT limit to only recent projects.
+
+Return ONLY a valid JSON array (no prose, no markdown fences):
+${JSON_SCHEMA_EXAMPLE}
 
 Rules:
-- capacity_mw: extract MW number from description, null if unknown
-- technology: one of "Solar", "Solar + BESS", "BESS", "Wind", "Wind + BESS", or "Other"
-- Include only energy/electricity projects — exclude mining, roads, agriculture, etc.
-- Return an empty array [] if nothing found`,
-    max_output_tokens: 8192,
-  });
+- epbc_number: format YYYY/NNNNN
+- capacity_mw: MW number extracted from description, null if not stated
+- technology: "Solar", "Solar + BESS", "BESS", "Wind", "Wind + BESS", or "Other"
+- state: AU state/territory abbreviation (NSW, VIC, QLD, SA, WA, TAS, NT, ACT) or "NZ"
+- Exclude non-energy projects (mining, roads, agriculture, housing)
+- Return [] if nothing found for this focus`;
+}
 
-  // Extract text from response
-  let text = response.output_text ?? "";
-  if (!text && Array.isArray(response.output)) {
-    for (const block of response.output) {
-      if (block.type === "message" && block.text) { text = block.text; break; }
+function extractJsonArray(text: string): GptReferral[] {
+  // Strip markdown fences
+  text = text.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+  if (start === -1 || end === -1) return [];
+  try {
+    const parsed = JSON.parse(text.slice(start, end + 1));
+    return Array.isArray(parsed) ? (parsed as GptReferral[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function runGptSearch(gpt: GptOpenAI, prompt: string): Promise<GptReferral[]> {
+  try {
+    const response = await gpt.responses.create({
+      model: "gpt-5.4",
+      tools: [{ type: "web_search_preview" }],
+      input: prompt,
+      max_output_tokens: 8192,
+    });
+    let text = response.output_text ?? "";
+    if (!text && Array.isArray(response.output)) {
+      for (const block of response.output) {
+        if (block.type === "message" && block.text) { text = block.text; break; }
+      }
+    }
+    return extractJsonArray(text);
+  } catch (err) {
+    logger.warn({ err }, "EPBC ChatGPT sub-query failed, skipping");
+    return [];
+  }
+}
+
+/**
+ * Use OpenAI Responses API with web_search_preview across multiple parallel
+ * targeted queries (by state and year range) to maximise EPBC coverage.
+ * Results are deduplicated by EPBC number.
+ */
+async function scrapeViaChatGpt(): Promise<PortalReferral[]> {
+  const { openai } = await import("@workspace/integrations-openai-ai-server");
+  const gpt = openai as unknown as GptOpenAI;
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Build a matrix of searches: states × year ranges
+  const states = ["NSW", "VIC", "QLD", "SA", "WA", "TAS", "NT", "ACT"];
+  const yearBands = [
+    "2018 to 2020",
+    "2021 to 2022",
+    "2023 to 2024",
+    "2025 to present",
+  ];
+
+  const queries: string[] = [];
+
+  // Per-state queries for recent years (highest value)
+  for (const state of states) {
+    queries.push(buildSearchPrompt(
+      `Solar and solar+BESS projects in ${state} referred under the EPBC Act (all years, any status)`,
+      today,
+    ));
+  }
+
+  // Year-band sweeps to catch anything missed by the state queries
+  for (const band of yearBands) {
+    queries.push(buildSearchPrompt(
+      `Solar and solar+BESS EPBC referrals from ${band} across all Australian states`,
+      today,
+    ));
+  }
+
+  // Broad "open for comment / under assessment" sweep to catch the very latest
+  queries.push(buildSearchPrompt(
+    "Solar EPBC referrals currently open for public comment or under assessment (most recent)",
+    today,
+  ));
+
+  logger.info({ queryCount: queries.length }, "EPBC: running parallel ChatGPT searches");
+
+  // Run all queries in parallel (ChatGPT handles its own rate limiting)
+  const resultSets = await Promise.all(queries.map((q) => runGptSearch(gpt, q)));
+
+  // Flatten and deduplicate by EPBC number
+  const seen = new Set<string>();
+  const unique: GptReferral[] = [];
+  for (const batch of resultSets) {
+    for (const r of batch) {
+      const key = (r.epbc_number ?? "").trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      unique.push(r);
     }
   }
 
-  if (!text.trim()) throw new Error("ChatGPT returned empty response");
+  logger.info({ total: unique.length }, "EPBC: ChatGPT deduped results");
 
-  // Strip markdown fences if present
-  text = text.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
-
-  // Find JSON array in response (ChatGPT may add prose before/after)
-  const start = text.indexOf("[");
-  const end = text.lastIndexOf("]");
-  if (start === -1 || end === -1) throw new Error("No JSON array in ChatGPT response");
-  const jsonStr = text.slice(start, end + 1);
-
-  const parsed = JSON.parse(jsonStr) as GptReferral[];
-  if (!Array.isArray(parsed)) throw new Error("ChatGPT response is not an array");
-
-  return parsed.map((r): PortalReferral => ({
+  return unique.map((r): PortalReferral => ({
     epbcNumber: r.epbc_number,
     projectName: r.project_name,
     proposer: r.proponent,
