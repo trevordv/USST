@@ -2838,6 +2838,132 @@ function extractSourceName(url: string): string {
   }
 }
 
+// ── ChatGPT web-search fallback ───────────────────────────────────────────────
+
+type GptScraperOpenAI = {
+  responses: {
+    create: (opts: {
+      model: string;
+      tools: { type: string }[];
+      input: string;
+      max_output_tokens: number;
+    }) => Promise<{ output_text?: string; output?: { type: string; text?: string }[] }>;
+  };
+};
+
+interface GptSourceProject {
+  name?: string;
+  description?: string;
+  capacity_mw?: number | null;
+  developer?: string | null;
+  location?: string | null;
+  country?: string;
+  status?: string;
+  source_url?: string;
+  announced_date?: string;
+}
+
+/**
+ * ChatGPT web-search fallback for a single source.
+ * Called when standard HTML/RSS parsing returns 0 projects.
+ */
+async function scrapeWithChatGpt(
+  source: ScrapeSource,
+  startDate?: string,
+  endDate?: string,
+): Promise<ScrapedProject[]> {
+  try {
+    const { openai } = await import("@workspace/integrations-openai-ai-server");
+    const gpt = openai as unknown as GptScraperOpenAI;
+    const today = new Date().toISOString().slice(0, 10);
+
+    const dateClause = startDate || endDate
+      ? ` announced between ${startDate ?? "any date"} and ${endDate ?? today}`
+      : "";
+
+    const prompt = `Today is ${today}. Search "${source.name}" (${source.searchUrl}) for utility-scale solar energy or solar+BESS hybrid projects in Australia or New Zealand${dateClause}.
+
+Find all solar/PV projects ≥5 MW that have been announced, approved, or are under assessment. Include the project's MW capacity if stated.
+
+Return ONLY a valid JSON array (no prose, no markdown fences):
+[
+  {
+    "name": "Example Solar Farm",
+    "description": "150 MW solar farm in regional NSW",
+    "capacity_mw": 150,
+    "developer": "Acme Energy Pty Ltd",
+    "location": "Regional NSW",
+    "country": "AU",
+    "status": "announced",
+    "source_url": "https://example.com/project/example-solar-farm",
+    "announced_date": "2024-03-15"
+  }
+]
+
+Rules:
+- country: "AU" or "NZ" only
+- status: "announced" or "under_development"
+- capacity_mw: number or null if unknown — only include projects ≥5 MW or where size is unknown
+- source_url: direct URL to the specific project page/article if known, otherwise use ${source.searchUrl}
+- announced_date: YYYY-MM-DD format, null if unknown
+- Exclude wind-only projects, mining, roads, housing
+- Return [] if nothing relevant found`;
+
+    const response = await gpt.responses.create({
+      model: "gpt-5.4",
+      tools: [{ type: "web_search_preview" }],
+      input: prompt,
+      max_output_tokens: 8192,
+    });
+
+    let text = response.output_text ?? "";
+    if (!text && Array.isArray(response.output)) {
+      for (const block of response.output) {
+        if (block.type === "message" && block.text) { text = block.text; break; }
+      }
+    }
+
+    // Strip markdown fences, find JSON array
+    text = text.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+    const start = text.indexOf("[");
+    const end = text.lastIndexOf("]");
+    if (start === -1 || end === -1) return [];
+
+    const parsed = JSON.parse(text.slice(start, end + 1)) as GptSourceProject[];
+    if (!Array.isArray(parsed)) return [];
+
+    const results: ScrapedProject[] = [];
+    for (const r of parsed) {
+      if (!r.name) continue;
+      const cap = typeof r.capacity_mw === "number" ? r.capacity_mw : null;
+      if (cap !== null && cap < 5) continue; // respect ≥5 MW gate
+      results.push({
+        name: r.name,
+        description: r.description ?? r.name,
+        capacityMw: cap,
+        developer: r.developer ?? null,
+        location: r.location ?? null,
+        country: (r.country === "NZ" ? "NZ" : "AU") as "AU" | "NZ",
+        status: (r.status === "under_development" ? "under_development" : "announced") as "announced" | "under_development",
+        sourceUrl: r.source_url ?? source.searchUrl,
+        sourceName: source.name,
+        announcedDate: r.announced_date ?? today,
+        contactName: null,
+        contactEmail: null,
+        contactPhone: null,
+      });
+    }
+
+    logger.info({ source: source.name, found: results.length }, "ChatGPT fallback complete");
+    return results;
+  } catch (err) {
+    logger.warn({ err, source: source.name }, "ChatGPT fallback failed");
+    return [];
+  }
+}
+
+// ── Per-source scrape ─────────────────────────────────────────────────────────
+
 async function scrapeSource(
   source: ScrapeSource,
   startDate?: string,
@@ -2904,6 +3030,16 @@ async function scrapeSource(
     }
 
     logger.info({ source: source.name, total: projects.length }, "Source scrape complete");
+
+    // ── ChatGPT fallback ──────────────────────────────────────────────────────
+    // If standard parsing (RSS + HTML) returned nothing, try ChatGPT web search.
+    // Skip for Browse.AI sources (they have their own JS-rendering fallback)
+    // and for authenticated sources (AltEnergy is handled separately).
+    if (projects.length === 0 && !source.browseAiRobotId && !source.authenticated) {
+      logger.info({ source: source.name }, "Standard parse returned 0 — trying ChatGPT fallback");
+      const gptResults = await scrapeWithChatGpt(source, startDate, endDate);
+      addUnique(gptResults);
+    }
   } catch (err) {
     logger.warn({ err, source: source.name }, "Failed to scrape source");
   }
