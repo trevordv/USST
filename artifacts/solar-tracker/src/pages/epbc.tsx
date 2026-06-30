@@ -145,8 +145,17 @@ export default function EpbcPage() {
     staleTime: 60_000,
   });
 
+  const [syncStartDate, setSyncStartDate] = useState("");
+  const [syncEndDate, setSyncEndDate] = useState("");
+
   const syncMutation = useMutation<SyncResult>({
-    mutationFn: () => apiFetch<SyncResult>("/api/epbc/sync", { method: "POST" }),
+    mutationFn: () => apiFetch<SyncResult>("/api/epbc/sync", {
+      method: "POST",
+      body: JSON.stringify({
+        startDate: syncStartDate || undefined,
+        endDate:   syncEndDate   || undefined,
+      }),
+    }),
     onSuccess: (data) => {
       setSyncMsg(`Sync complete: ${data.newCount} new, ${data.updatedCount} updated`);
       qc.invalidateQueries({ queryKey: ["epbc-projects"] });
@@ -268,6 +277,26 @@ export default function EpbcPage() {
                 </TooltipContent>
               </Tooltip>
 
+              <div className="flex items-center gap-1">
+                <input
+                  type="date"
+                  value={syncStartDate}
+                  onChange={(e) => setSyncStartDate(e.target.value)}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                  title="Announced After (optional)"
+                  placeholder="From"
+                />
+                <span className="text-xs text-muted-foreground">–</span>
+                <input
+                  type="date"
+                  value={syncEndDate}
+                  onChange={(e) => setSyncEndDate(e.target.value)}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                  title="Announced Before (optional)"
+                  placeholder="To"
+                />
+              </div>
+
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -281,7 +310,7 @@ export default function EpbcPage() {
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom" className="max-w-xs text-xs">
-                  Attempts to scrape the EPBC portal directly. The portal uses Power Pages (Microsoft) which often blocks automated access — use Upload XLSX for reliable imports.
+                  Searches the EPBC portal via ChatGPT web search. Set a date range to focus results — leave blank to sweep all years. Upload XLSX is more reliable for bulk historical imports.
                 </TooltipContent>
               </Tooltip>
             </div>

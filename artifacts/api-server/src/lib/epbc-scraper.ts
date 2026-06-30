@@ -307,36 +307,53 @@ async function runGptSearch(gpt: GptOpenAI, prompt: string): Promise<GptReferral
   }
 }
 
+/** Split a date range into ~12-month bands for targeted searching. */
+function buildYearBands(startDate?: string, endDate?: string): string[] {
+  const start = startDate ? new Date(startDate) : new Date("2018-01-01");
+  const end   = endDate   ? new Date(endDate)   : new Date();
+
+  const bands: string[] = [];
+  const cur = new Date(start.getFullYear(), 0, 1); // snap to year start
+
+  while (cur <= end) {
+    const bandStart = cur.getFullYear();
+    cur.setFullYear(cur.getFullYear() + 1);
+    const bandEnd = Math.min(cur.getFullYear() - 1, end.getFullYear());
+    bands.push(bandStart === bandEnd ? `${bandStart}` : `${bandStart} to ${bandEnd}`);
+    if (cur > end) break;
+  }
+  return bands.length ? bands : ["all years"];
+}
+
 /**
  * Use OpenAI Responses API with web_search_preview across multiple parallel
  * targeted queries (by state and year range) to maximise EPBC coverage.
  * Results are deduplicated by EPBC number.
  */
-async function scrapeViaChatGpt(): Promise<PortalReferral[]> {
+async function scrapeViaChatGpt(startDate?: string, endDate?: string): Promise<PortalReferral[]> {
   const { openai } = await import("@workspace/integrations-openai-ai-server");
   const gpt = openai as unknown as GptOpenAI;
   const today = new Date().toISOString().slice(0, 10);
 
-  // Build a matrix of searches: states × year ranges
   const states = ["NSW", "VIC", "QLD", "SA", "WA", "TAS", "NT", "ACT"];
-  const yearBands = [
-    "2018 to 2020",
-    "2021 to 2022",
-    "2023 to 2024",
-    "2025 to present",
-  ];
+  const yearBands = buildYearBands(startDate, endDate);
+
+  // Human-readable date range description for the prompts
+  const rangeLabel = startDate || endDate
+    ? `between ${startDate ?? "any date"} and ${endDate ?? "today"}`
+    : "across all years";
 
   const queries: string[] = [];
 
-  // Per-state queries for recent years (highest value)
+  // Per-state queries scoped to the requested date range
   for (const state of states) {
     queries.push(buildSearchPrompt(
-      `Solar and solar+BESS projects in ${state} referred under the EPBC Act (all years, any status)`,
+      `Solar and solar+BESS projects in ${state} referred under the EPBC Act, noticed ${rangeLabel}`,
       today,
     ));
   }
 
-  // Year-band sweeps to catch anything missed by the state queries
+  // Year-band sweeps derived from the date range
   for (const band of yearBands) {
     queries.push(buildSearchPrompt(
       `Solar and solar+BESS EPBC referrals from ${band} across all Australian states`,
@@ -344,9 +361,9 @@ async function scrapeViaChatGpt(): Promise<PortalReferral[]> {
     ));
   }
 
-  // Broad "open for comment / under assessment" sweep to catch the very latest
+  // Always include a sweep for the very latest (open for comment / under assessment)
   queries.push(buildSearchPrompt(
-    "Solar EPBC referrals currently open for public comment or under assessment (most recent)",
+    `Solar EPBC referrals ${startDate ? `after ${startDate}` : "currently"} open for public comment or under assessment`,
     today,
   ));
 
@@ -429,7 +446,7 @@ function normaliseRecord(raw: PortalReferral): EpbcRecord | null {
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-export async function fetchEpbcRecords(): Promise<EpbcRecord[]> {
+export async function fetchEpbcRecords(startDate?: string, endDate?: string): Promise<EpbcRecord[]> {
   let raws: PortalReferral[] = [];
 
   try {
@@ -439,7 +456,7 @@ export async function fetchEpbcRecords(): Promise<EpbcRecord[]> {
   } catch (apiErr) {
     logger.warn({ err: apiErr }, "EPBC: direct API failed, falling back to ChatGPT web search");
     try {
-      raws = await scrapeViaChatGpt();
+      raws = await scrapeViaChatGpt(startDate, endDate);
       logger.info({ count: raws.length }, "EPBC: ChatGPT web search succeeded");
     } catch (gptErr) {
       logger.error({ err: gptErr }, "EPBC: both direct API and ChatGPT web search failed");

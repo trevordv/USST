@@ -199,11 +199,15 @@ router.post("/epbc/upload", upload.single("file") as unknown as Parameters<typeo
 // ── POST /epbc/sync ───────────────────────────────────────────────────────────
 
 router.post("/epbc/sync", async (req, res): Promise<void> => {
-  req.log.info("Starting EPBC sync");
+  const body = req.body as { startDate?: string; endDate?: string } | undefined;
+  const startDate = body?.startDate || undefined;
+  const endDate   = body?.endDate   || undefined;
+
+  req.log.info({ startDate, endDate }, "Starting EPBC sync");
 
   let records;
   try {
-    records = await fetchEpbcRecords();
+    records = await fetchEpbcRecords(startDate, endDate);
   } catch (err) {
     req.log.error({ err }, "EPBC sync failed");
     res.status(502).json({ error: "Failed to fetch EPBC data. The portal may be unavailable." });
