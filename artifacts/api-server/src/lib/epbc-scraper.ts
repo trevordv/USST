@@ -208,59 +208,101 @@ async function scrapeViaApi(): Promise<PortalReferral[]> {
   return all;
 }
 
-// ── Firecrawl fallback ────────────────────────────────────────────────────────
+// ── ChatGPT web-search fallback ───────────────────────────────────────────────
 
-interface FirecrawlResponse {
-  success: boolean;
-  markdown?: string;
-  html?: string;
+interface GptReferral {
+  epbc_number?: string;
+  project_name?: string;
+  proponent?: string;
+  technology?: string;
+  state?: string;
+  capacity_mw?: number | null;
+  status?: string;
+  notice_date?: string;
+  comment_close_date?: string;
 }
 
-async function scrapeViaFirecrawl(): Promise<PortalReferral[]> {
-  const apiKey = process.env.FIRECRAWL_API_KEY;
-  if (!apiKey) throw new Error("FIRECRAWL_API_KEY not set");
+/**
+ * Use OpenAI's Responses API with the built-in web_search_preview tool to find
+ * recent EPBC solar/BESS referrals. ChatGPT can access indexed EPBC pages that
+ * are blocked to headless browsers.
+ */
+async function scrapeViaChatGpt(): Promise<PortalReferral[]> {
+  const { openai } = await import("@workspace/integrations-openai-ai-server");
 
-  const resp = await fetch("https://api.firecrawl.dev/v1/scrape", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      url: `${PORTAL_BASE}/all-referrals/`,
-      formats: ["markdown"],
-    }),
-    signal: AbortSignal.timeout(30000),
+  const today = new Date().toISOString().slice(0, 10);
+
+  const response = await (openai as unknown as {
+    responses: {
+      create: (opts: {
+        model: string;
+        tools: { type: string }[];
+        input: string;
+        max_output_tokens: number;
+      }) => Promise<{ output_text?: string; output?: { type: string; text?: string }[] }>;
+    };
+  }).responses.create({
+    model: "gpt-5.4",
+    tools: [{ type: "web_search_preview" }],
+    input: `Today is ${today}. Search the Australian EPBC Public Portal (epbcpublicportal.environment.gov.au) for all current solar energy and solar+BESS battery storage project referrals.
+
+Find as many referrals as possible — include projects at any EPBC status (under assessment, open for comment, approved, etc). Focus on energy/electricity generation referrals containing solar, photovoltaic, PV, or solar+BESS/battery terms.
+
+Return ONLY a JSON array (no markdown fences, no explanatory text) with objects in this exact shape:
+[
+  {
+    "epbc_number": "2026/10533",
+    "project_name": "Milpulling Solar Farm",
+    "proponent": "Acme Energy Pty Ltd",
+    "technology": "Solar",
+    "state": "NSW",
+    "capacity_mw": 150,
+    "status": "Referral Decision — Open for Public Comment",
+    "notice_date": "2026-06-24",
+    "comment_close_date": "2026-07-09"
+  }
+]
+
+Rules:
+- capacity_mw: extract MW number from description, null if unknown
+- technology: one of "Solar", "Solar + BESS", "BESS", "Wind", "Wind + BESS", or "Other"
+- Include only energy/electricity projects — exclude mining, roads, agriculture, etc.
+- Return an empty array [] if nothing found`,
+    max_output_tokens: 8192,
   });
-  if (!resp.ok) throw new Error(`Firecrawl HTTP ${resp.status}`);
 
-  const result = (await resp.json()) as FirecrawlResponse;
-  if (!result.success) throw new Error("Firecrawl scrape failed");
-
-  const text = result.markdown ?? result.html ?? "";
-  const records: PortalReferral[] = [];
-
-  // Simple table row extraction — EPBC portal renders rows as lines with | separators
-  const lines = text.split("\n");
-  for (const line of lines) {
-    const parts = line.split("|").map((p) => p.trim()).filter(Boolean);
-    if (parts.length < 3) continue;
-    // Skip header lines
-    if (parts[0].toLowerCase().includes("epbc") && parts[0].toLowerCase().includes("number")) continue;
-
-    const epbcMatch = parts[0].match(/\d{4}\/\d+/);
-    if (!epbcMatch) continue;
-
-    records.push({
-      referralNumber: epbcMatch[0],
-      title: parts[1] ?? "",
-      proposer: parts[2] ?? "",
-      projectStatus: parts[3] ?? "",
-      primaryJurisdiction: parts[4] ?? "",
-    });
+  // Extract text from response
+  let text = response.output_text ?? "";
+  if (!text && Array.isArray(response.output)) {
+    for (const block of response.output) {
+      if (block.type === "message" && block.text) { text = block.text; break; }
+    }
   }
 
-  return records;
+  if (!text.trim()) throw new Error("ChatGPT returned empty response");
+
+  // Strip markdown fences if present
+  text = text.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+
+  // Find JSON array in response (ChatGPT may add prose before/after)
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+  if (start === -1 || end === -1) throw new Error("No JSON array in ChatGPT response");
+  const jsonStr = text.slice(start, end + 1);
+
+  const parsed = JSON.parse(jsonStr) as GptReferral[];
+  if (!Array.isArray(parsed)) throw new Error("ChatGPT response is not an array");
+
+  return parsed.map((r): PortalReferral => ({
+    epbcNumber: r.epbc_number,
+    projectName: r.project_name,
+    proposer: r.proponent,
+    industryType: "Energy",
+    projectStatus: r.status,
+    state: r.state,
+    location: r.state ?? undefined,
+    referralDate: r.notice_date,
+  }));
 }
 
 // ── Normalise ─────────────────────────────────────────────────────────────────
@@ -319,13 +361,13 @@ export async function fetchEpbcRecords(): Promise<EpbcRecord[]> {
     raws = await scrapeViaApi();
     logger.info({ count: raws.length }, "EPBC: direct API succeeded");
   } catch (apiErr) {
-    logger.warn({ err: apiErr }, "EPBC: direct API failed, falling back to Firecrawl");
+    logger.warn({ err: apiErr }, "EPBC: direct API failed, falling back to ChatGPT web search");
     try {
-      raws = await scrapeViaFirecrawl();
-      logger.info({ count: raws.length }, "EPBC: Firecrawl fallback succeeded");
-    } catch (fcErr) {
-      logger.error({ err: fcErr }, "EPBC: both API and Firecrawl failed");
-      throw fcErr;
+      raws = await scrapeViaChatGpt();
+      logger.info({ count: raws.length }, "EPBC: ChatGPT web search succeeded");
+    } catch (gptErr) {
+      logger.error({ err: gptErr }, "EPBC: both direct API and ChatGPT web search failed");
+      throw gptErr;
     }
   }
 
