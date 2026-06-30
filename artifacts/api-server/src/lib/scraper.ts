@@ -3043,19 +3043,16 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
           projectId = existingByUrl.get(project.sourceUrl!)!;
         }
 
-        // Only record genuinely new projects in the scan↔project relationship.
-        // Existing projects re-encountered from sources without per-item dates
-        // (e.g. government portals, AltEnergy project DB) would otherwise show
-        // up in scan results with their original (old) announced dates, making
-        // date-range-filtered scans appear broken.
-        if (isNew) {
-          await db.insert(scanProjectsTable).values({
-            scanId,
-            projectId,
-            projectName: project.name,
-            isNew: true,
-          });
-        }
+        // Record all found projects (new and existing) in scan_projects.
+        // isNew=true flags genuinely new inserts; existing re-discovered projects
+        // get isNew=false so the scan detail can show all 18 found while still
+        // highlighting the 2 that are net-new.
+        await db.insert(scanProjectsTable).values({
+          scanId,
+          projectId,
+          projectName: project.name,
+          isNew,
+        });
       } catch (err) {
         logger.warn({ err, project: project.name }, "Failed to insert project or scan relationship");
       }

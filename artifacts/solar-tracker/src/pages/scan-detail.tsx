@@ -49,6 +49,11 @@ export default function ScanDetail() {
 
   const newCount = projects?.filter((p) => p.isNew).length ?? 0;
 
+  // Sort: new projects first, then existing
+  const sortedProjects = projects
+    ? [...projects].sort((a, b) => (b.isNew ? 1 : 0) - (a.isNew ? 1 : 0))
+    : [];
+
   return (
     <Layout>
       <div className="max-w-6xl mx-auto space-y-6">
@@ -113,24 +118,14 @@ export default function ScanDetail() {
         <div className="border rounded-lg bg-card overflow-hidden shadow-sm">
           <div className="px-4 py-3 border-b bg-muted/50 flex items-center justify-between">
             <h2 className="font-semibold text-sm">
-              New projects from this scan ({projects?.length ?? 0})
+              All projects found in this scan ({sortedProjects.length})
+              {newCount > 0 && (
+                <span className="ml-2 text-xs font-normal text-emerald-600">
+                  · {newCount} new
+                </span>
+              )}
             </h2>
-            {(projects?.length ?? 0) === 0 && (scan.projectsFound ?? 0) === 0 && (
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <span>No new projects found</span>
-              </div>
-            )}
           </div>
-
-          {/* No-new-projects notice */}
-          {projects && projects.length === 0 && (scan.projectsFound ?? 0) > 0 && (
-            <div className="px-4 py-6 bg-muted/40 border-b text-sm text-muted-foreground">
-              <p className="font-semibold text-foreground">No new projects found.</p>
-              <p className="mt-1">
-                {scan.projectsFound} project{scan.projectsFound !== 1 ? "s" : ""} were encountered across {scan.sourcesScanned} sources, but all already exist in the database.
-              </p>
-            </div>
-          )}
 
           <Table>
             <TableHeader>
@@ -143,15 +138,26 @@ export default function ScanDetail() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {projects && projects.length > 0 ? (
-                projects.map((project) => (
+              {sortedProjects.length > 0 ? (
+                sortedProjects.map((project) => (
                   <TableRow
                     key={project.id}
-                    className="group cursor-pointer transition-colors hover:bg-muted/50"
+                    className={`group cursor-pointer transition-colors ${
+                      project.isNew
+                        ? "bg-emerald-50/60 hover:bg-emerald-50 dark:bg-emerald-950/20 dark:hover:bg-emerald-950/30"
+                        : "hover:bg-muted/50"
+                    }`}
                   >
                     <TableCell>
                       <Link href={`/projects/${project.id}`} className="block">
-                        <div className="font-medium text-foreground">{project.name}</div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-foreground">{project.name}</span>
+                          {project.isNew && (
+                            <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200 text-[10px] font-bold tracking-wider uppercase px-1.5 py-0">
+                              New
+                            </Badge>
+                          )}
+                        </div>
                         <div className="text-xs text-muted-foreground mt-0.5">
                           {project.developer || "Unknown Developer"}
                         </div>
@@ -206,7 +212,7 @@ export default function ScanDetail() {
                 <TableRow>
                   <TableCell colSpan={5} className="h-48 text-center text-muted-foreground">
                     <CheckCircle2 className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                    <p>No new projects found in this scan.</p>
+                    <p>No projects found in this scan.</p>
                   </TableCell>
                 </TableRow>
               )}
