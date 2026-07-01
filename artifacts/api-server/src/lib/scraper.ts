@@ -3094,11 +3094,15 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       sourcesScanned++;
     }
 
-    // Build a lookup of existing sourceUrl -> projectId for quick checking
+    // Build a lookup of existing sourceUrl -> { id, announcedDate } for quick checking
     const existingByUrl = new Map<string, number>();
-    const existingRows = await db.select({ id: projectsTable.id, sourceUrl: projectsTable.sourceUrl }).from(projectsTable);
+    const existingDateByUrl = new Map<string, string>(); // sourceUrl -> DB-stored announcedDate
+    const existingRows = await db.select({ id: projectsTable.id, sourceUrl: projectsTable.sourceUrl, announcedDate: projectsTable.announcedDate }).from(projectsTable);
     for (const r of existingRows) {
-      if (r.sourceUrl) existingByUrl.set(r.sourceUrl, r.id);
+      if (r.sourceUrl) {
+        existingByUrl.set(r.sourceUrl, r.id);
+        if (r.announcedDate) existingDateByUrl.set(r.sourceUrl, r.announcedDate);
+      }
     }
 
     // Load PVH fallback contacts once for the whole scan
@@ -3133,13 +3137,19 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         continue;
       }
 
-      // Date-range gate: when a range is specified, drop projects whose announced
-      // date falls outside it. This is the final catch-all — individual parsers
-      // already filter where they can, but some sources (government portals, static
-      // lists) return all projects without per-item dates and fall back to today,
-      // which would wrongly pull in old records on a date-bounded scan.
-      if (startDate && project.announcedDate < startDate) continue;
-      if (endDate && project.announcedDate > endDate) continue;
+      // Date-range gate: when a range is specified, only accept projects whose
+      // announced date falls within it. For existing projects (already in DB),
+      // use the DB-stored date — some sources assign today's date as a fallback
+      // for undated items, which would otherwise let old March/May records slip
+      // through. For new projects, use the scraped date directly.
+      if (startDate || endDate) {
+        const isExisting = !!project.sourceUrl && existingByUrl.has(project.sourceUrl);
+        const effectiveDate = isExisting && project.sourceUrl
+          ? (existingDateByUrl.get(project.sourceUrl) ?? project.announcedDate)
+          : project.announcedDate;
+        if (startDate && effectiveDate < startDate) continue;
+        if (endDate && effectiveDate > endDate) continue;
+      }
 
       // Count valid projects that passed all quality gates
       validProjectsFound++;
