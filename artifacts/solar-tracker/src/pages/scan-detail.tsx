@@ -139,7 +139,9 @@ export default function ScanDetail() {
             </TableHeader>
             <TableBody>
               {sortedProjects.length > 0 ? (
-                sortedProjects.map((project) => (
+                sortedProjects.map((project) => {
+                  const projectHref = `/projects/${project.id}?fromScan=${scanId}`;
+                  return (
                   <TableRow
                     key={project.id}
                     className={`group cursor-pointer transition-colors ${
@@ -149,7 +151,7 @@ export default function ScanDetail() {
                     }`}
                   >
                     <TableCell>
-                      <Link href={`/projects/${project.id}`} className="block">
+                      <Link href={projectHref} className="block">
                         <div className="flex items-center gap-2">
                           <span className="font-medium text-foreground">{project.name}</span>
                           {project.isNew && (
@@ -164,14 +166,14 @@ export default function ScanDetail() {
                       </Link>
                     </TableCell>
                     <TableCell>
-                      <Link href={`/projects/${project.id}`} className="block">
+                      <Link href={projectHref} className="block">
                         <div className="font-mono text-sm">
                           {project.capacityMw ? `${project.capacityMw} MW` : "-"}
                         </div>
                       </Link>
                     </TableCell>
                     <TableCell>
-                      <Link href={`/projects/${project.id}`} className="block">
+                      <Link href={projectHref} className="block">
                         <div className="flex items-center gap-2">
                           <Badge
                             variant="outline"
@@ -190,7 +192,7 @@ export default function ScanDetail() {
                       </Link>
                     </TableCell>
                     <TableCell>
-                      <Link href={`/projects/${project.id}`} className="block">
+                      <Link href={projectHref} className="block">
                         <Badge
                           variant={project.status === "announced" ? "secondary" : "default"}
                           className="uppercase text-[10px] font-bold tracking-wider"
@@ -200,14 +202,15 @@ export default function ScanDetail() {
                       </Link>
                     </TableCell>
                     <TableCell>
-                      <Link href={`/projects/${project.id}`} className="block text-sm text-muted-foreground">
+                      <Link href={projectHref} className="block text-sm text-muted-foreground">
                         {project.announcedDate
                           ? format(new Date(project.announcedDate), "MMM d, yyyy")
                           : "-"}
                       </Link>
                     </TableCell>
                   </TableRow>
-                ))
+                  );
+                })
               ) : (
                 <TableRow>
                   <TableCell colSpan={5} className="h-48 text-center text-muted-foreground">

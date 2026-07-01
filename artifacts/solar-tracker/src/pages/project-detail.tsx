@@ -12,9 +12,19 @@ export default function ProjectDetail() {
   const params = useParams();
   const id = parseInt(params.id || "0", 10);
   const search = useSearch();
-  const scanId = new URLSearchParams(search).get("scanId");
-  const backHref = scanId ? `/projects?scanId=${scanId}` : "/projects";
-  const backLabel = scanId ? `Back to Scan RUN-${scanId.padStart(4, "0")}` : "Back to Projects";
+  const params2 = new URLSearchParams(search);
+  const fromScan = params2.get("fromScan");
+  const scanId = params2.get("scanId");
+  const backHref = fromScan
+    ? `/scans/${fromScan}`
+    : scanId
+    ? `/projects?scanId=${scanId}`
+    : "/projects";
+  const backLabel = fromScan
+    ? `Back to Scan RUN-${fromScan.padStart(4, "0")}`
+    : scanId
+    ? `Back to Scan RUN-${scanId.padStart(4, "0")} Results`
+    : "Back to Projects";
 
   const { data: project, isLoading, isError } = useGetProject(id, {
     query: {
