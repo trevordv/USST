@@ -225,10 +225,12 @@ export default function Projects() {
                   <TableCell colSpan={6} className="h-24 text-center">Loading projects...</TableCell>
                 </TableRow>
               ) : projects && projects.length > 0 ? (
-                projects.map((p) => (
+                projects.map((p) => {
+                  const projectHref = scanId ? `/projects/${p.id}?scanId=${scanId}` : `/projects/${p.id}`;
+                  return (
                   <TableRow key={p.id} className="group cursor-pointer hover:bg-muted/50 transition-colors">
                     <TableCell>
-                      <Link href={`/projects/${p.id}`} className="block">
+                      <Link href={projectHref} className="block">
                         <div className="font-medium text-foreground">{p.name}</div>
                         <div className="text-xs text-muted-foreground mt-1 truncate max-w-[250px]">
                           {p.developer || p.epc || 'Unknown Developer'}
@@ -236,14 +238,14 @@ export default function Projects() {
                       </Link>
                     </TableCell>
                     <TableCell>
-                      <Link href={`/projects/${p.id}`} className="block">
+                      <Link href={projectHref} className="block">
                         <div className="font-mono text-sm">
                           {p.capacityMw ? `${p.capacityMw} MW` : '-'}
                         </div>
                       </Link>
                     </TableCell>
                     <TableCell>
-                      <Link href={`/projects/${p.id}`} className="block">
+                      <Link href={projectHref} className="block">
                         <div className="flex items-center gap-2">
                           <Badge variant="outline" className={p.country === 'AU' ? 'border-blue-200 bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' : 'border-teal-200 bg-teal-50 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300'}>
                             {p.country}
@@ -253,7 +255,7 @@ export default function Projects() {
                       </Link>
                     </TableCell>
                     <TableCell>
-                      <Link href={`/projects/${p.id}`} className="block">
+                      <Link href={projectHref} className="block">
                         <TooltipProvider>
                           {p.contactEmail || p.contactName || p.contactPhone ? (
                             <div className="flex flex-col gap-0.5">
@@ -298,19 +300,20 @@ export default function Projects() {
                       </Link>
                     </TableCell>
                     <TableCell>
-                      <Link href={`/projects/${p.id}`} className="block">
+                      <Link href={projectHref} className="block">
                         <Badge variant={p.status === 'announced' ? 'secondary' : 'default'} className="uppercase text-[10px] font-bold tracking-wider">
                           {p.status.replace('_', ' ')}
                         </Badge>
                       </Link>
                     </TableCell>
                     <TableCell>
-                      <Link href={`/projects/${p.id}`} className="block text-sm text-muted-foreground">
+                      <Link href={projectHref} className="block text-sm text-muted-foreground">
                         {p.announcedDate ? format(new Date(p.announcedDate), 'MMM d, yyyy') : '-'}
                       </Link>
                     </TableCell>
                   </TableRow>
-                ))
+                  );
+                })
               ) : (
                 <TableRow>
                   <TableCell colSpan={6} className="h-48 text-center">

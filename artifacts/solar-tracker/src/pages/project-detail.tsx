@@ -1,6 +1,6 @@
 import { useGetProject, getGetProjectQueryKey } from "@workspace/api-client-react";
 import { Layout } from "@/components/layout";
-import { useParams, Link } from "wouter";
+import { useParams, Link, useSearch } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +11,10 @@ import { ArrowLeft, ExternalLink, Mail, Phone, User, MapPin, Zap, Building2, Cal
 export default function ProjectDetail() {
   const params = useParams();
   const id = parseInt(params.id || "0", 10);
+  const search = useSearch();
+  const scanId = new URLSearchParams(search).get("scanId");
+  const backHref = scanId ? `/projects?scanId=${scanId}` : "/projects";
+  const backLabel = scanId ? `Back to Scan RUN-${scanId.padStart(4, "0")}` : "Back to Projects";
 
   const { data: project, isLoading, isError } = useGetProject(id, {
     query: {
@@ -52,9 +56,9 @@ export default function ProjectDetail() {
       <div className="max-w-5xl mx-auto space-y-6">
         <div>
           <Button asChild variant="ghost" size="sm" className="mb-4 -ml-3 text-muted-foreground">
-            <Link href="/projects">
+            <Link href={backHref}>
               <ArrowLeft className="h-4 w-4 mr-2" />
-              Back to Projects
+              {backLabel}
             </Link>
           </Button>
           
