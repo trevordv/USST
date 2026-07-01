@@ -3133,6 +3133,14 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         continue;
       }
 
+      // Date-range gate: when a range is specified, drop projects whose announced
+      // date falls outside it. This is the final catch-all — individual parsers
+      // already filter where they can, but some sources (government portals, static
+      // lists) return all projects without per-item dates and fall back to today,
+      // which would wrongly pull in old records on a date-bounded scan.
+      if (startDate && project.announcedDate < startDate) continue;
+      if (endDate && project.announcedDate > endDate) continue;
+
       // Count valid projects that passed all quality gates
       validProjectsFound++;
 
