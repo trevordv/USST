@@ -1940,22 +1940,29 @@ ${text.slice(0, 12000)}`;
     if (!Array.isArray(parsed)) return [];
 
     return parsed
-      .filter((r) => r.name && (r.capacity_mw == null || r.capacity_mw >= 5))
-      .map((r) => ({
-        name: r.name!,
-        description: r.description ?? r.name ?? "",
-        capacityMw: typeof r.capacity_mw === "number" ? r.capacity_mw : null,
-        developer: r.developer ?? null,
-        location: r.location ?? null,
-        country: (r.country === "NZ" ? "NZ" : "AU") as "AU" | "NZ",
-        status: (r.status === "under_development" ? "under_development" : "announced") as "announced" | "under_development",
-        sourceUrl: `${newsletterUrl}#gpt-${encodeURIComponent((r.name ?? "").slice(0, 40))}`,
-        sourceName: "AltEnergy – Watts News",
-        announcedDate: newsletterDate,
-        contactName: null,
-        contactEmail: null,
-        contactPhone: null,
-      }));
+      .filter((r) => r.name)
+      .map((r) => {
+        const fullText = `${r.name ?? ""} ${r.description ?? ""}`;
+        // Use GPT-provided capacity first; fall back to regex extraction from description
+        let capacityMw: number | null = typeof r.capacity_mw === "number" ? r.capacity_mw : null;
+        if (capacityMw == null) capacityMw = extractCapacity(fullText);
+        return {
+          name: r.name!,
+          description: r.description ?? r.name ?? "",
+          capacityMw,
+          developer: r.developer ?? null,
+          location: r.location ?? null,
+          country: (r.country === "NZ" ? "NZ" : "AU") as "AU" | "NZ",
+          status: (r.status === "under_development" ? "under_development" : "announced") as "announced" | "under_development",
+          sourceUrl: `${newsletterUrl}#gpt-${encodeURIComponent((r.name ?? "").slice(0, 40))}`,
+          sourceName: "AltEnergy – Watts News",
+          announcedDate: newsletterDate,
+          contactName: null,
+          contactEmail: null,
+          contactPhone: null,
+        };
+      })
+      .filter((p) => p.capacityMw == null || p.capacityMw >= 5);
   } catch (err) {
     logger.warn({ err }, "Watt News ChatGPT fallback failed");
     return [];
@@ -3260,6 +3267,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       }
       // Must have capacity (no null capacity projects)
       if (project.capacityMw == null) {
+        logger.info({ project: project.name, source: project.sourceName }, "Quality gate: no capacity — dropped");
         if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
         continue;
       }
