@@ -794,28 +794,53 @@ function parseAltEnergyProjectDb(html: string): AltEnergyProjectRecord[] {
 /**
  * Parse the watt_news listing page to extract newsletter article URLs.
  * Returns { url, date } pairs where date is parsed from the title.
+ * Uses multiple fallback strategies to handle AltEnergy HTML structure changes.
  */
 function parseWattNewsListing(html: string): Array<{ url: string; date: string }> {
+  const seen = new Set<string>();
   const results: Array<{ url: string; date: string }> = [];
-  // Match <div class="pdf-block-watts-new"> blocks
+
+  const addResult = (url: string, dateStr: string) => {
+    if (seen.has(url)) return;
+    seen.add(url);
+    results.push({ url, date: dateStr });
+  };
+
+  // Strategy 1: Original pdf-block-watts-new div structure
   const blockRe = /<div[^>]*class="[^"]*pdf-block-watts-new[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/gi;
   for (const block of html.matchAll(blockRe)) {
     const inner = block[1];
     const linkMatch = inner.match(/href="(https?:\/\/altenergy\.com\.au\/watt_news\/show\/[^"]+)"/i);
     if (!linkMatch) continue;
     const url = linkMatch[1];
-    // Title format: "Watts News, 12 June 2026"
     const titleMatch = inner.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
     const title = titleMatch?.[1]?.replace(/<[^>]+>/g, "").trim() ?? "";
-    // Parse "12 June 2026" part
     const dateMatch = title.match(/(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/);
     let date = new Date().toISOString().slice(0, 10);
     if (dateMatch) {
       const month = MONTH_MAP[dateMatch[2].toLowerCase()];
       if (month) date = `${dateMatch[3]}-${month}-${dateMatch[1].padStart(2, "0")}`;
     }
-    results.push({ url, date });
+    addResult(url, date);
   }
+
+  // Strategy 2: Any href to /watt_news/show/ anywhere on the page, with nearby date text
+  const allLinkRe = /href="(https?:\/\/altenergy\.com\.au\/watt_news\/show\/[^"]+)"/gi;
+  for (const linkMatch of html.matchAll(allLinkRe)) {
+    const url = linkMatch[1];
+    if (seen.has(url)) continue;
+    // Look for a date within 500 chars around the link
+    const idx = linkMatch.index ?? 0;
+    const context = html.slice(Math.max(0, idx - 200), idx + 300).replace(/<[^>]+>/g, " ");
+    const dateMatch = context.match(/(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/);
+    let date = new Date().toISOString().slice(0, 10);
+    if (dateMatch) {
+      const month = MONTH_MAP[dateMatch[2].toLowerCase()];
+      if (month) date = `${dateMatch[3]}-${month}-${dateMatch[1].padStart(2, "0")}`;
+    }
+    addResult(url, date);
+  }
+
   return results;
 }
 
@@ -978,6 +1003,7 @@ export async function scrapeAltEnergy(
 
       try {
         const newsletterHtml = await fetchAltEnergy(newsletter.url);
+        let foundInNewsletter = 0;
 
         // 3a. Parse the Project Milestones Summary table (top of every newsletter).
         //     This catches all newly-added projects even if they have no dedicated article section.
@@ -986,6 +1012,7 @@ export async function scrapeAltEnergy(
           if (!seenUrls.has(p.sourceUrl)) {
             seenUrls.add(p.sourceUrl);
             projects.push(p);
+            foundInNewsletter++;
             logger.info({ name: p.name }, "Watt News milestones table: project found");
           }
         }
@@ -998,7 +1025,7 @@ export async function scrapeAltEnergy(
           .replace(/<[^>]+>/g, " ")
           .replace(/\s+/g, " ")
           .trim()
-          .slice(0, 10000);
+          .slice(0, 20000);
 
         const sections = text.split(/(?=NEW PROJECT:|PROJECT UPDATE:|PROJECT MILESTONE:)/i);
         for (const section of sections) {
@@ -1038,6 +1065,21 @@ export async function scrapeAltEnergy(
             contactEmail: null,
             contactPhone: null,
           });
+          foundInNewsletter++;
+        }
+
+        // 3c. ChatGPT fallback — fires when HTML parsing found nothing for this newsletter.
+        //     Sends the stripped page text to GPT-4o for project extraction.
+        if (foundInNewsletter === 0) {
+          logger.info({ url: newsletter.url }, "Watt News HTML parsing found 0 projects — trying ChatGPT fallback");
+          const gptProjs = await parseWattNewsWithChatGpt(text, newsletter.date, newsletter.url);
+          for (const p of gptProjs) {
+            if (!seenUrls.has(p.sourceUrl)) {
+              seenUrls.add(p.sourceUrl);
+              projects.push(p);
+              logger.info({ name: p.name }, "Watt News ChatGPT fallback: project found");
+            }
+          }
         }
       } catch (err) {
         logger.warn({ err, url: newsletter.url }, "Watt News article fetch failed");
@@ -1822,6 +1864,102 @@ function parseWattNewsMilestonesTable(
   }
 
   return projects;
+}
+
+/**
+ * Use ChatGPT to extract solar/hybrid projects from a Watts News newsletter
+ * when HTML table/section parsing yields nothing.
+ */
+async function parseWattNewsWithChatGpt(
+  text: string,
+  newsletterDate: string,
+  newsletterUrl: string,
+): Promise<ScrapedProject[]> {
+  try {
+    const { openai } = await import("@workspace/integrations-openai-ai-server");
+    const gpt = openai as unknown as GptScraperOpenAI;
+
+    const prompt = `The following is the text content of an AltEnergy Watts News newsletter dated ${newsletterDate}.
+
+Extract all solar or solar+BESS hybrid projects ≥5 MW in Australia or New Zealand that are newly announced, proposed, approved, or being assessed. Do NOT include standalone battery/BESS-only projects, wind-only projects, or operational projects.
+
+Return ONLY a valid JSON array (no prose, no markdown fences):
+[
+  {
+    "name": "Example Solar Farm",
+    "description": "250 MW solar farm in regional VIC",
+    "capacity_mw": 250,
+    "developer": "Acme Energy",
+    "location": "Regional VIC",
+    "country": "AU",
+    "status": "announced"
+  }
+]
+
+Rules:
+- country: "AU" or "NZ" only
+- status: "announced" or "under_development"
+- capacity_mw: number (MW) or null — exclude projects <5 MW
+- Exclude: wind-only, BESS-only, operational/generating, headlines about industry trends or policy
+- Return [] if nothing relevant found
+
+Newsletter text:
+${text.slice(0, 12000)}`;
+
+    const response = await gpt.responses.create({
+      model: "gpt-4o",
+      tools: [] as { type: string }[],
+      input: prompt,
+      max_output_tokens: 4096,
+    });
+
+    let raw = response.output_text ?? "";
+    if (!raw && Array.isArray(response.output)) {
+      for (const block of response.output) {
+        if ((block as { type: string; text?: string }).type === "message") {
+          raw = (block as { type: string; text?: string }).text ?? "";
+          break;
+        }
+      }
+    }
+
+    raw = raw.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+    const start = raw.indexOf("[");
+    const end = raw.lastIndexOf("]");
+    if (start === -1 || end === -1) return [];
+
+    const parsed = JSON.parse(raw.slice(start, end + 1)) as Array<{
+      name?: string;
+      description?: string;
+      capacity_mw?: number | null;
+      developer?: string | null;
+      location?: string | null;
+      country?: string;
+      status?: string;
+    }>;
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .filter((r) => r.name && (r.capacity_mw == null || r.capacity_mw >= 5))
+      .map((r) => ({
+        name: r.name!,
+        description: r.description ?? r.name ?? "",
+        capacityMw: typeof r.capacity_mw === "number" ? r.capacity_mw : null,
+        developer: r.developer ?? null,
+        location: r.location ?? null,
+        country: (r.country === "NZ" ? "NZ" : "AU") as "AU" | "NZ",
+        status: (r.status === "under_development" ? "under_development" : "announced") as "announced" | "under_development",
+        sourceUrl: `${newsletterUrl}#gpt-${encodeURIComponent((r.name ?? "").slice(0, 40))}`,
+        sourceName: "AltEnergy – Watts News",
+        announcedDate: newsletterDate,
+        contactName: null,
+        contactEmail: null,
+        contactPhone: null,
+      }));
+  } catch (err) {
+    logger.warn({ err }, "Watt News ChatGPT fallback failed");
+    return [];
+  }
 }
 
 /**
