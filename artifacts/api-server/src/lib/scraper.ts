@@ -1907,7 +1907,7 @@ Newsletter text:
 ${text.slice(0, 12000)}`;
 
     const response = await gpt.responses.create({
-      model: "gpt-4o",
+      model: "gpt-5.6-sol",
       tools: [] as { type: string }[],
       input: prompt,
       max_output_tokens: 4096,
@@ -3055,7 +3055,7 @@ Rules:
 - Return [] if nothing relevant found`;
 
     const response = await gpt.responses.create({
-      model: "gpt-5.4",
+      model: "gpt-5.6-sol",
       tools: [{ type: "web_search_preview" }],
       input: prompt,
       max_output_tokens: 8192,
