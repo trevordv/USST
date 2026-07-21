@@ -2767,7 +2767,11 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     }
 
     // 2.5b — prospecting for companies where we have no person name at all
-    if (namelessEntries.length > 0) {
+    // DISABLED by default: Lusha free plans have a 100 API calls/day limit.
+    // Prospecting uses 3 calls per company (company lookup + contact search + enrich),
+    // which exhausts the quota after ~33 companies. Enable with
+    // LUSHA_PROSPECTING_ENABLED=true if on a paid plan.
+    if (namelessEntries.length > 0 && process.env.LUSHA_PROSPECTING_ENABLED === "true") {
       logger.info({ count: namelessEntries.length }, "Contact enrichment: Phase 2.5b Lusha prospecting");
       for (const [devKey, g] of namelessEntries) {
         if (enrichedKeys.has(devKey)) continue;
