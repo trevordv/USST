@@ -50,6 +50,7 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 - **Permanent filters on the API** — The `GET /projects` endpoint always applies: no wind in name, AU/NZ only, must have a capacity value, and ≥5 MW. User filters (date, country, search, scanId, hasContact) are layered on top.
 - **Capacity gate at ingest** — Projects with no extractable capacity (`null` or `undefined` MW) are dropped during the scan and never inserted. The scraper logs this as a quality rejection.
 - **Strict source whitelist** — The scraper only scans the approved source list below. No broad Google Search, no developer page scraping, no unlisted sites. The `sourcesScanned` counter in the scan history reflects exactly these approved sources.
+- **LUVI development pipeline** — LUVI's password-protected pipeline is decrypted server-side from its published encrypted JSON snapshot. Only Australian Energy records in Proposed, Approved, Committed, or Committed (FID) status with a solar component and ≥5 MW are imported.
 
 ## Product
 
@@ -106,6 +107,7 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 | | NZ EPA – RMA Proposals of National Significance | https://www.epa.govt.nz/industry-areas/rma-proposals/ |
 | | NZ EPA – Public Consultations | https://www.epa.govt.nz/public-consultations/ |
 | | NZ Ministry for the Environment – Fast-track | https://environment.govt.nz/acts-and-regulations/acts/fast-track-approvals/fast-track-projects/ |
+| **Industry / Data** | LUVI Project Tracker | https://luvi.com.au/projects?category=Energy&status=Proposed%2CApproved%2CCommitted%2CCommitted+%28FID%29 |
 
 ## User preferences
 
@@ -122,6 +124,7 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 |----------|-------------|
 | `DATABASE_URL` | All — Postgres connection |
 | `ALTENERGY_USERNAME` / `ALTENERGY_PASSWORD` | AltEnergy authenticated scrape |
+| `LUVI_USERNAME` / `LUVI_PASSWORD` | LUVI development pipeline scrape (`LUVI_USERNAME` is retained for account identification; LUVI's current pipeline unlock uses the password) |
 | `APIFY_API_TOKEN` | Contact enrichment Phase 2 (Google Search) |
 | `LUSHA_API_KEY` | Contact enrichment Phase 2.5 (Lusha enrich + prospecting) |
 | `FIRECRAWL_API_KEY` | Scanning Firecrawl sources (EPBC, DCCEEW, Planning Alerts, CEC) |
@@ -135,6 +138,7 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 - **Apify rate limits** — The contact enrichment endpoint uses `apify~google-search-scraper`. Running it on a large batch may hit rate limits. Use date-range filtering to reduce scope.
 - **Do not run `pnpm dev` at the workspace root** — Replit apps run via individual artifact workflows. Use `restart_workflow` instead.
 - **AltEnergy requires login credentials** — The scraper uses `ALTENERGY_USERNAME` and `ALTENERGY_PASSWORD` (WordPress/Laravel session). These must be set in the environment.
+- **LUVI requires its pipeline password** — The scraper uses `LUVI_PASSWORD` to decrypt LUVI's published pipeline snapshot. `LUVI_USERNAME` is stored for the account but is not sent because LUVI's current browser flow only uses the password.
 - **Adding a new source requires explicit approval** — The scraper is locked to the approved source list. If you want to add a new site, update `replit.md` first, then update the `SOURCES` array in `scraper.ts`.
 
 ## Pointers

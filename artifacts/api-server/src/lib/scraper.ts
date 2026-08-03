@@ -4,7 +4,7 @@
  * Fetches content from Australian / New Zealand energy news sources and extracts
  * solar and BESS project announcements (≥5 MW) using keyword and pattern matching.
  *
- * Only the 28 approved sources listed in replit.md are scanned — no broad search,
+ * Only the approved sources listed in replit.md are scanned — no broad search,
  * no developer page scraping, no ad-hoc sites.
  *
  * Sources covered:
@@ -14,7 +14,7 @@
  *    NSW Planning, Planning Victoria, QLD Coordinator-General, SA Energy & Mining,
  *    WA EPA, NT Development, Tasmania EPA
  *  - NZ: Electricity Authority, Transpower, NZ Fast-track, NZ EPA
- *  - AltEnergy is authenticated via WordPress login and handled separately
+ *  - AltEnergy and LUVI are authenticated and handled separately
  *
  * Apify Google Search is used ONLY for the explicit contact-enrichment feature
  * (POST /projects/enrich-contacts), never during scanning.
@@ -30,6 +30,19 @@ import { logger } from "./logger";
 
 const ALTENERGY_BASE = "https://altenergy.com.au";
 const ALTENERGY_LOGIN_URL = `${ALTENERGY_BASE}/login`;
+
+// LUVI's development pipeline is an XOR-encrypted JSON data file. The site
+// itself decrypts it client-side after the user enters the pipeline password.
+const LUVI_PROJECTS_URL =
+  "https://luvi.com.au/projects?category=Energy&status=Proposed%2CApproved%2CCommitted%2CCommitted+%28FID%29";
+const LUVI_PIPELINE_URL = "https://luvi.com.au/data/pipeline.enc?v=20260628a";
+const LUVI_PIPELINE_STATUSES = new Set([
+  "Proposed",
+  "Approved",
+  "Committed",
+  "Committed (FID)",
+]);
+const LUVI_SOURCE_NAME = "LUVI Project Tracker";
 
 /** In-memory cookie jar for AltEnergy session cookies */
 let altEnergyCookies: string[] = [];
@@ -1091,6 +1104,133 @@ export async function scrapeAltEnergy(
 
   logger.info({ total: projects.length }, "AltEnergy scrape complete");
   return projects;
+}
+
+interface LuviPipelineProject {
+  name?: unknown;
+  category?: unknown;
+  type?: unknown;
+  subtype?: unknown;
+  status?: unknown;
+  state?: unknown;
+  location?: unknown;
+  owner?: unknown;
+  capacity?: unknown;
+  capacityRaw?: unknown;
+  epc?: unknown;
+}
+
+/**
+ * Scrape LUVI's password-protected development pipeline.
+ *
+ * LUVI publishes the pipeline as base64-encoded JSON XOR-encrypted with the
+ * client password. This mirrors LUVI's own browser-side decryption flow and
+ * avoids browser automation while keeping the password server-side.
+ */
+export async function scrapeLuvi(
+  startDate?: string,
+  endDate?: string
+): Promise<ScrapedProject[]> {
+  const password = process.env.LUVI_PASSWORD;
+  if (!password) {
+    logger.warn("LUVI_PASSWORD not set — skipping LUVI pipeline scrape");
+    return [];
+  }
+
+  try {
+    const encrypted = (await fetchRaw(LUVI_PIPELINE_URL, 20_000)).text.trim();
+    if (!encrypted) {
+      logger.warn("LUVI pipeline returned an empty encrypted payload");
+      return [];
+    }
+
+    const cipher = Buffer.from(encrypted, "base64");
+    const plain = Buffer.alloc(cipher.length);
+    for (let i = 0; i < cipher.length; i++) {
+      plain[i] = cipher[i] ^ password.charCodeAt(i % password.length);
+    }
+
+    const records = JSON.parse(plain.toString("utf8")) as unknown;
+    if (!Array.isArray(records)) {
+      logger.warn("LUVI pipeline payload was not a JSON array");
+      return [];
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const projects: ScrapedProject[] = [];
+    const seenNames = new Set<string>();
+
+    for (const raw of records as LuviPipelineProject[]) {
+      const name = typeof raw.name === "string" ? raw.name.trim() : "";
+      const category = typeof raw.category === "string" ? raw.category.trim() : "";
+      const type = typeof raw.type === "string" ? raw.type.trim() : "";
+      const subtype = typeof raw.subtype === "string" ? raw.subtype.trim() : "";
+      const status = typeof raw.status === "string" ? raw.status.trim() : "";
+      const capacityValue =
+        typeof raw.capacity === "number"
+          ? raw.capacity
+          : typeof raw.capacity === "string"
+            ? Number.parseFloat(raw.capacity)
+            : null;
+
+      if (!name || category !== "Energy" || !LUVI_PIPELINE_STATUSES.has(status)) continue;
+      if (!Number.isFinite(capacityValue) || capacityValue === null || capacityValue < 5) continue;
+
+      // LUVI also carries standalone BESS, wind, hydrogen and hydro records.
+      // The shared gate keeps only solar or solar+BESS projects.
+      const projectText = `${name} ${type} ${subtype}`;
+      if (!hasSolarComponent(projectText) || isWindProject(name, projectText)) continue;
+
+      const normalizedName = name.toLowerCase();
+      if (seenNames.has(normalizedName)) continue;
+      seenNames.add(normalizedName);
+
+      const slug = encodeURIComponent(normalizedName);
+      const sourceUrl = `${LUVI_PROJECTS_URL}#${slug}`;
+      const location = [raw.location, raw.state]
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .map((value) => value.trim())
+        .join(", ") || null;
+      const developer =
+        typeof raw.owner === "string" && raw.owner.trim().length > 0
+          ? raw.owner.trim()
+          : null;
+      const description = [
+        `${type}${subtype && subtype !== type ? ` — ${subtype}` : ""}`,
+        status,
+        location,
+        typeof raw.capacityRaw === "string" ? `${raw.capacityRaw} MW` : `${capacityValue} MW`,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+
+      projects.push({
+        name,
+        description: description || name,
+        capacityMw: capacityValue,
+        developer,
+        location,
+        country: "AU",
+        status: status === "Proposed" ? "announced" : "under_development",
+        sourceUrl,
+        sourceName: LUVI_SOURCE_NAME,
+        announcedDate: today,
+        contactName: null,
+        contactEmail: null,
+        contactPhone: null,
+      });
+    }
+
+    // LUVI's data is a current snapshot without per-project announcement dates.
+    // When a date window is requested, include the snapshot only if today is in it.
+    if ((startDate && today < startDate) || (endDate && today > endDate)) return [];
+
+    logger.info({ found: projects.length }, "LUVI pipeline scrape complete");
+    return projects;
+  } catch (err) {
+    logger.warn({ err }, "LUVI pipeline scrape failed — password may be invalid or the payload changed");
+    return [];
+  }
 }
 
 /** Extract project entries from an HTML page */
@@ -3240,6 +3380,21 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         .where(eq(scansTable.id, scanId));
     } catch (err) {
       logger.warn({ err }, "AltEnergy scrape error");
+      sourcesScanned++;
+    }
+
+    // Dedicated LUVI authenticated development-pipeline scrape.
+    try {
+      const luviProjects = await scrapeLuvi(startDate, endDate);
+      allScraped.push(...luviProjects);
+      sourcesScanned++; // count LUVI as one source
+
+      await db
+        .update(scansTable)
+        .set({ sourcesScanned })
+        .where(eq(scansTable.id, scanId));
+    } catch (err) {
+      logger.warn({ err }, "LUVI scrape error");
       sourcesScanned++;
     }
 
