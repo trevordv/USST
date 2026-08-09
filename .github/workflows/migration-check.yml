@@ -4,9 +4,13 @@ on:
   push:
     branches:
       - migration/railway-supabase
-  pull_request:
-    branches:
-      - main
+
+# When several migration files are committed in quick succession, only the
+# newest check needs to finish. This avoids duplicate runs and failure-email
+# noise from temporary intermediate commits.
+concurrency:
+  group: migration-check-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
