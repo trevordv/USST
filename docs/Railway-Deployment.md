@@ -6,15 +6,17 @@ This runbook is for the migration test deployment. The existing Replit applicati
 
 USST uses Supabase Auth for sign-in and the `public.app_users` table as an application allowlist.
 
-Initial administrator allowlist entry:
+Initial administrator:
 
 - Email: `trevordv@gmail.com`
 - Role: `admin`
 - Active: `true`
+- Supabase Auth account: created and email-confirmed
+- `app_users.auth_user_id`: linked to the Supabase Auth user
 
-Create the matching Supabase Auth user directly in the Supabase dashboard. Choose the password there; do not store or commit the password in GitHub.
+The first invitation email redirected to `http://localhost:3000` because the Supabase Site URL had not yet been changed to the Railway test URL. This does not require deleting or recreating the user. Once Railway has a public domain, update the Supabase Auth Site URL and allowed Redirect URLs to the Railway URL before using password-reset or future invitation links.
 
-On the first successful USST API request, the server will link the Supabase Auth user ID to the matching active `app_users` row.
+Do not store or commit passwords in GitHub.
 
 ## 2. Railway service
 
@@ -78,7 +80,32 @@ Set only the credentials actually used by the existing USST configuration:
 
 Do not add new sources or source credentials without explicit approval.
 
-## 4. Database migration gate
+## 4. First Railway deployment
+
+The first Railway deployment can be used to establish the public test URL before the production Replit data is migrated.
+
+Minimum variables for the initial deployment are:
+
+- `DATABASE_URL`
+- `NODE_ENV=production`
+- `BASE_PATH=/`
+- `SUPABASE_URL`
+- `SUPABASE_PUBLISHABLE_KEY`
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_PUBLISHABLE_KEY`
+
+After the deployment succeeds:
+
+1. Generate a Railway public domain.
+2. Set `APP_URL` to that exact `https://...up.railway.app` URL in Railway.
+3. In Supabase Authentication URL Configuration, set the Site URL to that Railway URL.
+4. Add the Railway URL to the allowed Redirect URLs.
+5. Redeploy Railway so the updated environment is active.
+6. Use the deployed USST sign-in/password-recovery flow rather than any old `localhost` invitation link.
+
+The remaining OpenAI/source credentials can then be added before functional scan/enrichment testing.
+
+## 5. Database migration gate
 
 Before Railway is allowed to act as the replacement application:
 
@@ -92,7 +119,7 @@ Before Railway is allowed to act as the replacement application:
 
 Do not delete or modify the Replit production database during this process.
 
-## 5. Functional acceptance checks
+## 6. Functional acceptance checks
 
 Using the Railway test URL:
 
@@ -111,7 +138,7 @@ Using the Railway test URL:
 
 Compare the results against the still-running Replit application before approval.
 
-## 6. Cutover
+## 7. Cutover
 
 Only after successful acceptance testing and explicit approval:
 
