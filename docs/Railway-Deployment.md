@@ -26,9 +26,11 @@ The repository-level `railway.json` defines:
 
 - Railpack builder
 - build command: `pnpm run build`
-- direct Node start command: `node --enable-source-maps ./artifacts/api-server/dist/index.mjs`
+- direct Node start command from the API package directory: `cd artifacts/api-server && node --enable-source-maps ./dist/index.mjs`
 - health check: `/api/healthz`
 - restart-on-failure policy
+
+Starting from the API package directory is required because the Express server resolves the staged frontend from `dist/public` relative to its working directory.
 
 Do not deploy `main` until cutover is explicitly approved.
 
