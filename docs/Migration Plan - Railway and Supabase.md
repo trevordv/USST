@@ -49,59 +49,66 @@ Completed:
 
 ## Stage 2 - Replit runtime dependency removal
 
-Status: **implementation complete; build/runtime validation still required before merge**.
+Status: **code and CI build validation complete; live runtime validation remains for the Railway test deployment**.
 
 Completed:
 
-- Removed Replit Vite plugin imports and runtime plugin activation from `vite.config.ts`.
+- Removed Replit Vite plugin imports and runtime plugin activation from the main frontend and mockup sandbox Vite configuration.
 - Removed runtime dependence on `REPL_ID`.
 - Replaced `REPLIT_DOMAINS` invite-link generation with neutral `APP_URL` configuration.
-- Added safe defaults for frontend `PORT` and `BASE_PATH` so the Vite production build does not require Replit-provided variables.
+- Added safe defaults for frontend `PORT` and `BASE_PATH` so Vite production builds do not require Replit-provided variables.
 - Added root `start` command for the Express API.
 - Added a production staging script that copies the built React application into the API server's `dist/public` directory.
 - Configured Express to serve the staged React application and SPA fallback when those production assets exist.
+- Added GitHub Actions migration validation.
+- Fixed two pre-existing workspace typecheck issues in one-off import scripts that directly imported an undeclared `drizzle-orm` dependency.
 - Retained `.replit` and `replit.md` temporarily as migration reference; they are not part of the new production runtime path.
 
-Still to validate in a real checkout/Codex environment:
+Validated by GitHub Actions on Node 24 / pnpm 10:
 
+- dependency installation with frozen lockfile
 - `pnpm run typecheck`
 - `pnpm run build`
-- `pnpm start`
+- production frontend staging into `artifacts/api-server/dist/public`
+
+Still to validate after a test database and deployment environment are available:
+
+- `pnpm start` with real environment variables
 - `/api/health`
 - frontend load and client-side routes
 - API calls from the staged frontend
 
 Cleanup note:
 
-The three `@replit/vite-plugin-*` packages are no longer imported or executed, but their package/catalog/lockfile declarations are being left temporarily until the lockfile can be regenerated with pnpm in a proper checkout. This avoids hand-editing `pnpm-lock.yaml`. Remove those declarations during validation and regenerate the lockfile before the migration branch is finally merged.
+The three `@replit/vite-plugin-*` packages are no longer imported or executed, but their package/catalog/lockfile declarations are being left temporarily until the lockfile can be regenerated with pnpm in a proper development/Codex checkout. This avoids hand-editing `pnpm-lock.yaml`. Remove those declarations during final dependency cleanup and regenerate the lockfile before the migration branch is finally merged.
 
 ## Stage 3 - Direct OpenAI integration
 
-Status: **next**.
+Status: **code migration complete; live OpenAI call validation remains for the test deployment**.
 
-Current code still uses Replit-provided OpenAI integration variables.
+Completed:
 
-Target:
+- Replaced the Replit-provided OpenAI integration variables with `OPENAI_API_KEY`.
+- Removed the Replit OpenAI base URL requirement.
+- Kept the official OpenAI Node SDK and existing application parsing/extraction logic.
+- Updated `.env.example` for direct OpenAI credentials.
+- Confirmed the workspace still typechecks and builds after the change.
 
-- `OPENAI_API_KEY`
-- optional `OPENAI_MODEL`
-- official OpenAI Node SDK
+Still to validate:
 
-Tasks:
-
-- update the OpenAI client wrapper
-- remove dependency on Replit OpenAI base URL/key variables
-- preserve existing parsing/extraction behaviour unless explicitly changed
-- verify scan paths that invoke OpenAI
+- an actual OpenAI-assisted scan/extraction using the Railway test environment
+- any future decision to centralise model selection through `OPENAI_MODEL`; existing model-selection behaviour has not otherwise been changed
 
 ## Stage 4 - Security and authentication
+
+Status: **next infrastructure-dependent stage**.
 
 The replacement application must not be publicly exposed until server-side access controls are in place.
 
 Tasks:
 
+- create/configure the Supabase project and Auth settings
 - remove hard-coded/default admin secret behaviour
-- configure Supabase Auth
 - define roles/claims required by USST
 - enforce authentication/authorization on protected Express API routes
 - ensure privileged Supabase service-role credentials exist server-side only
@@ -200,7 +207,6 @@ Only after acceptance:
 
 ## Known migration issues still open
 
-- OpenAI client still depends on Replit integration variables; Stage 3 will replace this.
 - authentication still has a default admin-secret fallback; Stage 4 must remove it before public deployment.
 - API routes still require a server-side authentication/authorization layer; Stage 4 will address this.
 - CORS is currently broad and should be restricted for production in Stage 4.
@@ -215,7 +221,7 @@ Only after acceptance:
 - database schema/data
 - API contract
 - current authentication model (other than neutral invite URL generation)
-- OpenAI parsing behaviour
+- OpenAI parsing/extraction business logic
 - production Replit deployment
 
 These remain protected until their specific migration stages are completed and validated.
