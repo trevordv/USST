@@ -72,7 +72,7 @@ Target architecture:
 - Codex Cloud: development, refactoring, tests, and maintenance.
 - Railway: application hosting.
 - Supabase: PostgreSQL database and authentication; storage only if later required.
-- OpenAI: direct official API integration rather than a Replit-provided integration.
+- OpenAI: direct official API integration.
 
 ## Migration safety rules
 
@@ -87,17 +87,11 @@ Target architecture:
 - Preserve existing business logic unless the task explicitly asks to change it.
 - Do not rewrite the application simply to fit Railway or Supabase when a small compatibility change is sufficient.
 
-## Replit dependencies to remove during migration
+## Replit migration status
 
-The current repository contains Replit-specific configuration and runtime assumptions. Remove or replace them incrementally only after their replacement is in place and tested.
+The migration branch has removed active runtime dependence on Replit Vite plugins, `REPL_ID`, `REPLIT_DOMAINS`, and the Replit-provided OpenAI client variables. Direct OpenAI calls use `OPENAI_API_KEY`.
 
-Known items include:
-
-- `.replit` and Replit artifact metadata.
-- Replit Vite development plugins.
-- `REPL_ID` / `REPLIT_DOMAINS` runtime assumptions.
-- Replit-provided OpenAI integration environment variables.
-- Replit-specific workflow instructions in `replit.md`.
+Temporary Replit files and dead package/catalog/lockfile declarations may remain for migration reference and lockfile safety. Remove them only after equivalent documentation is preserved and the lockfile can be regenerated and validated with pnpm.
 
 `replit.md` contains valuable product and operational knowledge. Do not delete it until all useful instructions have been carried into durable project documentation.
 
