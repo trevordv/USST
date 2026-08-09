@@ -7,6 +7,7 @@ import router from "./routes";
 import { logger } from "./lib/logger";
 
 const app: Express = express();
+const appUrl = process.env["APP_URL"]?.replace(/\/+$/, "");
 
 app.use(
   pinoHttp({
@@ -27,7 +28,10 @@ app.use(
     },
   }),
 );
-app.use(cors());
+
+// Production is served same-origin. If an APP_URL is configured, only that
+// origin is allowed to make browser cross-origin requests to the API.
+app.use(cors({ origin: appUrl ? [appUrl] : false }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
