@@ -2,6 +2,7 @@ import express, { type Express } from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
 import path from "node:path";
+import { existsSync } from "node:fs";
 import router from "./routes";
 import { logger } from "./lib/logger";
 
@@ -32,9 +33,10 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
 
-if (process.env["NODE_ENV"] === "production") {
-  const publicDir = path.resolve(process.cwd(), "dist/public");
+const publicDir = path.resolve(process.cwd(), "dist/public");
+const frontendIndex = path.join(publicDir, "index.html");
 
+if (existsSync(frontendIndex)) {
   app.use(express.static(publicDir));
 
   // SPA fallback: client-side routes should return the built React app.
@@ -45,7 +47,7 @@ if (process.env["NODE_ENV"] === "production") {
       return;
     }
 
-    res.sendFile(path.join(publicDir, "index.html"));
+    res.sendFile(frontendIndex);
   });
 }
 
