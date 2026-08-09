@@ -4,21 +4,25 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { KeyRound, AlertCircle } from "lucide-react";
+import { AlertCircle, LogIn } from "lucide-react";
 
 export default function TokenGate() {
-  const [input, setInput] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const { setToken, isChecking, isValid } = useAuth();
+  const { login, isChecking } = useAuth();
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    if (!input.trim()) {
-      setError("Please enter an access token");
+
+    if (!email.trim() || !password) {
+      setError("Enter your email address and password.");
       return;
     }
-    setToken(input.trim());
+
+    const message = await login(email, password);
+    if (message) setError(message);
   };
 
   return (
@@ -26,40 +30,37 @@ export default function TokenGate() {
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
           <div className="mx-auto mb-4">
-            <img
-              src="/logo.png"
-              alt="USST Logo"
-              className="h-24 w-24 object-contain mx-auto"
-            />
+            <img src="/logo.png" alt="USST Logo" className="h-24 w-24 object-contain mx-auto" />
           </div>
           <CardTitle className="text-xl">Utility Scale Solar Tracker</CardTitle>
-          <CardDescription>
-            Enter your access token to continue
-          </CardDescription>
+          <CardDescription>Sign in with your authorised USST account</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="token">Access Token</Label>
-              <div className="relative">
-                <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  id="token"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  placeholder="Paste your token here..."
-                  className="pl-10"
-                  disabled={isChecking}
-                />
-              </div>
+              <Label htmlFor="email">Email</Label>
+              <Input
+                id="email"
+                type="email"
+                autoComplete="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                disabled={isChecking}
+              />
             </div>
 
-            {isValid === false && !isChecking && (
-              <div className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-                <AlertCircle className="h-4 w-4 flex-shrink-0" />
-                <span>Invalid or expired token. Please check and try again.</span>
-              </div>
-            )}
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <Input
+                id="password"
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={isChecking}
+              />
+            </div>
 
             {error && (
               <div className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
@@ -69,12 +70,13 @@ export default function TokenGate() {
             )}
 
             <Button type="submit" className="w-full" disabled={isChecking}>
-              {isChecking ? "Checking..." : "Access App"}
+              <LogIn className="mr-2 h-4 w-4" />
+              {isChecking ? "Signing in..." : "Sign In"}
             </Button>
           </form>
 
           <p className="mt-4 text-center text-xs text-muted-foreground">
-            If you don&apos;t have a token, ask the app owner to generate one for you.
+            Access is limited to accounts approved by the USST administrator.
           </p>
         </CardContent>
       </Card>
