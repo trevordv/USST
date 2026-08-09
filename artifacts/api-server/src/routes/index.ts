@@ -4,10 +4,16 @@ import authRouter from "./auth";
 import projectsRouter from "./projects";
 import scansRouter from "./scans";
 import epbcRouter from "./epbc";
+import { requireAuth } from "../middlewares/supabase-auth";
 
 const router: IRouter = Router();
 
+// Health remains public for Railway health checks.
 router.use(healthRouter);
+
+// All application data and administrative endpoints require a valid Supabase
+// session plus an active row in the USST app_users allowlist.
+router.use(requireAuth);
 router.use(authRouter);
 router.use(projectsRouter);
 router.use(scansRouter);
