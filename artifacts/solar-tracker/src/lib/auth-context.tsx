@@ -5,10 +5,13 @@ interface AuthState {
   token: string | null;
   isValid: boolean;
   isChecking: boolean;
+  isRecovery: boolean;
   label: string | null;
   role: "admin" | "user" | null;
   expiresAt: string | null;
   login: (email: string, password: string) => Promise<string | null>;
+  requestPasswordReset: (email: string) => Promise<string | null>;
+  updatePassword: (password: string) => Promise<string | null>;
   logout: () => void;
 }
 
@@ -20,6 +23,7 @@ interface SupabaseSessionResponse {
   error?: string;
   error_description?: string;
   msg?: string;
+  message?: string;
 }
 
 interface AccountResponse {
@@ -39,6 +43,11 @@ function configured(): boolean {
   return Boolean(SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY);
 }
 
+async function readError(response: Response): Promise<string> {
+  const data = await response.json().catch(() => ({})) as SupabaseSessionResponse;
+  return data.error_description || data.msg || data.message || data.error || "Request failed";
+}
+
 async function authRequest(path: string, body: Record<string, string>): Promise<SupabaseSessionResponse> {
   if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
     throw new Error("Supabase authentication is not configured");
@@ -53,11 +62,8 @@ async function authRequest(path: string, body: Record<string, string>): Promise<
     body: JSON.stringify(body),
   });
 
-  const data = (await response.json()) as SupabaseSessionResponse;
-  if (!response.ok) {
-    throw new Error(data.error_description || data.msg || data.error || "Sign in failed");
-  }
-  return data;
+  if (!response.ok) throw new Error(await readError(response));
+  return (await response.json()) as SupabaseSessionResponse;
 }
 
 async function loadAccount(accessToken: string): Promise<AccountResponse> {
@@ -79,6 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [isValid, setIsValid] = useState(false);
   const [isChecking, setIsChecking] = useState(true);
+  const [isRecovery, setIsRecovery] = useState(false);
   const [label, setLabel] = useState<string | null>(null);
   const [role, setRole] = useState<"admin" | "user" | null>(null);
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
@@ -89,6 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(null);
     setAuthTokenGetter(null);
     setIsValid(false);
+    setIsRecovery(false);
     setLabel(null);
     setRole(null);
     setExpiresAt(null);
@@ -102,6 +110,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const account = await loadAccount(session.access_token);
     setIsValid(true);
+    setIsRecovery(false);
     setLabel(account.email);
     setRole(account.role);
     setExpiresAt(new Date(Date.now() + session.expires_in * 1000).toISOString());
@@ -128,6 +137,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     async function restore() {
       if (!configured()) {
+        if (!cancelled) setIsChecking(false);
+        return;
+      }
+
+      const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      const hashType = hash.get("type");
+      const hashAccessToken = hash.get("access_token");
+      const hashRefreshToken = hash.get("refresh_token");
+      const hashExpiresIn = Number(hash.get("expires_in") || "3600");
+
+      if (hashAccessToken && hashRefreshToken && (hashType === "recovery" || hashType === "invite")) {
+        localStorage.setItem(ACCESS_TOKEN_KEY, hashAccessToken);
+        localStorage.setItem(REFRESH_TOKEN_KEY, hashRefreshToken);
+        setToken(hashAccessToken);
+        setAuthTokenGetter(() => hashAccessToken);
+        setExpiresAt(new Date(Date.now() + hashExpiresIn * 1000).toISOString());
+        setIsRecovery(true);
+        setIsValid(false);
+        window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
         if (!cancelled) setIsChecking(false);
         return;
       }
@@ -183,6 +211,58 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [acceptSession, clearSession]);
 
+  const requestPasswordReset = useCallback(async (email: string): Promise<string | null> => {
+    if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) return "Supabase authentication is not configured";
+
+    try {
+      const redirectTo = `${window.location.origin}/`;
+      const response = await fetch(`${SUPABASE_URL}/auth/v1/recover?redirect_to=${encodeURIComponent(redirectTo)}`, {
+        method: "POST",
+        headers: {
+          apikey: SUPABASE_PUBLISHABLE_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email: email.trim().toLowerCase() }),
+      });
+      if (!response.ok) return await readError(response);
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : "Unable to send password reset email";
+    }
+  }, []);
+
+  const updatePassword = useCallback(async (password: string): Promise<string | null> => {
+    if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) return "Supabase authentication is not configured";
+    const accessToken = localStorage.getItem(ACCESS_TOKEN_KEY);
+    const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
+    if (!accessToken || !refreshToken) return "Your password reset session has expired. Request a new reset link.";
+
+    setIsChecking(true);
+    try {
+      const response = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+        method: "PUT",
+        headers: {
+          apikey: SUPABASE_PUBLISHABLE_KEY,
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ password }),
+      });
+      if (!response.ok) return await readError(response);
+
+      const account = await loadAccount(accessToken);
+      setIsValid(true);
+      setIsRecovery(false);
+      setLabel(account.email);
+      setRole(account.role);
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : "Unable to update password";
+    } finally {
+      setIsChecking(false);
+    }
+  }, []);
+
   const logout = useCallback(() => {
     const accessToken = localStorage.getItem(ACCESS_TOKEN_KEY);
     clearSession();
@@ -199,7 +279,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [clearSession]);
 
   return (
-    <AuthContext.Provider value={{ token, isValid, isChecking, label, role, expiresAt, login, logout }}>
+    <AuthContext.Provider value={{ token, isValid, isChecking, isRecovery, label, role, expiresAt, login, requestPasswordReset, updatePassword, logout }}>
       {children}
     </AuthContext.Provider>
   );
