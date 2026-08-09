@@ -20,12 +20,13 @@ function generateToken(): string {
 }
 
 function getAppUrl(): string {
-  const domains = process.env["REPLIT_DOMAINS"];
-  if (domains) {
-    const primary = domains.split(",")[0].trim();
-    return `https://${primary}`;
+  const configuredUrl = process.env["APP_URL"]?.trim();
+  if (configuredUrl) {
+    return configuredUrl.replace(/\/+$/, "");
   }
-  return "http://localhost:80";
+
+  const port = process.env["PORT"] || "5000";
+  return `http://localhost:${port}`;
 }
 
 async function sendInviteEmail(
