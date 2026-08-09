@@ -5,7 +5,6 @@ import {
   LayoutDashboard,
   Database,
   Activity,
-  KeyRound,
   LogOut,
   FileSearch,
 } from "lucide-react";
@@ -19,12 +18,10 @@ export function Layout({ children }: { children: ReactNode }) {
     { href: "/projects", label: "Projects", icon: Database },
     { href: "/scans", label: "Scan History", icon: Activity },
     { href: "/epbc", label: "EPBC Projects", icon: FileSearch },
-    { href: "/invite", label: "Invites", icon: KeyRound },
   ];
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background">
-      {/* Sidebar */}
       <aside className="w-64 flex-shrink-0 bg-sidebar border-r border-sidebar-border flex flex-col">
         <div className="h-20 flex items-center px-4 border-b border-sidebar-border">
           <Link href="/" className="flex items-center gap-3">
@@ -74,7 +71,6 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
       </aside>
 
-      {/* Main Content */}
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <div className="flex-1 overflow-y-auto p-6">
           {children}
