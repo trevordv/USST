@@ -24,7 +24,7 @@ USST is a pnpm workspace monorepo using:
 - OpenAPI contract with generated API client/validation
 - background scanning and contact-enrichment jobs
 
-The current application remains the production reference implementation until the replacement deployment is fully verified.
+The current Replit application remains the production reference implementation until the replacement deployment is fully verified.
 
 ## Migration principles
 
@@ -37,41 +37,49 @@ The current application remains the production reference implementation until th
 
 ## Stage 1 - Repository preparation
 
-Status: in progress on `migration/railway-supabase`.
+Status: **complete on `migration/railway-supabase`**.
 
-Tasks:
+Completed:
 
-- Add `AGENTS.md` for Codex and future maintainers.
-- Add `.env.example` with variable names only.
-- Ensure `.env` files cannot be committed.
-- Record current architecture and Replit dependencies.
-- Do not alter application runtime behaviour in this stage.
+- Added `AGENTS.md` for Codex and future maintainers.
+- Added `.env.example` with variable names only.
+- Added `.env` protection to `.gitignore`.
+- Recorded current architecture, business rules and migration stages.
+- Kept `main` untouched.
 
-Exit criteria:
+## Stage 2 - Replit runtime dependency removal
 
-- `main` remains untouched.
-- Migration instructions are understandable without Replit.
-- Secrets have a safe target configuration pattern.
+Status: **implementation complete; build/runtime validation still required before merge**.
 
-## Stage 2 - Replit dependency removal
+Completed:
 
-Tasks:
+- Removed Replit Vite plugin imports and runtime plugin activation from `vite.config.ts`.
+- Removed runtime dependence on `REPL_ID`.
+- Replaced `REPLIT_DOMAINS` invite-link generation with neutral `APP_URL` configuration.
+- Added safe defaults for frontend `PORT` and `BASE_PATH` so the Vite production build does not require Replit-provided variables.
+- Added root `start` command for the Express API.
+- Added a production staging script that copies the built React application into the API server's `dist/public` directory.
+- Configured Express to serve the staged React application and SPA fallback when those production assets exist.
+- Retained `.replit` and `replit.md` temporarily as migration reference; they are not part of the new production runtime path.
 
-- Remove Replit-only frontend Vite plugins where they are not required outside Replit.
-- Remove runtime dependence on `REPL_ID` and `REPLIT_DOMAINS`.
-- Replace Replit-specific workflow assumptions with standard pnpm build/start commands suitable for Railway.
-- Retain `.replit` and `replit.md` temporarily for migration reference until equivalent documentation exists.
-
-Validation:
+Still to validate in a real checkout/Codex environment:
 
 - `pnpm run typecheck`
 - `pnpm run build`
-- frontend loads locally/preview environment
-- API health route responds
+- `pnpm start`
+- `/api/health`
+- frontend load and client-side routes
+- API calls from the staged frontend
+
+Cleanup note:
+
+The three `@replit/vite-plugin-*` packages are no longer imported or executed, but their package/catalog/lockfile declarations are being left temporarily until the lockfile can be regenerated with pnpm in a proper checkout. This avoids hand-editing `pnpm-lock.yaml`. Remove those declarations during validation and regenerate the lockfile before the migration branch is finally merged.
 
 ## Stage 3 - Direct OpenAI integration
 
-Current code uses Replit-provided OpenAI integration variables.
+Status: **next**.
+
+Current code still uses Replit-provided OpenAI integration variables.
 
 Target:
 
@@ -141,9 +149,9 @@ Initial preferred topology: one Railway application deployment unless operationa
 Desired behaviour:
 
 - Railway builds the pnpm workspace from GitHub.
-- React frontend is built for production.
+- React frontend is built and staged into the Express service.
 - Express API starts on Railway-provided `PORT`.
-- The production application is available from one primary domain where practical.
+- The production application is available from one primary domain.
 - Runtime secrets are configured in Railway, not GitHub.
 - `DATABASE_URL` points to Supabase.
 
@@ -190,27 +198,24 @@ Only after acceptance:
 7. Keep Replit available for a short rollback period.
 8. Decommission Replit only after confidence in the replacement deployment.
 
-## Known migration issues identified
+## Known migration issues still open
 
-- Replit Vite plugins are present in the frontend.
-- Replit configuration/artifact files remain in the repository.
-- OpenAI client currently depends on Replit integration variables.
-- app URL generation in auth code currently understands `REPLIT_DOMAINS` rather than a neutral `APP_URL`.
-- authentication currently has a default admin-secret fallback that must be removed before public deployment.
-- CORS is currently broad and should be reviewed for production.
-- `.env` files were not previously explicitly ignored; the migration branch now addresses this.
+- OpenAI client still depends on Replit integration variables; Stage 3 will replace this.
+- authentication still has a default admin-secret fallback; Stage 4 must remove it before public deployment.
+- API routes still require a server-side authentication/authorization layer; Stage 4 will address this.
+- CORS is currently broad and should be restricted for production in Stage 4.
+- Replit package/catalog/lockfile declarations remain as temporary dead dependencies pending lockfile regeneration.
+- Replit configuration/artifact files remain for migration reference and will be removed only after their useful information is preserved.
 - background scan/enrichment jobs are process-local; Railway restarts interrupt them and the app already marks stale jobs failed on startup. This is acceptable initially but should be monitored. A dedicated worker/queue may be warranted later if reliability requirements increase.
 
-## What is deliberately NOT being changed in preparation stage
+## Deliberately unchanged so far
 
 - scraper source whitelist
 - project qualification rules
-- database schema
+- database schema/data
 - API contract
-- frontend behaviour
-- authentication behaviour
-- OpenAI behaviour
-- production hosting
-- production database
+- current authentication model (other than neutral invite URL generation)
+- OpenAI parsing behaviour
+- production Replit deployment
 
-These changes belong in later, separately reviewed migration stages.
+These remain protected until their specific migration stages are completed and validated.
