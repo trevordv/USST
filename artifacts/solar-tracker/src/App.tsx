@@ -11,7 +11,6 @@ import ProjectDetail from "./pages/project-detail";
 import Scans from "./pages/scans";
 import ScanDetail from "./pages/scan-detail";
 import TokenGate from "./pages/token-gate";
-import InvitePage from "./pages/invite";
 import EpbcPage from "./pages/epbc";
 
 const queryClient = new QueryClient({
@@ -25,7 +24,6 @@ const queryClient = new QueryClient({
 function AuthRouter() {
   const { isValid, isChecking, token } = useAuth();
 
-  // If checking token, show loading (or the gate if no token)
   if (isChecking && token) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -34,7 +32,6 @@ function AuthRouter() {
     );
   }
 
-  // If no valid token, show the gate
   if (!isValid) {
     return <TokenGate />;
   }
@@ -47,7 +44,6 @@ function AuthRouter() {
       <Route path="/scans" component={Scans} />
       <Route path="/scans/:id" component={ScanDetail} />
       <Route path="/epbc" component={EpbcPage} />
-      <Route path="/invite" component={InvitePage} />
       <Route component={NotFound} />
     </Switch>
   );
