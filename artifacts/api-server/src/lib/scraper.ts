@@ -23,6 +23,14 @@
 import { db, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable, pvhContactsTable, type PvhContact } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger";
+import {
+  getProjectIneligibilityReason,
+  hasSolarComponent,
+  isEligibleScanProject,
+  isWindProject,
+  summarizeScanLineage,
+  type ScanProjectLineage,
+} from "./project-eligibility";
 
 // ---------------------------------------------------------------------------
 // AltEnergy authenticated session
@@ -1907,26 +1915,6 @@ function isPersonalEmail(email: string): boolean {
 }
 
 /**
- * Detect wind projects even when the name doesn't contain "wind".
- * Checks description for turbine-related keywords.
- */
-function isWindProject(name: string, description?: string | null): boolean {
-  if (/wind\b/i.test(name)) return true;
-  const desc = (description ?? "").toLowerCase();
-  if (desc.includes("turbine")) return true;
-  return false;
-}
-
-/**
- * Returns true only if the project has a solar component (solar-only or solar+BESS hybrid).
- * Standalone BESS / battery-only projects return false and are rejected at ingest.
- */
-function hasSolarComponent(name: string, description?: string | null): boolean {
-  const text = `${name} ${description ?? ""}`;
-  return /\b(solar|photovoltaic|\bpv\b)\b/i.test(text);
-}
-
-/**
  * Parse the Project Milestones Summary table from raw Watts News HTML.
  * This table appears at the top of every newsletter and lists all projects
  * that changed status in the past week, including newly-added ones.
@@ -3339,8 +3327,8 @@ async function scrapeSource(
 export async function runScan(scanId: number, startDate?: string, endDate?: string): Promise<void> {
   logger.info({ scanId, startDate, endDate }, "Starting scan");
 
-  let validProjectsFound = 0;
-  let newProjects = 0;
+  const persistedLineage: ScanProjectLineage[] = [];
+  const linkedProjectIds = new Set<number>();
   let sourcesScanned = 0;
   let errorMessage: string | null = null;
 
@@ -3401,11 +3389,21 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
     // Build a lookup of existing sourceUrl -> { id, announcedDate } for quick checking
     const existingByUrl = new Map<string, number>();
     const existingDateByUrl = new Map<string, string>(); // sourceUrl -> DB-stored announcedDate
-    const existingRows = await db.select({ id: projectsTable.id, sourceUrl: projectsTable.sourceUrl, announcedDate: projectsTable.announcedDate }).from(projectsTable);
+    const eligibleExistingProjectIds = new Set<number>();
+    const existingRows = await db.select({
+      id: projectsTable.id,
+      name: projectsTable.name,
+      description: projectsTable.description,
+      capacityMw: projectsTable.capacityMw,
+      country: projectsTable.country,
+      sourceUrl: projectsTable.sourceUrl,
+      announcedDate: projectsTable.announcedDate,
+    }).from(projectsTable);
     for (const r of existingRows) {
       if (r.sourceUrl) {
         existingByUrl.set(r.sourceUrl, r.id);
         if (r.announcedDate) existingDateByUrl.set(r.sourceUrl, r.announcedDate);
+        if (isEligibleScanProject(r)) eligibleExistingProjectIds.add(r.id);
       }
     }
 
@@ -3419,29 +3417,20 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1); // sentinel
         continue;
       }
-      // Only AU and NZ
-      if (project.country && !["AU", "NZ"].includes(project.country)) {
+      const ineligibilityReason = getProjectIneligibilityReason(project);
+      if (ineligibilityReason) {
+        logger.info(
+          {
+            project: project.name,
+            source: project.sourceName,
+            capacityMw: project.capacityMw,
+            reason: ineligibilityReason,
+          },
+          "Quality gate: ineligible scan project dropped",
+        );
         if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
         continue;
       }
-      // Must have capacity (no null capacity projects)
-      if (project.capacityMw == null) {
-        logger.info({ project: project.name, source: project.sourceName }, "Quality gate: no capacity — dropped");
-        if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
-        continue;
-      }
-      // No wind projects — catch turbines even when name doesn't contain "wind"
-      if (isWindProject(project.name, project.description)) {
-        if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
-        continue;
-      }
-      // Only solar or hybrid (solar + BESS) — reject standalone BESS / battery-only projects
-      if (!hasSolarComponent(project.name, project.description)) {
-        logger.info({ project: project.name }, "Quality gate: no solar component — BESS-only rejected");
-        if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
-        continue;
-      }
-
       // Date-range gate: when a range is specified, only accept projects whose
       // announced date falls within it. For existing projects (already in DB),
       // use the DB-stored date — some sources assign today's date as a fallback
@@ -3456,66 +3445,83 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         if (endDate && effectiveDate > endDate) continue;
       }
 
-      // Count valid projects that passed all quality gates
-      validProjectsFound++;
-
       const isNew = !project.sourceUrl || !existingByUrl.has(project.sourceUrl);
-      let projectId: number;
 
       try {
-        if (isNew) {
-          // Apply PVH fallback contact if the project has no contact info
-          let contactName = project.contactName;
-          let contactEmail = project.contactEmail;
-          let contactPhone = project.contactPhone;
-
-          if (!contactEmail && !contactName && project.developer) {
-            const fallback = matchFallbackContact(project.developer, pvhContacts);
-            if (fallback) {
-              contactName = fallback.name;
-              contactEmail = fallback.email;
-              logger.info({ project: project.name, developer: project.developer, fallbackEmail: fallback.email }, "Applied PVH fallback contact");
-            }
-          }
-
-          const [inserted] = await db.insert(projectsTable).values({
-            name: project.name,
-            description: project.description,
-            capacityMw: String(project.capacityMw),
-            developer: project.developer,
-            epc: null,
-            location: project.location,
-            country: project.country,
-            status: project.status,
-            sourceUrl: project.sourceUrl,
-            sourceName: project.sourceName,
-            announcedDate: project.announcedDate,
-            contactName,
-            contactEmail,
-            contactPhone,
-            scanId,
-          }).returning({ id: projectsTable.id });
-          projectId = inserted.id;
-          newProjects++;
-          if (project.sourceUrl) existingByUrl.set(project.sourceUrl, projectId);
-        } else {
-          projectId = existingByUrl.get(project.sourceUrl!)!;
+        const existingProjectId = isNew ? null : existingByUrl.get(project.sourceUrl!)!;
+        if (existingProjectId === -1 || (existingProjectId != null && linkedProjectIds.has(existingProjectId))) {
+          continue;
+        }
+        if (existingProjectId != null && !eligibleExistingProjectIds.has(existingProjectId)) {
+          logger.info(
+            { project: project.name, projectId: existingProjectId },
+            "Quality gate: ineligible historical project not linked to new scan",
+          );
+          continue;
         }
 
-        // Record all found projects (new and existing) in scan_projects.
-        // isNew=true flags genuinely new inserts; existing re-discovered projects
-        // get isNew=false so the scan detail can show all 18 found while still
-        // highlighting the 2 that are net-new.
-        await db.insert(scanProjectsTable).values({
-          scanId,
-          projectId,
-          projectName: project.name,
-          isNew,
+        const projectId = await db.transaction(async (tx) => {
+          let persistedProjectId = existingProjectId;
+
+          if (persistedProjectId == null) {
+            // Apply PVH fallback contact if the project has no contact info
+            let contactName = project.contactName;
+            let contactEmail = project.contactEmail;
+            let contactPhone = project.contactPhone;
+
+            if (!contactEmail && !contactName && project.developer) {
+              const fallback = matchFallbackContact(project.developer, pvhContacts);
+              if (fallback) {
+                contactName = fallback.name;
+                contactEmail = fallback.email;
+                logger.info({ project: project.name, developer: project.developer, fallbackEmail: fallback.email }, "Applied PVH fallback contact");
+              }
+            }
+
+            const [inserted] = await tx.insert(projectsTable).values({
+              name: project.name,
+              description: project.description,
+              capacityMw: String(project.capacityMw),
+              developer: project.developer,
+              epc: null,
+              location: project.location,
+              country: project.country,
+              status: project.status,
+              sourceUrl: project.sourceUrl,
+              sourceName: project.sourceName,
+              announcedDate: project.announcedDate,
+              contactName,
+              contactEmail,
+              contactPhone,
+              scanId,
+            }).returning({ id: projectsTable.id });
+            persistedProjectId = inserted.id;
+          }
+
+          if (persistedProjectId == null) {
+            throw new Error("Project insert did not return an id");
+          }
+
+          // Record all found projects (new and existing) in scan_projects.
+          await tx.insert(scanProjectsTable).values({
+            scanId,
+            projectId: persistedProjectId,
+            projectName: project.name,
+            isNew,
+          });
+
+          return persistedProjectId;
         });
+
+        linkedProjectIds.add(projectId);
+        persistedLineage.push({ projectId, isNew });
+        if (isNew && project.sourceUrl) existingByUrl.set(project.sourceUrl, projectId);
       } catch (err) {
         logger.warn({ err, project: project.name }, "Failed to insert project or scan relationship");
       }
     }
+
+    const { projectsFound, newProjects } = summarizeScanLineage(persistedLineage);
 
     await db
       .update(scansTable)
@@ -3523,15 +3529,16 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         status: "completed",
         completedAt: new Date(),
         sourcesScanned,
-        projectsFound: validProjectsFound,
+        projectsFound,
         newProjects,
       })
       .where(eq(scansTable.id, scanId));
 
-    logger.info({ scanId, sourcesScanned, validProjectsFound, newProjects }, "Scan completed");
+    logger.info({ scanId, sourcesScanned, projectsFound, newProjects }, "Scan completed");
   } catch (err) {
     errorMessage = err instanceof Error ? err.message : String(err);
     logger.error({ err, scanId }, "Scan failed");
+    const { projectsFound, newProjects } = summarizeScanLineage(persistedLineage);
 
     await db
       .update(scansTable)
@@ -3539,7 +3546,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         status: "failed",
         completedAt: new Date(),
         sourcesScanned,
-        projectsFound: validProjectsFound,
+        projectsFound,
         newProjects,
         errorMessage,
       })

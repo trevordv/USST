@@ -13,6 +13,7 @@ import {
   GetContactEnrichmentParams,
 } from "@workspace/api-zod";
 import { enrichMissingContacts, startEnrichment } from "../lib/scraper";
+import { MINIMUM_SOLAR_CAPACITY_MW } from "../lib/project-eligibility";
 
 const router: IRouter = Router();
 
@@ -46,7 +47,7 @@ function buildWhereConditions(
   conditions.push(
     or(
       eq(projectsTable.capacityMw, "0"),
-      gte(projectsTable.capacityMw, "5"),
+      gte(projectsTable.capacityMw, String(MINIMUM_SOLAR_CAPACITY_MW)),
     )!,
   );
 
@@ -75,6 +76,8 @@ function buildWhereConditions(
   }
   if (scanId != null) {
     conditions.push(eq(projectsTable.scanId, scanId));
+    // New scan results do not use the historical government-import capacity=0 exception.
+    conditions.push(gte(projectsTable.capacityMw, String(MINIMUM_SOLAR_CAPACITY_MW)));
   }
   if (hasContact === true) {
     conditions.push(isNotNull(projectsTable.contactEmail));
