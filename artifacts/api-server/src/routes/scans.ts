@@ -1,8 +1,9 @@
 import { Router, type IRouter } from "express";
-import { eq, inArray, isNotNull, gte, and } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { db, scansTable, projectsTable, scanProjectsTable } from "@workspace/db";
 import { TriggerScanBody, GetScanParams } from "@workspace/api-zod";
 import { runScan } from "../lib/scraper";
+import { filterEligibleScanProjects } from "../lib/project-eligibility";
 
 const router: IRouter = Router();
 
@@ -101,17 +102,11 @@ router.get("/scans/:id/projects", async (req, res): Promise<void> => {
     const projects = await db
       .select()
       .from(projectsTable)
-      .where(
-        and(
-          inArray(projectsTable.id, projectIds),
-          isNotNull(projectsTable.capacityMw),
-          gte(projectsTable.capacityMw, "5")
-        )
-      );
+      .where(inArray(projectsTable.id, projectIds));
     const isNewMap = new Map(relations.map((r) => [r.projectId, r.isNew]));
 
     res.json(
-      projects.map((p) => ({
+      filterEligibleScanProjects(projects).map((p) => ({
         ...p,
         capacityMw: p.capacityMw != null ? parseFloat(p.capacityMw) : null,
         createdAt: p.createdAt.toISOString(),
@@ -130,7 +125,7 @@ router.get("/scans/:id/projects", async (req, res): Promise<void> => {
     .where(eq(projectsTable.scanId, id));
 
   res.json(
-    historicalProjects.map((p) => ({
+    filterEligibleScanProjects(historicalProjects).map((p) => ({
       ...p,
       capacityMw: p.capacityMw != null ? parseFloat(p.capacityMw) : null,
       createdAt: p.createdAt.toISOString(),
