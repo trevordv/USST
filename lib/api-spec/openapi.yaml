@@ -227,6 +227,25 @@ paths:
               schema:
                 type: string
 
+  /projects/enrich-contacts:
+    post:
+      operationId: startContactEnrichment
+      tags: [contact-enrichments]
+      summary: Start a contact enrichment run
+      responses:
+        "202":
+          description: Contact enrichment started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactEnrichmentStart"
+        "401":
+          description: Authentication required
+        "403":
+          description: Account is not authorized
+        "500":
+          description: Contact enrichment could not be started
+
   /scans:
     get:
       operationId: listScans
@@ -750,6 +769,16 @@ components:
           type: integer
         errorMessage:
           type: ["string", "null"]
+
+    ContactEnrichmentStart:
+      type: object
+      required: [runId, status]
+      properties:
+        runId:
+          type: integer
+        status:
+          type: string
+          enum: [running]
 
     AccessToken:
       type: object

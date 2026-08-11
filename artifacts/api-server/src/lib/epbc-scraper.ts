@@ -2,16 +2,32 @@
  * EPBC Public Portal scraper.
  *
  * Strategy:
- *   1. Try the portal's undocumented JSON API (Spring Boot pagination format).
- *   2. Fall back to Firecrawl if the API is unavailable.
+ *   1. Query DCCEEW's official ArcGIS EPBC Referrals feature layer.
+ *   2. Fall back to OpenAI web search if the structured source is unavailable.
  *
  * Only records where industry type contains "Energy" are kept.
  */
 
-import { logger } from "./logger";
+import { logger } from "./logger.ts";
 
 const PORTAL_BASE = "https://epbcpublicportal.environment.gov.au";
-const API_BASE = `${PORTAL_BASE}/api`;
+const ARCGIS_LAYER_URL =
+  "https://gis.environment.gov.au/gispubmap/rest/services/ogc_services/EPBC_Referrals/MapServer/0";
+const ARCGIS_PAGE_SIZE = 1_000;
+const ARCGIS_OUT_FIELDS = [
+  "REFERENCE_NUMBER",
+  "NAME",
+  "PRIMARY_JURISDICTION",
+  "REFERRAL_DECISION",
+  "STATUS_DESCRIPTION",
+  "STAGE_NAME",
+  "REFERRAL_TYPE",
+  "YEAR",
+  "CATEGORY",
+  "REFERRAL_URL",
+  "CRM_ID",
+  "OBJECTID",
+].join(",");
 
 export interface EpbcRecord {
   epbcNumber: string;
@@ -152,60 +168,207 @@ interface PortalReferral {
   approvalDate?: string;
   referralUrl?: string;
   url?: string;
+  recordYear?: number;
 }
 
-interface PortalPage {
-  content?: PortalReferral[];
-  results?: PortalReferral[];
-  items?: PortalReferral[];
-  referrals?: PortalReferral[];
-  totalElements?: number;
-  totalPages?: number;
-  size?: number;
-  number?: number;
+export interface ArcGisReferralAttributes {
+  REFERENCE_NUMBER?: string | null;
+  NAME?: string | null;
+  PRIMARY_JURISDICTION?: string | null;
+  REFERRAL_DECISION?: string | null;
+  STATUS_DESCRIPTION?: string | null;
+  STAGE_NAME?: string | null;
+  REFERRAL_TYPE?: string | null;
+  YEAR?: number | null;
+  CATEGORY?: string | null;
+  REFERRAL_URL?: string | null;
+  CRM_ID?: string | null;
+  OBJECTID?: number | null;
 }
 
-function extractItems(data: unknown): PortalReferral[] {
-  if (!data || typeof data !== "object") return [];
-  const d = data as PortalPage;
-  return (d.content ?? d.results ?? d.items ?? d.referrals ?? (Array.isArray(data) ? (data as PortalReferral[]) : []));
+interface ArcGisFeature {
+  attributes?: ArcGisReferralAttributes;
 }
 
-async function fetchApiPage(page: number, size: number): Promise<{ items: PortalReferral[]; totalPages: number }> {
-  const url = `${API_BASE}/referrals?size=${size}&page=${page}&sort=referralDate,desc`;
-  const res = await fetch(url, {
+interface ArcGisQueryResponse {
+  features?: ArcGisFeature[];
+  exceededTransferLimit?: boolean;
+  error?: {
+    code?: number;
+    message?: string;
+    details?: string[];
+  };
+}
+
+type FetchImplementation = typeof fetch;
+
+function dateFilterYear(value?: string): number | null {
+  const match = value?.match(/^(\d{4})/);
+  if (!match) return null;
+  const year = Number.parseInt(match[1], 10);
+  return Number.isFinite(year) ? year : null;
+}
+
+export function buildArcGisWhereClause(startDate?: string, endDate?: string): string {
+  const clauses = ["1=1"];
+  const startYear = dateFilterYear(startDate);
+  const endYear = dateFilterYear(endDate);
+  if (startYear !== null) clauses.push(`YEAR >= ${startYear}`);
+  if (endYear !== null) clauses.push(`YEAR <= ${endYear}`);
+  return clauses.join(" AND ");
+}
+
+function portalDetailUrl(epbcNumber: string): string {
+  return `${PORTAL_BASE}/public-register/referral-detail/${epbcNumber.replace(/\//g, "-")}`;
+}
+
+function arcGisFeatureToPortalReferral(feature: ArcGisFeature): PortalReferral | null {
+  const attributes = feature.attributes;
+  const epbcNumber = attributes?.REFERENCE_NUMBER?.trim();
+  const projectName = attributes?.NAME?.trim();
+  if (!attributes || !epbcNumber || !projectName) return null;
+
+  const description = [
+    attributes.CATEGORY ? `Category: ${attributes.CATEGORY}` : null,
+    attributes.REFERRAL_TYPE ? `Referral type: ${attributes.REFERRAL_TYPE}` : null,
+    attributes.STATUS_DESCRIPTION ? `Status: ${attributes.STATUS_DESCRIPTION}` : null,
+    attributes.STAGE_NAME ? `Stage: ${attributes.STAGE_NAME}` : null,
+    attributes.REFERRAL_DECISION ? `Decision: ${attributes.REFERRAL_DECISION}` : null,
+    attributes.CRM_ID ? `CRM ID: ${attributes.CRM_ID}` : null,
+  ].filter((value): value is string => Boolean(value)).join(". ");
+
+  return {
+    referralNumber: epbcNumber,
+    projectName,
+    industryType: attributes.CATEGORY ?? undefined,
+    projectStatus: attributes.STATUS_DESCRIPTION ?? attributes.STAGE_NAME ?? undefined,
+    referralStatus: attributes.STAGE_NAME ?? undefined,
+    decisionStatus: attributes.REFERRAL_DECISION ?? undefined,
+    primaryJurisdiction: attributes.PRIMARY_JURISDICTION ?? undefined,
+    state: attributes.PRIMARY_JURISDICTION ?? undefined,
+    location: attributes.PRIMARY_JURISDICTION ?? undefined,
+    description: description || undefined,
+    referralDate: attributes.YEAR != null ? `${Math.trunc(attributes.YEAR)}-01-01` : undefined,
+    referralUrl: portalDetailUrl(epbcNumber),
+    recordYear: attributes.YEAR == null ? undefined : Math.trunc(attributes.YEAR),
+  };
+}
+
+export function mapArcGisFeatureToEpbcRecord(
+  attributes: ArcGisReferralAttributes,
+): EpbcRecord | null {
+  return normaliseRecord({ attributes } as ArcGisFeature);
+}
+
+function normaliseRecord(feature: ArcGisFeature): EpbcRecord | null;
+function normaliseRecord(raw: PortalReferral): EpbcRecord | null;
+function normaliseRecord(input: PortalReferral | ArcGisFeature): EpbcRecord | null {
+  const raw: PortalReferral | null = "attributes" in input
+    ? arcGisFeatureToPortalReferral(input as ArcGisFeature)
+    : input as PortalReferral;
+  if (!raw) return null;
+
+  const epbcNumber = raw.referralNumber ?? raw.epbcNumber ?? "";
+  if (!epbcNumber) return null;
+
+  const projectName = raw.projectTitle ?? raw.title ?? raw.projectName ?? "";
+  if (!projectName) return null;
+
+  const industryType = raw.industryType ?? null;
+
+  // Only ingest energy-related records. This preserves the existing EPBC
+  // business rule while querying the complete official feature layer.
+  if (industryType && !/energy|electricity|generation|supply|power/i.test(industryType)) {
+    return null;
+  }
+
+  const description = raw.description ?? null;
+  const { technologyType, isRenewable, isSolar, relevanceStatus } = classifyEpbc(projectName, description);
+  const isApproved = classifyApproval(raw.projectStatus ?? raw.referralStatus ?? null, raw.decisionStatus ?? null);
+  const sizeMw = extractMw(description) ?? extractMw(projectName);
+
+  return {
+    epbcNumber,
+    projectName,
+    proponent: raw.proposer ?? raw.proponent ?? null,
+    industryType,
+    projectStatus: raw.projectStatus ?? raw.referralStatus ?? null,
+    decisionStatus: raw.decisionStatus ?? null,
+    state: raw.primaryJurisdiction ?? raw.state ?? null,
+    location: raw.location ?? null,
+    technologyType,
+    sizeMw,
+    referralDate: raw.referralDate ?? null,
+    approvalDate: raw.approvalDate ?? raw.decisionDate ?? null,
+    sourceUrl: raw.referralUrl ?? raw.url ?? portalDetailUrl(epbcNumber),
+    rawDescription: description,
+    isRenewable,
+    isSolar,
+    isApproved,
+    relevanceStatus,
+  };
+}
+
+async function fetchArcGisPage(
+  offset: number,
+  startDate: string | undefined,
+  endDate: string | undefined,
+  fetchImplementation: FetchImplementation,
+): Promise<ArcGisQueryResponse> {
+  const params = new URLSearchParams({
+    where: buildArcGisWhereClause(startDate, endDate),
+    outFields: ARCGIS_OUT_FIELDS,
+    returnGeometry: "false",
+    orderByFields: "OBJECTID ASC",
+    resultOffset: String(offset),
+    resultRecordCount: String(ARCGIS_PAGE_SIZE),
+    f: "json",
+  });
+  const res = await fetchImplementation(`${ARCGIS_LAYER_URL}/query?${params}`, {
     headers: {
       Accept: "application/json",
       "User-Agent": "Mozilla/5.0 (compatible; SolarScout/1.0)",
     },
     signal: AbortSignal.timeout(15000),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`ArcGIS HTTP ${res.status}`);
   const ct = res.headers.get("content-type") ?? "";
   if (!ct.includes("json")) throw new Error("Non-JSON response");
-  const data = (await res.json()) as PortalPage;
-  const items = extractItems(data);
-  const totalPages = (data as PortalPage).totalPages ?? (items.length < size ? 1 : 99);
-  return { items, totalPages };
+  const data = (await res.json()) as ArcGisQueryResponse;
+  if (data.error) {
+    throw new Error(
+      `ArcGIS query error ${data.error.code ?? "unknown"}: ${data.error.message ?? "Unknown error"}`,
+    );
+  }
+  return data;
 }
 
-async function scrapeViaApi(): Promise<PortalReferral[]> {
-  const PAGE_SIZE = 200;
-  const all: PortalReferral[] = [];
-  let page = 0;
+export async function fetchArcGisEpbcRecords(
+  startDate?: string,
+  endDate?: string,
+  fetchImplementation: FetchImplementation = fetch,
+): Promise<EpbcRecord[]> {
+  const recordsByNumber = new Map<string, EpbcRecord>();
+  let offset = 0;
 
-  const first = await fetchApiPage(page, PAGE_SIZE);
-  all.push(...first.items);
-  const { totalPages } = first;
+  for (let page = 0; page < 50; page++) {
+    const data = await fetchArcGisPage(offset, startDate, endDate, fetchImplementation);
+    const features = data.features ?? [];
+    for (const feature of features) {
+      const record = normaliseRecord(feature);
+      if (record) recordsByNumber.set(record.epbcNumber, record);
+    }
 
-  for (page = 1; page < Math.min(totalPages, 50); page++) {
-    const { items } = await fetchApiPage(page, PAGE_SIZE);
-    all.push(...items);
-    if (items.length < PAGE_SIZE) break;
-    await new Promise((r) => setTimeout(r, 300));
+    logger.info(
+      { page, offset, features: features.length, records: recordsByNumber.size },
+      "EPBC: ArcGIS page processed",
+    );
+
+    if (!data.exceededTransferLimit || features.length === 0) break;
+    offset += features.length;
   }
 
-  return all;
+  return [...recordsByNumber.values()];
 }
 
 // ── ChatGPT web-search fallback ───────────────────────────────────────────────
@@ -395,81 +558,124 @@ async function scrapeViaChatGpt(startDate?: string, endDate?: string): Promise<P
     state: r.state,
     location: r.state ?? undefined,
     referralDate: r.notice_date,
+    description: [
+      r.technology,
+      typeof r.capacity_mw === "number" ? `${r.capacity_mw} MW` : null,
+    ].filter((value): value is string => Boolean(value)).join(" - ") || undefined,
   }));
 }
 
 // ── Normalise ─────────────────────────────────────────────────────────────────
 
-function normaliseRecord(raw: PortalReferral): EpbcRecord | null {
-  const epbcNumber = raw.referralNumber ?? raw.epbcNumber ?? "";
-  if (!epbcNumber) return null;
-
-  const projectName = raw.projectTitle ?? raw.title ?? raw.projectName ?? "";
-  if (!projectName) return null;
-
-  const industryType = raw.industryType ?? null;
-
-  // Only ingest energy-related records
-  if (industryType && !/energy|electricity|generation|supply|power/i.test(industryType)) {
-    return null;
-  }
-
-  const description = raw.description ?? null;
-  const { technologyType, isRenewable, isSolar, relevanceStatus } = classifyEpbc(projectName, description);
-  const isApproved = classifyApproval(raw.projectStatus ?? raw.referralStatus ?? null, raw.decisionStatus ?? null);
-  const sizeMw = extractMw(description) ?? extractMw(projectName);
-
-  const referralNum = epbcNumber.replace(/\//g, "-");
-  const sourceUrl = raw.referralUrl ?? raw.url ?? `${PORTAL_BASE}/public-register/referral-detail/${referralNum}`;
-
-  return {
-    epbcNumber,
-    projectName,
-    proponent: raw.proposer ?? raw.proponent ?? null,
-    industryType,
-    projectStatus: raw.projectStatus ?? raw.referralStatus ?? null,
-    decisionStatus: raw.decisionStatus ?? null,
-    state: raw.primaryJurisdiction ?? raw.state ?? null,
-    location: raw.location ?? null,
-    technologyType,
-    sizeMw,
-    referralDate: raw.referralDate ?? null,
-    approvalDate: raw.approvalDate ?? raw.decisionDate ?? null,
-    sourceUrl,
-    rawDescription: description,
-    isRenewable,
-    isSolar,
-    isApproved,
-    relevanceStatus,
-  };
+function normaliseFallbackRecord(raw: PortalReferral): EpbcRecord | null {
+  return normaliseRecord(raw);
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-export async function fetchEpbcRecords(startDate?: string, endDate?: string): Promise<EpbcRecord[]> {
-  let raws: PortalReferral[] = [];
+export interface EpbcFetchDependencies {
+  fetchImplementation?: FetchImplementation;
+  fallback?: (startDate?: string, endDate?: string) => Promise<EpbcRecord[]>;
+  supplementStructuredRecords?: boolean;
+}
+
+async function fetchOpenAiFallbackRecords(
+  startDate?: string,
+  endDate?: string,
+): Promise<EpbcRecord[]> {
+  const raws = await scrapeViaChatGpt(startDate, endDate);
+  return raws
+    .map((raw) => normaliseFallbackRecord(raw))
+    .filter((record): record is EpbcRecord => record !== null);
+}
+
+export function mergeEpbcRecordDetails(
+  structuredRecords: EpbcRecord[],
+  supplementalRecords: EpbcRecord[],
+): EpbcRecord[] {
+  const supplementalByNumber = new Map(
+    supplementalRecords.map((record) => [record.epbcNumber, record]),
+  );
+  const merged = structuredRecords.map((record) => {
+    const supplemental = supplementalByNumber.get(record.epbcNumber);
+    if (!supplemental) return record;
+    supplementalByNumber.delete(record.epbcNumber);
+
+    const descriptions = [record.rawDescription, supplemental.rawDescription]
+      .filter((value): value is string => Boolean(value));
+
+    return {
+      ...record,
+      proponent: record.proponent ?? supplemental.proponent,
+      sizeMw: record.sizeMw ?? supplemental.sizeMw,
+      referralDate: supplemental.referralDate ?? record.referralDate,
+      approvalDate: record.approvalDate ?? supplemental.approvalDate,
+      sourceUrl: record.sourceUrl ?? supplemental.sourceUrl,
+      rawDescription: descriptions.length > 0
+        ? [...new Set(descriptions)].join(" - ")
+        : null,
+      technologyType: record.technologyType === "Unknown"
+        ? supplemental.technologyType
+        : record.technologyType,
+      isRenewable: record.isRenewable || supplemental.isRenewable,
+      isSolar: record.isSolar || supplemental.isSolar,
+      relevanceStatus: record.relevanceStatus === "needs_review"
+        ? supplemental.relevanceStatus
+        : record.relevanceStatus,
+    };
+  });
+
+  return merged;
+}
+
+export async function fetchEpbcRecords(
+  startDate?: string,
+  endDate?: string,
+  dependencies: EpbcFetchDependencies = {},
+): Promise<EpbcRecord[]> {
+  const fetchImplementation = dependencies.fetchImplementation ?? fetch;
+  const fallback = dependencies.fallback ?? fetchOpenAiFallbackRecords;
+  const supplementStructuredRecords =
+    dependencies.supplementStructuredRecords ?? Boolean(process.env.OPENAI_API_KEY?.trim());
 
   try {
-    logger.info("EPBC: trying direct API");
-    raws = await scrapeViaApi();
-    logger.info({ count: raws.length }, "EPBC: direct API succeeded");
-  } catch (apiErr) {
-    logger.warn({ err: apiErr }, "EPBC: direct API failed, falling back to ChatGPT web search");
+    logger.info({ startDate, endDate }, "EPBC: querying official ArcGIS feature layer");
+    const records = await fetchArcGisEpbcRecords(startDate, endDate, fetchImplementation);
+    logger.info({ count: records.length }, "EPBC: ArcGIS feature layer succeeded");
+
+    if (supplementStructuredRecords && records.length > 0) {
+      try {
+        const supplementalRecords = await fallback(startDate, endDate);
+        const merged = mergeEpbcRecordDetails(records, supplementalRecords);
+        logger.info(
+          { structured: records.length, supplemental: supplementalRecords.length, merged: merged.length },
+          "EPBC: supplemented ArcGIS records with OpenAI details",
+        );
+        return merged;
+      } catch (supplementError) {
+        logger.warn(
+          { err: supplementError },
+          "EPBC: optional OpenAI detail supplementation failed; using ArcGIS records",
+        );
+      }
+    }
+
+    return records;
+  } catch (arcGisError) {
+    logger.warn(
+      { err: arcGisError },
+      "EPBC: ArcGIS feature layer failed, falling back to OpenAI web search",
+    );
     try {
-      raws = await scrapeViaChatGpt(startDate, endDate);
-      logger.info({ count: raws.length }, "EPBC: ChatGPT web search succeeded");
-    } catch (gptErr) {
-      logger.error({ err: gptErr }, "EPBC: both direct API and ChatGPT web search failed");
-      throw gptErr;
+      const records = await fallback(startDate, endDate);
+      logger.info({ count: records.length }, "EPBC: OpenAI web search fallback succeeded");
+      return records;
+    } catch (fallbackError) {
+      logger.error(
+        { arcGisError, fallbackError },
+        "EPBC: both ArcGIS and OpenAI web search fallback failed",
+      );
+      throw fallbackError;
     }
   }
-
-  const records: EpbcRecord[] = [];
-  for (const raw of raws) {
-    const record = normaliseRecord(raw);
-    if (record) records.push(record);
-  }
-
-  logger.info({ total: raws.length, kept: records.length }, "EPBC: normalised records");
-  return records;
 }
