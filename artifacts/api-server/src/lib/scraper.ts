@@ -248,6 +248,26 @@ interface ScrapeSource {
   browseAiRobotId?: string;
 }
 
+type ScanSourceOutcome =
+  | "attempted"
+  | "success"
+  | "empty"
+  | "skipped-missing-credentials"
+  | "error";
+
+function logScanSourceOutcome(
+  source: string,
+  outcome: ScanSourceOutcome,
+  details: { projectCount?: number; missing?: string[]; err?: unknown } = {},
+): void {
+  const context = { source, outcome, ...details };
+  if (outcome === "error" || outcome === "skipped-missing-credentials") {
+    logger.warn(context, "Scan source outcome");
+  } else {
+    logger.info(context, "Scan source outcome");
+  }
+}
+
 /**
  * Approved source whitelist — only these sources are scanned.
  * See replit.md for the full approved source list.
@@ -893,6 +913,15 @@ export async function scrapeAltEnergy(
   startDate?: string,
   endDate?: string
 ): Promise<ScrapedProject[]> {
+  const missingCredentials = ["ALTENERGY_USERNAME", "ALTENERGY_PASSWORD"]
+    .filter((key) => !process.env[key]?.trim());
+  if (missingCredentials.length > 0) {
+    logScanSourceOutcome("AltEnergy Australia", "skipped-missing-credentials", {
+      missing: missingCredentials,
+    });
+    return [];
+  }
+
   const projects: ScrapedProject[] = [];
   const seenUrls = new Set<string>();
 
@@ -2770,6 +2799,12 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
   // ── Phase 2: Apify Google Search for developers without a known domain ────
   const token = process.env.APIFY_API_TOKEN;
   const phaseTwo = noDomainGroups.filter(([k]) => !enrichedKeys.has(k));
+  if (phaseTwo.length > 0 && !token) {
+    logger.warn(
+      { phase: "Apify search", outcome: "skipped-missing-credentials", missing: ["APIFY_API_TOKEN"] },
+      "Contact enrichment integration outcome",
+    );
+  }
   if (phaseTwo.length > 0 && token) {
     logger.info({ count: phaseTwo.length }, "Contact enrichment: Phase 2 Apify search");
 
@@ -2837,6 +2872,13 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
   //   search-and-enrich REQUIRES firstName + lastName — sending company-only returns 400.
   const lushaKey = process.env.LUSHA_API_KEY;
   const lushaPool = noDomainGroups.filter(([k]) => !enrichedKeys.has(k));
+
+  if (lushaPool.length > 0 && !lushaKey) {
+    logger.warn(
+      { phase: "Lusha enrichment", outcome: "skipped-missing-credentials", missing: ["LUSHA_API_KEY"] },
+      "Contact enrichment integration outcome",
+    );
+  }
 
   if (lushaPool.length > 0 && lushaKey) {
     // Split: known-name entries go to bulk search-and-enrich; nameless entries go to prospecting
@@ -3149,6 +3191,13 @@ async function scrapeWithChatGpt(
   startDate?: string,
   endDate?: string,
 ): Promise<ScrapedProject[]> {
+  if (!process.env.OPENAI_API_KEY?.trim()) {
+    logScanSourceOutcome(source.name, "skipped-missing-credentials", {
+      missing: ["OPENAI_API_KEY"],
+    });
+    return [];
+  }
+
   try {
     const { openai } = await import("@workspace/integrations-openai-ai-server");
     const gpt = openai as unknown as GptScraperOpenAI;
@@ -3249,6 +3298,8 @@ async function scrapeSource(
   const projects: ScrapedProject[] = [];
   const seenUrls = new Set<string>();
 
+  logScanSourceOutcome(source.name, "attempted");
+
   function addUnique(items: ScrapedProject[]) {
     for (const p of items) {
       if (!seenUrls.has(p.sourceUrl)) {
@@ -3319,13 +3370,28 @@ async function scrapeSource(
     }
   } catch (err) {
     logger.warn({ err, source: source.name }, "Failed to scrape source");
+    logScanSourceOutcome(source.name, "error", { err });
+    return projects;
   }
 
+  logScanSourceOutcome(source.name, projects.length > 0 ? "success" : "empty", {
+    projectCount: projects.length,
+  });
   return projects;
 }
 
 export async function runScan(scanId: number, startDate?: string, endDate?: string): Promise<void> {
-  logger.info({ scanId, startDate, endDate }, "Starting scan");
+  const configuredSourceCount = SOURCES.length + 2;
+  logger.info(
+    { scanId, startDate, endDate, configuredSourceCount },
+    "Starting scan",
+  );
+  if (configuredSourceCount !== 34) {
+    logger.error(
+      { configuredSourceCount, expectedSourceCount: 34 },
+      "Scan source registry parity mismatch",
+    );
+  }
 
   const persistedLineage: ScanProjectLineage[] = [];
   const linkedProjectIds = new Set<number>();
@@ -3358,8 +3424,16 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
 
     // Dedicated AltEnergy authenticated scrape (separate from generic SOURCES)
     try {
+      logScanSourceOutcome("AltEnergy Australia", "attempted");
       const altEnergyProjects = await scrapeAltEnergy(startDate, endDate);
       allScraped.push(...altEnergyProjects);
+      if (process.env.ALTENERGY_USERNAME?.trim() && process.env.ALTENERGY_PASSWORD?.trim()) {
+        logScanSourceOutcome(
+          "AltEnergy Australia",
+          altEnergyProjects.length > 0 ? "success" : "empty",
+          { projectCount: altEnergyProjects.length },
+        );
+      }
       sourcesScanned++; // count AltEnergy as one source
 
       await db
@@ -3368,13 +3442,28 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         .where(eq(scansTable.id, scanId));
     } catch (err) {
       logger.warn({ err }, "AltEnergy scrape error");
+      logScanSourceOutcome("AltEnergy Australia", "error", { err });
       sourcesScanned++;
     }
 
     // Dedicated LUVI authenticated development-pipeline scrape.
     try {
-      const luviProjects = await scrapeLuvi(startDate, endDate);
-      allScraped.push(...luviProjects);
+      const luviMissing = process.env.LUVI_PASSWORD?.trim() ? [] : ["LUVI_PASSWORD"];
+      let luviProjects: ScrapedProject[] = [];
+      if (luviMissing.length > 0) {
+        logScanSourceOutcome(LUVI_SOURCE_NAME, "skipped-missing-credentials", {
+          missing: luviMissing,
+        });
+      } else {
+        logScanSourceOutcome(LUVI_SOURCE_NAME, "attempted");
+        luviProjects = await scrapeLuvi(startDate, endDate);
+        allScraped.push(...luviProjects);
+        logScanSourceOutcome(
+          LUVI_SOURCE_NAME,
+          luviProjects.length > 0 ? "success" : "empty",
+          { projectCount: luviProjects.length },
+        );
+      }
       sourcesScanned++; // count LUVI as one source
 
       await db
@@ -3383,6 +3472,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         .where(eq(scansTable.id, scanId));
     } catch (err) {
       logger.warn({ err }, "LUVI scrape error");
+      logScanSourceOutcome(LUVI_SOURCE_NAME, "error", { err });
       sourcesScanned++;
     }
 

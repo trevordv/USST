@@ -236,6 +236,18 @@ export interface ContactEnrichment {
   errorMessage?: string | null;
 }
 
+export type ContactEnrichmentStartStatus = typeof ContactEnrichmentStartStatus[keyof typeof ContactEnrichmentStartStatus];
+
+
+export const ContactEnrichmentStartStatus = {
+  running: 'running',
+} as const;
+
+export interface ContactEnrichmentStart {
+  runId: number;
+  status: ContactEnrichmentStartStatus;
+}
+
 export interface AccessToken {
   id: number;
   token: string;

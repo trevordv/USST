@@ -2,6 +2,7 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { db, scansTable, contactEnrichmentsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
+import { logIntegrationConfiguration } from "./lib/integration-diagnostics";
 
 const rawPort = process.env["PORT"];
 
@@ -16,6 +17,8 @@ const port = Number(rawPort);
 if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
+
+logIntegrationConfiguration();
 
 /**
  * On startup, mark any scans or enrichment runs that were left in "running"
