@@ -12,7 +12,6 @@ import {
   ExportProjectsQueryParams,
   GetContactEnrichmentParams,
 } from "@workspace/api-zod";
-import { enrichMissingContacts, startEnrichment } from "../lib/scraper";
 import { MINIMUM_SOLAR_CAPACITY_MW } from "../lib/project-eligibility";
 
 const router: IRouter = Router();
@@ -133,29 +132,47 @@ router.get("/projects/stats", async (req, res): Promise<void> => {
   const { startDate, endDate } = parsed.data;
   const conditions = buildWhereConditions(startDate, endDate, null, null);
 
-  const projects = await db
-    .select()
-    .from(projectsTable)
-    .where(conditions.length > 0 ? and(...conditions) : undefined);
-
-  const total = projects.length;
-  const byCountry: Record<string, number> = {};
-  const byStatus: Record<string, number> = {};
-  let totalCapacityMw = 0;
-  let recentCount = 0;
-
   const sevenDaysAgo = new Date();
   sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
   const sevenDaysAgoStr = sevenDaysAgo.toISOString().slice(0, 10);
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-  for (const p of projects) {
-    byCountry[p.country] = (byCountry[p.country] ?? 0) + 1;
-    byStatus[p.status] = (byStatus[p.status] ?? 0) + 1;
-    if (p.capacityMw != null) totalCapacityMw += parseFloat(p.capacityMw);
-    if (p.announcedDate >= sevenDaysAgoStr) recentCount++;
-  }
+  const [[summary], countryRows, statusRows] = await Promise.all([
+    db
+      .select({
+        total: sql<number>`count(*)::int`,
+        totalCapacityMw: sql<string>`coalesce(sum(${projectsTable.capacityMw}), 0)`,
+        recentCount: sql<number>`count(*) filter (where ${projectsTable.announcedDate} >= ${sevenDaysAgoStr})::int`,
+      })
+      .from(projectsTable)
+      .where(where),
+    db
+      .select({
+        country: projectsTable.country,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(projectsTable)
+      .where(where)
+      .groupBy(projectsTable.country),
+    db
+      .select({
+        status: projectsTable.status,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(projectsTable)
+      .where(where)
+      .groupBy(projectsTable.status),
+  ]);
 
-  res.json({ total, byCountry, byStatus, totalCapacityMw, recentCount });
+  const byCountry = Object.fromEntries(countryRows.map((row) => [row.country, Number(row.count)]));
+  const byStatus = Object.fromEntries(statusRows.map((row) => [row.status, Number(row.count)]));
+  res.json({
+    total: Number(summary?.total ?? 0),
+    byCountry,
+    byStatus,
+    totalCapacityMw: Number(summary?.totalCapacityMw ?? 0),
+    recentCount: Number(summary?.recentCount ?? 0),
+  });
 });
 
 // GET /projects/export — must be before /projects/:id
@@ -269,6 +286,7 @@ router.patch("/projects/:id", async (req, res): Promise<void> => {
 // POST /projects/enrich-contacts
 router.post("/projects/enrich-contacts", async (req, res): Promise<void> => {
   try {
+    const { startEnrichment } = await import("../lib/scraper");
     const runId = await startEnrichment();
     res.status(202).json({ runId, status: "running" });
   } catch (err) {
