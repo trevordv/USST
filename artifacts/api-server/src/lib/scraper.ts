@@ -22,6 +22,7 @@
 
 import { db, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable, pvhContactsTable, type PvhContact } from "@workspace/db";
 import { eq } from "drizzle-orm";
+import { read as readWorkbook, utils as workbookUtils } from "xlsx";
 import { logger } from "./logger";
 import {
   getProjectIneligibilityReason,
@@ -31,6 +32,19 @@ import {
   summarizeScanLineage,
   type ScanProjectLineage,
 } from "./project-eligibility";
+import { fetchEpbcRecords } from "./epbc-scraper";
+import {
+  classifySourceResponse,
+  parseAemoGenerationRows,
+  parseOfficialProjectHtml,
+  type SourceRepairCandidate,
+  type SourceResponseProblem,
+} from "./source-repair-parsers";
+import {
+  AEMO_GENERATION_WORKBOOK_URL,
+  getSourceRepairStrategy,
+  validateSourceRepairStrategies,
+} from "./source-repair-strategies";
 
 // ---------------------------------------------------------------------------
 // AltEnergy authenticated session
@@ -54,6 +68,7 @@ const LUVI_SOURCE_NAME = "LUVI Project Tracker";
 
 /** In-memory cookie jar for AltEnergy session cookies */
 let altEnergyCookies: string[] = [];
+let altEnergyAuthenticated = false;
 let altEnergySessionExpiry = 0; // unix ms — re-login after 55 min
 
 /**
@@ -66,6 +81,7 @@ let altEnergySessionExpiry = 0; // unix ms — re-login after 55 min
  *   3. Store the authenticated session cookie returned in the redirect response
  */
 async function loginAltEnergy(): Promise<void> {
+  altEnergyAuthenticated = false;
   const email = process.env.ALTENERGY_USERNAME;
   const password = process.env.ALTENERGY_PASSWORD;
 
@@ -140,6 +156,7 @@ async function loginAltEnergy(): Promise<void> {
     const loggedIn = res.status === 302 && !location.includes("/login");
 
     if (loggedIn) {
+      altEnergyAuthenticated = true;
       logger.info({ redirectTo: location }, "AltEnergy login successful");
     } else {
       logger.warn(
@@ -179,6 +196,9 @@ async function fetchAltEnergy(url: string, timeoutMs = 15000): Promise<string> {
   // Re-login if session has expired or was never established
   if (Date.now() > altEnergySessionExpiry || altEnergyCookies.length === 0) {
     await loginAltEnergy();
+  }
+  if (!altEnergyAuthenticated) {
+    throw new Error("AltEnergy authentication failed");
   }
 
   const controller = new AbortController();
@@ -252,16 +272,28 @@ type ScanSourceOutcome =
   | "attempted"
   | "success"
   | "empty"
+  | "fallback-used"
+  | "extraction-failed"
+  | "blocked"
+  | "timeout"
   | "skipped-missing-credentials"
   | "error";
 
 function logScanSourceOutcome(
   source: string,
   outcome: ScanSourceOutcome,
-  details: { projectCount?: number; missing?: string[]; err?: unknown } = {},
+  details: {
+    projectCount?: number;
+    durationMs?: number;
+    method?: string;
+    url?: string;
+    reason?: string;
+    missing?: string[];
+    err?: unknown;
+  } = {},
 ): void {
   const context = { source, outcome, ...details };
-  if (outcome === "error" || outcome === "skipped-missing-credentials") {
+  if (["error", "blocked", "timeout", "extraction-failed", "skipped-missing-credentials"].includes(outcome)) {
     logger.warn(context, "Scan source outcome");
   } else {
     logger.info(context, "Scan source outcome");
@@ -363,7 +395,7 @@ const SOURCES: ScrapeSource[] = [
   {
     name: "NSW Planning Renewable Energy",
     country: "AU",
-    searchUrl: "https://www.planning.nsw.gov.au/policy-and-legislation/renewable-energy",
+    searchUrl: "https://www.planning.nsw.gov.au/the-planning-system/renewable-energy",
   },
   {
     // JS-rendered planning portal — Firecrawl consistently times out.
@@ -414,7 +446,7 @@ const SOURCES: ScrapeSource[] = [
     // QLD Planning is a JS-rendered gov portal — Firecrawl times out consistently.
     name: "QLD Planning – Renewable Energy",
     country: "AU",
-    searchUrl: "https://www.planning.qld.gov.au/planning-issues-and-interests/renewable-energy",
+    searchUrl: "https://www.planning.qld.gov.au/planning-framework/state-assessment-and-referral-agency/sara-submissions-portal",
   },
   {
     name: "Smart Energy Council",
@@ -425,7 +457,7 @@ const SOURCES: ScrapeSource[] = [
   {
     name: "Energy Magazine",
     country: "AU",
-    searchUrl: "https://www.energymagazine.com.au/category/solar/",
+    searchUrl: "https://www.energymagazine.com.au/?s=solar+project",
     feedUrl: "https://www.energymagazine.com.au/feed/",
   },
   {
@@ -477,6 +509,12 @@ const SOURCES: ScrapeSource[] = [
     searchUrl: "https://environment.govt.nz/acts-and-regulations/acts/fast-track-approvals/fast-track-projects/",
   },
 ];
+
+export const CONFIGURED_SCAN_SOURCE_NAMES = [
+  ...SOURCES.map((source) => source.name),
+  "AltEnergy Australia",
+  LUVI_SOURCE_NAME,
+] as const;
 
 // Keywords that indicate a project is in early stage (not yet generating)
 const EARLY_STAGE_KEYWORDS = [
@@ -588,6 +626,18 @@ function extractDeveloper(text: string): string | null {
   return null;
 }
 
+class SourceRequestError extends Error {
+  constructor(
+    message: string,
+    readonly problem: SourceResponseProblem,
+    readonly url: string,
+    readonly status?: number,
+  ) {
+    super(message);
+    this.name = "SourceRequestError";
+  }
+}
+
 async function fetchWithTimeout(url: string, timeoutMs = 15000): Promise<string> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -600,7 +650,24 @@ async function fetchWithTimeout(url: string, timeoutMs = 15000): Promise<string>
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       },
     });
-    return await response.text();
+    const text = await response.text();
+    const contentType = response.headers.get("content-type") ?? "";
+    const problem = classifySourceResponse(response.status, contentType, text);
+    if (problem) {
+      throw new SourceRequestError(
+        `Source response rejected: ${problem} (${response.status})`,
+        problem,
+        response.url || url,
+        response.status,
+      );
+    }
+    return text;
+  } catch (err) {
+    if (err instanceof SourceRequestError) throw err;
+    if (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError")) {
+      throw new SourceRequestError("Source request timed out", "timeout", url);
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
@@ -1140,6 +1207,7 @@ export async function scrapeAltEnergy(
   }
 
   logger.info({ total: projects.length }, "AltEnergy scrape complete");
+  if (!altEnergyAuthenticated) throw new Error("AltEnergy authenticated source was not accessible");
   return projects;
 }
 
@@ -1266,7 +1334,7 @@ export async function scrapeLuvi(
     return projects;
   } catch (err) {
     logger.warn({ err }, "LUVI pipeline scrape failed — password may be invalid or the payload changed");
-    return [];
+    throw err;
   }
 }
 
@@ -3202,6 +3270,8 @@ async function scrapeWithChatGpt(
     const { openai } = await import("@workspace/integrations-openai-ai-server");
     const gpt = openai as unknown as GptScraperOpenAI;
     const today = new Date().toISOString().slice(0, 10);
+    const strategy = getSourceRepairStrategy(source.name);
+    const officialHosts = [...new Set(strategy.officialUrls.map((url) => new URL(url).hostname))];
 
     const dateClause = startDate || endDate
       ? ` announced between ${startDate ?? "any date"} and ${endDate ?? today}`
@@ -3227,6 +3297,8 @@ Return ONLY a valid JSON array (no prose, no markdown fences):
 ]
 
 Rules:
+- Search and cite ONLY these approved official hostnames: ${officialHosts.join(", ")}
+- Do not use news aggregators, developer sites, social media, cached copies, or unofficial mirrors
 - country: "AU" or "NZ" only
 - status: "announced" or "under_development"
 - capacity_mw: number or null if unknown — only include projects ≥5 MW or where size is unknown
@@ -3262,7 +3334,17 @@ Rules:
     for (const r of parsed) {
       if (!r.name) continue;
       const cap = typeof r.capacity_mw === "number" ? r.capacity_mw : null;
+      let sourceUrl = source.searchUrl;
+      if (r.source_url) {
+        try {
+          const candidateUrl = new URL(r.source_url);
+          if (officialHosts.includes(candidateUrl.hostname)) sourceUrl = candidateUrl.href;
+        } catch { /* retain the configured official URL */ }
+      }
       if (cap !== null && cap < 5) continue; // respect ≥5 MW gate
+      const announcedDate = r.announced_date ?? today;
+      if (startDate && announcedDate < startDate) continue;
+      if (endDate && announcedDate > endDate) continue;
       results.push({
         name: r.name,
         description: r.description ?? r.name,
@@ -3271,17 +3353,18 @@ Rules:
         location: r.location ?? null,
         country: (r.country === "NZ" ? "NZ" : "AU") as "AU" | "NZ",
         status: (r.status === "under_development" ? "under_development" : "announced") as "announced" | "under_development",
-        sourceUrl: r.source_url ?? source.searchUrl,
+        sourceUrl,
         sourceName: source.name,
-        announcedDate: r.announced_date ?? today,
+        announcedDate,
         contactName: null,
         contactEmail: null,
         contactPhone: null,
       });
     }
 
-    logger.info({ source: source.name, found: results.length }, "ChatGPT fallback complete");
-    return results;
+    const eligibleResults = results.filter(isEligibleScanProject);
+    logger.info({ source: source.name, found: eligibleResults.length }, "ChatGPT fallback complete");
+    return eligibleResults;
   } catch (err) {
     logger.warn({ err, source: source.name }, "ChatGPT fallback failed");
     return [];
@@ -3290,98 +3373,260 @@ Rules:
 
 // ── Per-source scrape ─────────────────────────────────────────────────────────
 
+function sourceRepairCandidatesToProjects(
+  candidates: readonly SourceRepairCandidate[],
+  source: ScrapeSource,
+  startDate?: string,
+  endDate?: string,
+): ScrapedProject[] {
+  const today = new Date().toISOString().slice(0, 10);
+  return candidates.flatMap((candidate) => {
+    const announcedDate = candidate.announcedDate ?? today;
+    if (startDate && announcedDate < startDate) return [];
+    if (endDate && announcedDate > endDate) return [];
+    const project: ScrapedProject = {
+      ...candidate,
+      country: source.country,
+      sourceName: source.name,
+      announcedDate,
+      contactName: null,
+      contactEmail: null,
+      contactPhone: null,
+    };
+    return isEligibleScanProject(project) ? [project] : [];
+  });
+}
+
+async function scrapeAemoGenerationWorkbook(
+  source: ScrapeSource,
+  startDate?: string,
+  endDate?: string,
+): Promise<ScrapedProject[]> {
+  const response = await fetch(AEMO_GENERATION_WORKBOOK_URL, {
+    headers: {
+      "User-Agent": "USST/1.0 (approved public energy-data ingestion)",
+      Accept: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream",
+    },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) {
+    throw new SourceRequestError(
+      `AEMO workbook returned HTTP ${response.status}`,
+      response.status === 403 ? "blocked" : "http-error",
+      response.url || AEMO_GENERATION_WORKBOOK_URL,
+      response.status,
+    );
+  }
+  const workbook = readWorkbook(Buffer.from(await response.arrayBuffer()), { type: "buffer" });
+  const sheet = workbook.Sheets["Generator Information"];
+  if (!sheet) throw new Error("AEMO Generator Information worksheet is missing");
+  const rows = workbookUtils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: true });
+  const today = new Date().toISOString().slice(0, 10);
+  return sourceRepairCandidatesToProjects(
+    parseAemoGenerationRows(rows, AEMO_GENERATION_WORKBOOK_URL, today),
+    source,
+    startDate,
+    endDate,
+  );
+}
+
+async function scrapeEpbcOfficialLayer(
+  source: ScrapeSource,
+  startDate?: string,
+  endDate?: string,
+): Promise<ScrapedProject[]> {
+  const records = await fetchEpbcRecords(startDate, endDate, {
+    supplementStructuredRecords: false,
+    fallback: async () => { throw new Error("EPBC official ArcGIS layer unavailable"); },
+  });
+  const candidates: SourceRepairCandidate[] = records
+    .filter((record) => record.isSolar)
+    .map((record) => ({
+      name: record.projectName,
+      description: record.rawDescription ?? `${record.technologyType ?? "Solar"} EPBC referral ${record.epbcNumber}`,
+      capacityMw: record.sizeMw,
+      developer: record.proponent,
+      location: record.location ?? record.state,
+      status: record.isApproved ? "under_development" : "announced",
+      sourceUrl: record.sourceUrl ?? source.searchUrl,
+      announcedDate: record.referralDate,
+    }));
+  return sourceRepairCandidatesToProjects(candidates, source, startDate, endDate);
+}
+
+function finalFailureOutcome(failures: readonly unknown[]): ScanSourceOutcome {
+  if (failures.some((error) => error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError"))) {
+    return "timeout";
+  }
+  const problems = failures
+    .filter((error): error is SourceRequestError => error instanceof SourceRequestError)
+    .map((error) => error.problem);
+  if (problems.includes("timeout")) return "timeout";
+  if (problems.includes("blocked")) return "blocked";
+  return "extraction-failed";
+}
+
+function logDirectSourceFailure(source: string, error: unknown): void {
+  if (error instanceof SourceRequestError) {
+    logScanSourceOutcome(
+      source,
+      error.problem === "blocked" ? "blocked" : error.problem === "timeout" ? "timeout" : "extraction-failed",
+      { err: error, url: error.url, reason: error.problem },
+    );
+    return;
+  }
+  logScanSourceOutcome(source, "extraction-failed", { err: error });
+}
+
 async function scrapeSource(
   source: ScrapeSource,
   startDate?: string,
-  endDate?: string
+  endDate?: string,
 ): Promise<ScrapedProject[]> {
   const projects: ScrapedProject[] = [];
   const seenUrls = new Set<string>();
+  const failures: unknown[] = [];
+  const strategy = getSourceRepairStrategy(source.name);
+  const startedAt = Date.now();
+  let directSucceeded = false;
+  let fallbackUsed = false;
 
-  logScanSourceOutcome(source.name, "attempted");
+  logScanSourceOutcome(source.name, "attempted", {
+    method: strategy.mode,
+    url: source.searchUrl,
+  });
 
-  function addUnique(items: ScrapedProject[]) {
-    for (const p of items) {
-      if (!seenUrls.has(p.sourceUrl)) {
-        seenUrls.add(p.sourceUrl);
-        projects.push(p);
-      }
+  function addUnique(items: readonly ScrapedProject[]): void {
+    for (const project of items) {
+      if (seenUrls.has(project.sourceUrl)) continue;
+      seenUrls.add(project.sourceUrl);
+      projects.push(project);
     }
   }
 
+  async function useOpenAiFallback(reason: string): Promise<void> {
+    fallbackUsed = true;
+    logScanSourceOutcome(source.name, "fallback-used", {
+      method: "openai-web-search",
+      reason,
+    });
+    addUnique(await scrapeWithChatGpt(source, startDate, endDate));
+  }
+
   try {
-    if (source.browseAiRobotId) {
-      // ── Browse.AI path ────────────────────────────────────────────────────
-      // Run the primary URL + all extraUrls sequentially (each task takes 5–90 s).
-      // Sequential (not parallel) to avoid hammering the robot's task queue.
-      const allUrls = [source.searchUrl, ...(source.extraUrls ?? [])];
-      for (const url of allUrls) {
-        try {
-          addUnique(await scrapeWithBrowseAi(source.browseAiRobotId, url, source, startDate, endDate));
-        } catch (err) {
-          logger.warn({ err, url, source: source.name }, "Browse.AI URL failed");
+    if (strategy.mode === "openai-first") {
+      await useOpenAiFallback(
+        "official direct access is unreliable or does not expose extractable project rows",
+      );
+    } else if (strategy.mode === "aemo-workbook") {
+      try {
+        addUnique(await scrapeAemoGenerationWorkbook(source, startDate, endDate));
+        directSucceeded = true;
+      } catch (err) {
+        failures.push(err);
+        logDirectSourceFailure(source.name, err);
+        logger.warn({ err, source: source.name }, "AEMO official workbook extraction failed");
+        await useOpenAiFallback("official AEMO workbook was unavailable or changed shape");
+      }
+    } else if (strategy.mode === "epbc-arcgis") {
+      try {
+        addUnique(await scrapeEpbcOfficialLayer(source, startDate, endDate));
+        directSucceeded = true;
+      } catch (err) {
+        failures.push(err);
+        logDirectSourceFailure(source.name, err);
+        logger.warn({ err, source: source.name }, "EPBC official ArcGIS extraction failed");
+        await useOpenAiFallback("official EPBC ArcGIS feature layer was unavailable");
+      }
+    } else if (strategy.mode === "structured-html") {
+      const urls = [source.searchUrl, ...(source.extraUrls ?? [])];
+      const results = await Promise.allSettled(urls.map((url) => fetchForSource(source, url)));
+      for (let index = 0; index < results.length; index++) {
+        const result = results[index];
+        if (result.status === "fulfilled") {
+          directSucceeded = true;
+          addUnique(sourceRepairCandidatesToProjects(
+            parseOfficialProjectHtml(result.value, urls[index]),
+            source,
+            startDate,
+            endDate,
+          ));
+        } else {
+          failures.push(result.reason);
+          logDirectSourceFailure(source.name, result.reason);
+          logger.warn({ err: result.reason, source: source.name, url: urls[index] }, "Structured HTML fetch failed");
         }
       }
-    } else if (source.firecrawl) {
-      // ── Firecrawl path ────────────────────────────────────────────────────
-      // Run the primary URL + all extraUrls in parallel (each has a 30 s timeout).
-      const allUrls = [source.searchUrl, ...(source.extraUrls ?? [])];
-      const fcResults = await Promise.allSettled(
-        allUrls.map((url) => scrapeWithFirecrawl(url, source, startDate, endDate)),
-      );
-      for (const result of fcResults) {
-        if (result.status === "fulfilled") addUnique(result.value);
-        else logger.warn({ err: result.reason, source: source.name }, "Firecrawl URL failed");
+    } else if (strategy.mode === "browse-ai-or-openai") {
+      const robotId = strategy.browseRobotIdEnvironmentKey
+        ? process.env[strategy.browseRobotIdEnvironmentKey]?.trim()
+        : undefined;
+      if (robotId && process.env.BROWSE_AI_API_KEY?.trim()) {
+        addUnique(await scrapeWithBrowseAi(robotId, source.searchUrl, source, startDate, endDate));
+        directSucceeded = projects.length > 0;
+      }
+      if (projects.length === 0) {
+        await useOpenAiFallback(robotId
+          ? "approved Browse.AI robot returned no qualifying projects"
+          : "approved Browse.AI robot is not configured");
       }
     } else {
-      // ── Standard fetch + Cheerio path ────────────────────────────────────
-      // 1. Try RSS feed first — best structured data
       if (source.feedUrl) {
-        const xml = await fetchForSource(source, source.feedUrl);
-        addUnique(parseRssFeed(xml, source, startDate, endDate));
-        logger.info({ source: source.name, rssCount: projects.length }, "RSS scraped");
+        try {
+          const xml = await fetchForSource(source, source.feedUrl);
+          directSucceeded = true;
+          addUnique(parseRssFeed(xml, source, startDate, endDate));
+          logger.info({ source: source.name, rssCount: projects.length }, "RSS scraped");
+        } catch (err) {
+          failures.push(err);
+          logDirectSourceFailure(source.name, err);
+          logger.warn({ err, source: source.name, url: source.feedUrl }, "RSS fetch failed");
+        }
       }
 
-      // 2. Scrape primary + extra URLs in parallel
       const htmlUrls = [source.searchUrl, ...(source.extraUrls ?? [])];
       const htmlResults = await Promise.allSettled(
         htmlUrls.map((url) => fetchForSource(source, url)),
       );
-      for (let i = 0; i < htmlResults.length; i++) {
-        const result = htmlResults[i];
+      for (let index = 0; index < htmlResults.length; index++) {
+        const result = htmlResults[index];
         if (result.status === "fulfilled") {
+          directSucceeded = true;
           addUnique(parseHtmlPage(result.value, source, startDate, endDate));
         } else {
-          logger.warn({ err: result.reason, url: htmlUrls[i], source: source.name }, "HTML URL fetch failed");
+          failures.push(result.reason);
+          logDirectSourceFailure(source.name, result.reason);
+          logger.warn({ err: result.reason, url: htmlUrls[index], source: source.name }, "HTML URL fetch failed");
         }
       }
     }
 
-    logger.info({ source: source.name, total: projects.length }, "Source scrape complete");
-
-    // ── ChatGPT fallback ──────────────────────────────────────────────────────
-    // If standard parsing (RSS + HTML) returned nothing, try ChatGPT web search.
-    // Skip for Browse.AI sources (they have their own JS-rendering fallback)
-    // and for authenticated sources (AltEnergy is handled separately).
-    if (projects.length === 0 && !source.browseAiRobotId && !source.authenticated) {
-      logger.info({ source: source.name }, "Standard parse returned 0 — trying ChatGPT fallback");
-      const gptResults = await scrapeWithChatGpt(source, startDate, endDate);
-      addUnique(gptResults);
+    if (projects.length === 0 && strategy.fallback === "openai" && !fallbackUsed) {
+      await useOpenAiFallback("official direct extraction returned no qualifying projects");
     }
   } catch (err) {
+    failures.push(err);
     logger.warn({ err, source: source.name }, "Failed to scrape source");
-    logScanSourceOutcome(source.name, "error", { err });
-    return projects;
   }
 
-  logScanSourceOutcome(source.name, projects.length > 0 ? "success" : "empty", {
+  const outcome: ScanSourceOutcome = projects.length > 0
+    ? "success"
+    : directSucceeded
+      ? "empty"
+      : finalFailureOutcome(failures);
+  logScanSourceOutcome(source.name, outcome, {
     projectCount: projects.length,
+    durationMs: Date.now() - startedAt,
+    method: fallbackUsed ? `${strategy.mode}+openai-web-search` : strategy.mode,
+    reason: outcome === "empty" ? "no qualifying projects" : undefined,
+    err: outcome === "extraction-failed" ? failures.at(-1) : undefined,
   });
   return projects;
 }
 
 export async function runScan(scanId: number, startDate?: string, endDate?: string): Promise<void> {
   const configuredSourceCount = SOURCES.length + 2;
+  validateSourceRepairStrategies(CONFIGURED_SCAN_SOURCE_NAMES);
   logger.info(
     { scanId, startDate, endDate, configuredSourceCount },
     "Starting scan",
@@ -3423,15 +3668,16 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
     }
 
     // Dedicated AltEnergy authenticated scrape (separate from generic SOURCES)
+    const altEnergyStartedAt = Date.now();
     try {
-      logScanSourceOutcome("AltEnergy Australia", "attempted");
+      logScanSourceOutcome("AltEnergy Australia", "attempted", { method: "authenticated" });
       const altEnergyProjects = await scrapeAltEnergy(startDate, endDate);
       allScraped.push(...altEnergyProjects);
       if (process.env.ALTENERGY_USERNAME?.trim() && process.env.ALTENERGY_PASSWORD?.trim()) {
         logScanSourceOutcome(
           "AltEnergy Australia",
           altEnergyProjects.length > 0 ? "success" : "empty",
-          { projectCount: altEnergyProjects.length },
+          { projectCount: altEnergyProjects.length, durationMs: Date.now() - altEnergyStartedAt, method: "authenticated" },
         );
       }
       sourcesScanned++; // count AltEnergy as one source
@@ -3442,26 +3688,32 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         .where(eq(scansTable.id, scanId));
     } catch (err) {
       logger.warn({ err }, "AltEnergy scrape error");
-      logScanSourceOutcome("AltEnergy Australia", "error", { err });
+      logScanSourceOutcome("AltEnergy Australia", "extraction-failed", {
+        err,
+        durationMs: Date.now() - altEnergyStartedAt,
+        method: "authenticated",
+      });
       sourcesScanned++;
     }
 
     // Dedicated LUVI authenticated development-pipeline scrape.
+    const luviStartedAt = Date.now();
     try {
       const luviMissing = process.env.LUVI_PASSWORD?.trim() ? [] : ["LUVI_PASSWORD"];
       let luviProjects: ScrapedProject[] = [];
       if (luviMissing.length > 0) {
         logScanSourceOutcome(LUVI_SOURCE_NAME, "skipped-missing-credentials", {
           missing: luviMissing,
+          method: "authenticated",
         });
       } else {
-        logScanSourceOutcome(LUVI_SOURCE_NAME, "attempted");
+        logScanSourceOutcome(LUVI_SOURCE_NAME, "attempted", { method: "authenticated" });
         luviProjects = await scrapeLuvi(startDate, endDate);
         allScraped.push(...luviProjects);
         logScanSourceOutcome(
           LUVI_SOURCE_NAME,
           luviProjects.length > 0 ? "success" : "empty",
-          { projectCount: luviProjects.length },
+          { projectCount: luviProjects.length, durationMs: Date.now() - luviStartedAt, method: "authenticated" },
         );
       }
       sourcesScanned++; // count LUVI as one source
@@ -3472,7 +3724,11 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         .where(eq(scansTable.id, scanId));
     } catch (err) {
       logger.warn({ err }, "LUVI scrape error");
-      logScanSourceOutcome(LUVI_SOURCE_NAME, "error", { err });
+      logScanSourceOutcome(LUVI_SOURCE_NAME, "extraction-failed", {
+        err,
+        durationMs: Date.now() - luviStartedAt,
+        method: "authenticated",
+      });
       sourcesScanned++;
     }
 
