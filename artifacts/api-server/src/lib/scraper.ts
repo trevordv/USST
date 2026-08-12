@@ -49,6 +49,7 @@ import {
   getSourceRepairStrategy,
   validateSourceRepairStrategies,
 } from "./source-repair-strategies";
+import { readAemoGenerationWorkbookRows } from "./aemo-workbook";
 
 // ---------------------------------------------------------------------------
 // AltEnergy authenticated session
@@ -3451,11 +3452,9 @@ async function scrapeAemoGenerationWorkbook(
       response.status,
     );
   }
-  const { read: readWorkbook, utils: workbookUtils } = await import("xlsx");
-  const workbook = readWorkbook(Buffer.from(await response.arrayBuffer()), { type: "buffer" });
-  const sheet = workbook.Sheets["Generator Information"];
-  if (!sheet) throw new Error("AEMO Generator Information worksheet is missing");
-  const rows = workbookUtils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: true });
+  const rows = await readAemoGenerationWorkbookRows(
+    Buffer.from(await response.arrayBuffer()),
+  );
   const today = new Date().toISOString().slice(0, 10);
   return sourceRepairCandidatesToProjects(
     parseAemoGenerationRows(rows, AEMO_GENERATION_WORKBOOK_URL, today),
