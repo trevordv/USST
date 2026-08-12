@@ -1,3 +1,6 @@
+export const GENERIC_SCAN_WORKERS = 4;
+export const CONTACT_DOMAIN_WORKERS = 3;
+
 /**
  * Map independent work with a fixed worker count.
  *

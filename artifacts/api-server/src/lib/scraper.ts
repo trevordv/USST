@@ -31,7 +31,11 @@ import {
   summarizeScanLineage,
   type ScanProjectLineage,
 } from "./project-eligibility";
-import { mapWithConcurrency } from "./concurrency";
+import {
+  CONTACT_DOMAIN_WORKERS,
+  GENERIC_SCAN_WORKERS,
+  mapWithConcurrency,
+} from "./concurrency";
 import { fetchEpbcRecords } from "./epbc-scraper";
 import {
   classifySourceResponse,
@@ -2863,7 +2867,7 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
   // while avoiding uncontrolled pressure on external sites.
   const phaseOneMisses = await mapWithConcurrency(
     [...groups.entries()],
-    3,
+    CONTACT_DOMAIN_WORKERS,
     async ([devKey, g]): Promise<[string, GroupEntry] | null> => {
       if (!g.domain) return [devKey, g];
 
@@ -3691,16 +3695,20 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       await progressUpdate;
     }
 
-    const genericResults = await mapWithConcurrency(SOURCES, 4, async (source) => {
-      try {
-        return await scrapeSource(source, startDate, endDate);
-      } catch (err) {
-        logger.warn({ err, source: source.name }, "Source scrape error");
-        return [];
-      } finally {
-        await recordSourceComplete();
-      }
-    });
+    const genericResults = await mapWithConcurrency(
+      SOURCES,
+      GENERIC_SCAN_WORKERS,
+      async (source) => {
+        try {
+          return await scrapeSource(source, startDate, endDate);
+        } catch (err) {
+          logger.warn({ err, source: source.name }, "Source scrape error");
+          return [];
+        } finally {
+          await recordSourceComplete();
+        }
+      },
+    );
     for (const scraped of genericResults) allScraped.push(...scraped);
 
     // Dedicated AltEnergy authenticated scrape (separate from generic SOURCES)
