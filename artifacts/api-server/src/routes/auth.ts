@@ -2,7 +2,6 @@ import { Router, type IRouter } from "express";
 import { db, accessTokensTable } from "@workspace/db";
 import { eq, and, gt } from "drizzle-orm";
 import { logger } from "../lib/logger";
-import nodemailer from "nodemailer";
 
 const router: IRouter = Router();
 
@@ -45,6 +44,7 @@ async function sendInviteEmail(
     day: "numeric", month: "long", year: "numeric",
   });
 
+  const { default: nodemailer } = await import("nodemailer");
   const transporter = nodemailer.createTransport({
     service: "gmail",
     auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },

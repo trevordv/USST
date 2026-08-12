@@ -12,6 +12,7 @@ import { Link, useSearch, useLocation } from "wouter";
 import { Download, Search, SearchX, Mail, Phone, User, ContactRound, Sparkles, Loader2, X } from "lucide-react";
 import { format } from "date-fns";
 import { formatProtectedApiError } from "@/lib/protected-api-error";
+import { useDebounce } from "@/lib/use-debounce";
 
 export default function Projects() {
   const [search, setSearch] = useState("");
@@ -26,6 +27,7 @@ export default function Projects() {
   const [isExporting, setIsExporting] = useState(false);
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
+  const debouncedSearch = useDebounce(search, 300);
 
   // Read scanId from URL query string (set by Scan History "View new" button)
   const searchStr = useSearch();
@@ -54,7 +56,7 @@ export default function Projects() {
         setEnrichMessage(`Enrichment failed: ${enrichment.errorMessage ?? "The enrichment run did not complete"}`);
       }
       setEnrichRunId(null);
-      queryClient.invalidateQueries();
+      queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
     }
   }, [enrichment, queryClient]);
 
@@ -74,7 +76,7 @@ export default function Projects() {
   const enriching = isStartingEnrichment || enrichRunId != null;
 
   const queryParams = {
-    search: search || undefined,
+    search: debouncedSearch || undefined,
     country: country !== "ALL" ? country : undefined,
     startDate: startDate || undefined,
     endDate: endDate || undefined,
@@ -117,6 +119,7 @@ export default function Projects() {
 
   return (
     <Layout>
+      <TooltipProvider>
       <div className="flex flex-col gap-6">
         {scanId != null && (
           <div className="flex items-center gap-3 px-4 py-2.5 bg-primary/10 border border-primary/20 rounded-lg text-sm">
@@ -275,7 +278,6 @@ export default function Projects() {
                     </TableCell>
                     <TableCell>
                       <Link href={projectHref} className="block">
-                        <TooltipProvider>
                           {p.contactEmail || p.contactName || p.contactPhone ? (
                             <div className="flex flex-col gap-0.5">
                               {p.contactName && (
@@ -315,7 +317,6 @@ export default function Projects() {
                           ) : (
                             <span className="text-xs text-muted-foreground/50 italic">No contact</span>
                           )}
-                        </TooltipProvider>
                       </Link>
                     </TableCell>
                     <TableCell>
@@ -350,6 +351,7 @@ export default function Projects() {
           </Table>
         </div>
       </div>
+      </TooltipProvider>
     </Layout>
   );
 }

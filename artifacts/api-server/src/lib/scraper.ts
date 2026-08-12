@@ -31,6 +31,7 @@ import {
   summarizeScanLineage,
   type ScanProjectLineage,
 } from "./project-eligibility";
+import { mapWithConcurrency } from "./concurrency";
 
 // ---------------------------------------------------------------------------
 // AltEnergy authenticated session
@@ -258,7 +259,7 @@ type ScanSourceOutcome =
 function logScanSourceOutcome(
   source: string,
   outcome: ScanSourceOutcome,
-  details: { projectCount?: number; missing?: string[]; err?: unknown } = {},
+  details: { projectCount?: number; durationMs?: number; missing?: string[]; err?: unknown } = {},
 ): void {
   const context = { source, outcome, ...details };
   if (outcome === "error" || outcome === "skipped-missing-credentials") {
@@ -2695,6 +2696,7 @@ async function callLushaProspecting(
  * Phase 3:    LinkedIn profile search for developers with generic contacts.
  */
 export async function enrichMissingContacts(runId?: number): Promise<{ checked: number; updated: number }> {
+  const enrichmentStartedAt = performance.now();
   const GENERIC_PREFIXES = [
     "info@", "admin@", "contact@", "hello@", "enquiries@", "enquiry@",
     "general@", "mail@", "projects@", "team@", "reception@", "office@",
@@ -2708,7 +2710,16 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     return false;
   }
 
-  const allProjects = await db.select().from(projectsTable);
+  const allProjects = await db
+    .select({
+      id: projectsTable.id,
+      developer: projectsTable.developer,
+      sourceUrl: projectsTable.sourceUrl,
+      contactName: projectsTable.contactName,
+      contactEmail: projectsTable.contactEmail,
+      contactPhone: projectsTable.contactPhone,
+    })
+    .from(projectsTable);
   const toEnrich = allProjects.filter(needsEnrichment);
   logger.info({ count: toEnrich.length, runId }, "Contact enrichment: starting");
   if (toEnrich.length === 0) {
@@ -2781,20 +2792,32 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
   }
 
   // ── Phase 1: Scrape known domains ─────────────────────────
-  for (const [devKey, g] of groups) {
-    if (!g.domain) { noDomainGroups.push([devKey, g]); continue; }
+  // Developer domains are independent. A three-worker cap reduces wall time
+  // while avoiding uncontrolled pressure on external sites.
+  const phaseOneMisses = await mapWithConcurrency(
+    [...groups.entries()],
+    3,
+    async ([devKey, g]): Promise<[string, GroupEntry] | null> => {
+      if (!g.domain) return [devKey, g];
 
-    for (const path of CONTACT_PATHS) {
-      const contact = await scrapeUrlForContact(`https://${g.domain}${path}`, g.projects[0].developer ?? null);
-      if (contact) {
-        await applyContact(g, contact);
-        enrichedKeys.add(devKey);
-        logger.info({ devKey, email: contact.email }, "Contact enriched via domain scrape");
-        break;
+      for (const path of CONTACT_PATHS) {
+        const contact = await scrapeUrlForContact(
+          `https://${g.domain}${path}`,
+          g.projects[0].developer ?? null,
+        );
+        if (contact) {
+          await applyContact(g, contact);
+          enrichedKeys.add(devKey);
+          logger.info({ devKey, email: contact.email }, "Contact enriched via domain scrape");
+          return null;
+        }
       }
-    }
-    if (!enrichedKeys.has(devKey)) noDomainGroups.push([devKey, g]);
-  }
+      return [devKey, g];
+    },
+  );
+  noDomainGroups.push(
+    ...phaseOneMisses.filter((entry): entry is [string, GroupEntry] => entry !== null),
+  );
 
   // ── Phase 2: Apify Google Search for developers without a known domain ────
   const token = process.env.APIFY_API_TOKEN;
@@ -3064,7 +3087,15 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     }
   }
 
-  logger.info({ checked: toEnrich.length, updated, runId }, "Contact enrichment complete");
+  logger.info(
+    {
+      checked: toEnrich.length,
+      updated,
+      runId,
+      durationMs: Math.round(performance.now() - enrichmentStartedAt),
+    },
+    "Contact enrichment complete",
+  );
   if (runId) {
     await db.update(contactEnrichmentsTable)
       .set({ status: "completed", completedAt: new Date(), checked: toEnrich.length, updated })
@@ -3295,6 +3326,7 @@ async function scrapeSource(
   startDate?: string,
   endDate?: string
 ): Promise<ScrapedProject[]> {
+  const startedAt = performance.now();
   const projects: ScrapedProject[] = [];
   const seenUrls = new Set<string>();
 
@@ -3370,17 +3402,22 @@ async function scrapeSource(
     }
   } catch (err) {
     logger.warn({ err, source: source.name }, "Failed to scrape source");
-    logScanSourceOutcome(source.name, "error", { err });
+    logScanSourceOutcome(source.name, "error", {
+      durationMs: Math.round(performance.now() - startedAt),
+      err,
+    });
     return projects;
   }
 
   logScanSourceOutcome(source.name, projects.length > 0 ? "success" : "empty", {
     projectCount: projects.length,
+    durationMs: Math.round(performance.now() - startedAt),
   });
   return projects;
 }
 
 export async function runScan(scanId: number, startDate?: string, endDate?: string): Promise<void> {
+  const scanStartedAt = performance.now();
   const configuredSourceCount = SOURCES.length + 2;
   logger.info(
     { scanId, startDate, endDate, configuredSourceCount },
@@ -3399,31 +3436,36 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
   let errorMessage: string | null = null;
 
   try {
-    // Fetch existing project source URLs to deduplicate
-    const existingProjects = await db.select({ sourceUrl: projectsTable.sourceUrl }).from(projectsTable);
-    const existingUrls = new Set(existingProjects.map((p) => p.sourceUrl).filter(Boolean));
-
     const allScraped: ScrapedProject[] = [];
+    let progressUpdate = Promise.resolve();
 
-    for (const source of SOURCES) {
-      try {
-        const scraped = await scrapeSource(source, startDate, endDate);
-        allScraped.push(...scraped);
-        sourcesScanned++;
-
-        // Update scan progress in DB
+    async function recordSourceComplete(): Promise<void> {
+      sourcesScanned++;
+      const completedCount = sourcesScanned;
+      progressUpdate = progressUpdate.then(async () => {
         await db
           .update(scansTable)
-          .set({ sourcesScanned })
+          .set({ sourcesScanned: completedCount })
           .where(eq(scansTable.id, scanId));
+      });
+      await progressUpdate;
+    }
+
+    const genericResults = await mapWithConcurrency(SOURCES, 4, async (source) => {
+      try {
+        return await scrapeSource(source, startDate, endDate);
       } catch (err) {
         logger.warn({ err, source: source.name }, "Source scrape error");
-        sourcesScanned++;
+        return [];
+      } finally {
+        await recordSourceComplete();
       }
-    }
+    });
+    for (const scraped of genericResults) allScraped.push(...scraped);
 
     // Dedicated AltEnergy authenticated scrape (separate from generic SOURCES)
     try {
+      const sourceStartedAt = performance.now();
       logScanSourceOutcome("AltEnergy Australia", "attempted");
       const altEnergyProjects = await scrapeAltEnergy(startDate, endDate);
       allScraped.push(...altEnergyProjects);
@@ -3431,23 +3473,22 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         logScanSourceOutcome(
           "AltEnergy Australia",
           altEnergyProjects.length > 0 ? "success" : "empty",
-          { projectCount: altEnergyProjects.length },
+          {
+            projectCount: altEnergyProjects.length,
+            durationMs: Math.round(performance.now() - sourceStartedAt),
+          },
         );
       }
-      sourcesScanned++; // count AltEnergy as one source
-
-      await db
-        .update(scansTable)
-        .set({ sourcesScanned })
-        .where(eq(scansTable.id, scanId));
     } catch (err) {
       logger.warn({ err }, "AltEnergy scrape error");
       logScanSourceOutcome("AltEnergy Australia", "error", { err });
-      sourcesScanned++;
+    } finally {
+      await recordSourceComplete();
     }
 
     // Dedicated LUVI authenticated development-pipeline scrape.
     try {
+      const sourceStartedAt = performance.now();
       const luviMissing = process.env.LUVI_PASSWORD?.trim() ? [] : ["LUVI_PASSWORD"];
       let luviProjects: ScrapedProject[] = [];
       if (luviMissing.length > 0) {
@@ -3461,19 +3502,17 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         logScanSourceOutcome(
           LUVI_SOURCE_NAME,
           luviProjects.length > 0 ? "success" : "empty",
-          { projectCount: luviProjects.length },
+          {
+            projectCount: luviProjects.length,
+            durationMs: Math.round(performance.now() - sourceStartedAt),
+          },
         );
       }
-      sourcesScanned++; // count LUVI as one source
-
-      await db
-        .update(scansTable)
-        .set({ sourcesScanned })
-        .where(eq(scansTable.id, scanId));
     } catch (err) {
       logger.warn({ err }, "LUVI scrape error");
       logScanSourceOutcome(LUVI_SOURCE_NAME, "error", { err });
-      sourcesScanned++;
+    } finally {
+      await recordSourceComplete();
     }
 
     // Build a lookup of existing sourceUrl -> { id, announcedDate } for quick checking
@@ -3624,7 +3663,16 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       })
       .where(eq(scansTable.id, scanId));
 
-    logger.info({ scanId, sourcesScanned, projectsFound, newProjects }, "Scan completed");
+    logger.info(
+      {
+        scanId,
+        sourcesScanned,
+        projectsFound,
+        newProjects,
+        durationMs: Math.round(performance.now() - scanStartedAt),
+      },
+      "Scan completed",
+    );
   } catch (err) {
     errorMessage = err instanceof Error ? err.message : String(err);
     logger.error({ err, scanId }, "Scan failed");

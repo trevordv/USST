@@ -26,15 +26,26 @@ logIntegrationConfiguration();
  */
 async function recoverStaleJobs(): Promise<void> {
   try {
-    const staleScans = await db
-      .update(scansTable)
-      .set({
-        status: "failed",
-        completedAt: new Date(),
-        errorMessage: "Scan interrupted — server restarted while scan was in progress. Please start a new scan.",
-      })
-      .where(eq(scansTable.status, "running"))
-      .returning({ id: scansTable.id });
+    const [staleScans, staleEnrichments] = await Promise.all([
+      db
+        .update(scansTable)
+        .set({
+          status: "failed",
+          completedAt: new Date(),
+          errorMessage: "Scan interrupted — server restarted while scan was in progress. Please start a new scan.",
+        })
+        .where(eq(scansTable.status, "running"))
+        .returning({ id: scansTable.id }),
+      db
+        .update(contactEnrichmentsTable)
+        .set({
+          status: "failed",
+          completedAt: new Date(),
+          errorMessage: "Enrichment interrupted — server restarted. Please re-run contact enrichment.",
+        })
+        .where(eq(contactEnrichmentsTable.status, "running"))
+        .returning({ id: contactEnrichmentsTable.id }),
+    ]);
 
     if (staleScans.length > 0) {
       logger.warn(
@@ -42,16 +53,6 @@ async function recoverStaleJobs(): Promise<void> {
         "Marked stale running scans as failed on startup"
       );
     }
-
-    const staleEnrichments = await db
-      .update(contactEnrichmentsTable)
-      .set({
-        status: "failed",
-        completedAt: new Date(),
-        errorMessage: "Enrichment interrupted — server restarted. Please re-run contact enrichment.",
-      })
-      .where(eq(contactEnrichmentsTable.status, "running"))
-      .returning({ id: contactEnrichmentsTable.id });
 
     if (staleEnrichments.length > 0) {
       logger.warn(
