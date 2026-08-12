@@ -1,10 +1,12 @@
 import express, { type Express } from "express";
 import cors from "cors";
+import compression from "compression";
 import pinoHttp from "pino-http";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { staticCacheControl } from "./lib/http-cache";
 
 const app: Express = express();
 const appUrl = process.env["APP_URL"]?.replace(/\/+$/, "");
@@ -32,6 +34,7 @@ app.use(
 // Production is served same-origin. If an APP_URL is configured, only that
 // origin is allowed to make browser cross-origin requests to the API.
 app.use(cors({ origin: appUrl ? [appUrl] : false }));
+app.use(compression({ threshold: 1024 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -41,7 +44,11 @@ const publicDir = path.resolve(process.cwd(), "dist/public");
 const frontendIndex = path.join(publicDir, "index.html");
 
 if (existsSync(frontendIndex)) {
-  app.use(express.static(publicDir));
+  app.use(express.static(publicDir, {
+    setHeaders(res, filePath) {
+      res.setHeader("Cache-Control", staticCacheControl(filePath, publicDir));
+    },
+  }));
 
   // SPA fallback: client-side routes should return the built React app.
   // API requests are deliberately excluded so unknown API routes still 404.

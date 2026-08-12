@@ -1,10 +1,14 @@
 import { Router, type IRouter } from "express";
 import { db, epbcProjectsTable, projectsTable } from "@workspace/db";
-import { eq, ilike, or, and, sql } from "drizzle-orm";
+import { eq, ilike, or, and, inArray, sql } from "drizzle-orm";
 import multer from "multer";
-import * as xlsx from "xlsx";
-import { fetchEpbcRecords } from "../lib/epbc-scraper";
-import { classifyEpbc, classifyApproval, extractMw } from "../lib/epbc-scraper";
+import {
+  classifyApproval,
+  classifyEpbc,
+  extractMw,
+  fetchEpbcRecords,
+  type EpbcRecord,
+} from "../lib/epbc-scraper";
 import { logger } from "../lib/logger";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -53,19 +57,16 @@ router.get("/epbc/projects", async (req, res): Promise<void> => {
 // ── GET /epbc/meta ────────────────────────────────────────────────────────────
 
 router.get("/epbc/meta", async (_req, res): Promise<void> => {
-  const [latest] = await db
-    .select({ scrapedAt: epbcProjectsTable.scrapedAt })
-    .from(epbcProjectsTable)
-    .orderBy(sql`${epbcProjectsTable.scrapedAt} DESC`)
-    .limit(1);
-
-  const [counts] = await db
-    .select({ total: sql<number>`count(*)` })
+  const [meta] = await db
+    .select({
+      lastScrapedAt: sql<Date | null>`max(${epbcProjectsTable.scrapedAt})`,
+      total: sql<number>`count(*)::int`,
+    })
     .from(epbcProjectsTable);
 
   res.json({
-    lastScrapedAt: latest?.scrapedAt?.toISOString() ?? null,
-    total: Number(counts?.total ?? 0),
+    lastScrapedAt: meta?.lastScrapedAt?.toISOString() ?? null,
+    total: Number(meta?.total ?? 0),
   });
 });
 
@@ -118,7 +119,8 @@ router.post("/epbc/upload", upload.single("file") as unknown as Parameters<typeo
   const file = (req as unknown as { file?: Express.Multer.File }).file;
   if (!file) { res.status(400).json({ error: "No file uploaded" }); return; }
 
-  let wb: xlsx.WorkBook;
+  const xlsx = await import("xlsx");
+  let wb: import("xlsx").WorkBook;
   try {
     wb = xlsx.read(file.buffer, { type: "buffer", cellDates: false });
   } catch {
@@ -198,6 +200,76 @@ router.post("/epbc/upload", upload.single("file") as unknown as Parameters<typeo
 
 // ── POST /epbc/sync ───────────────────────────────────────────────────────────
 
+const EPBC_UPSERT_BATCH_SIZE = 200;
+
+function toEpbcInsert(record: EpbcRecord) {
+  return {
+    ...record,
+    sizeMw: record.sizeMw != null ? String(record.sizeMw) : null,
+  };
+}
+
+async function upsertEpbcSyncRecords(records: EpbcRecord[]): Promise<{
+  newCount: number;
+  updatedCount: number;
+}> {
+  const uniqueRecords = [...new Map(records.map((record) => [record.epbcNumber, record])).values()];
+  const existingRows = uniqueRecords.length > 0
+    ? await db
+      .select({ epbcNumber: epbcProjectsTable.epbcNumber })
+      .from(epbcProjectsTable)
+      .where(inArray(epbcProjectsTable.epbcNumber, uniqueRecords.map((record) => record.epbcNumber)))
+    : [];
+  const existingNumbers = new Set(existingRows.map((row) => row.epbcNumber));
+
+  let newCount = 0;
+  let updatedCount = 0;
+
+  async function writeBatch(batch: EpbcRecord[]): Promise<void> {
+    const updatedAt = new Date();
+    await db
+      .insert(epbcProjectsTable)
+      .values(batch.map(toEpbcInsert))
+      .onConflictDoUpdate({
+        target: epbcProjectsTable.epbcNumber,
+        set: {
+          projectStatus: sql`excluded.project_status`,
+          decisionStatus: sql`excluded.decision_status`,
+          isApproved: sql`excluded.is_approved`,
+          rawDescription: sql`excluded.raw_description`,
+          updatedAt,
+        },
+      });
+  }
+
+  for (let offset = 0; offset < uniqueRecords.length; offset += EPBC_UPSERT_BATCH_SIZE) {
+    const batch = uniqueRecords.slice(offset, offset + EPBC_UPSERT_BATCH_SIZE);
+    try {
+      await writeBatch(batch);
+      for (const record of batch) {
+        if (existingNumbers.has(record.epbcNumber)) updatedCount++;
+        else newCount++;
+      }
+    } catch (batchError) {
+      logger.warn(
+        { err: batchError, offset, batchSize: batch.length },
+        "EPBC batch upsert failed; retrying records individually",
+      );
+      for (const record of batch) {
+        try {
+          await writeBatch([record]);
+          if (existingNumbers.has(record.epbcNumber)) updatedCount++;
+          else newCount++;
+        } catch (err) {
+          logger.warn({ err, epbcNumber: record.epbcNumber }, "Failed to upsert EPBC record");
+        }
+      }
+    }
+  }
+
+  return { newCount, updatedCount };
+}
+
 router.post("/epbc/sync", async (req, res): Promise<void> => {
   const body = req.body as { startDate?: string; endDate?: string } | undefined;
   const startDate = body?.startDate || undefined;
@@ -214,42 +286,17 @@ router.post("/epbc/sync", async (req, res): Promise<void> => {
     return;
   }
 
-  let newCount = 0;
-  let updatedCount = 0;
+  const persistenceStartedAt = performance.now();
+  const { newCount, updatedCount } = await upsertEpbcSyncRecords(records);
 
-  for (const record of records) {
-    try {
-      const existing = await db
-        .select({ id: epbcProjectsTable.id })
-        .from(epbcProjectsTable)
-        .where(eq(epbcProjectsTable.epbcNumber, record.epbcNumber))
-        .limit(1);
-
-      if (existing.length === 0) {
-        await db.insert(epbcProjectsTable).values({
-          ...record,
-          sizeMw: record.sizeMw != null ? String(record.sizeMw) : null,
-        });
-        newCount++;
-      } else {
-        await db
-          .update(epbcProjectsTable)
-          .set({
-            projectStatus: record.projectStatus,
-            decisionStatus: record.decisionStatus,
-            isApproved: record.isApproved,
-            rawDescription: record.rawDescription,
-            updatedAt: new Date(),
-          })
-          .where(eq(epbcProjectsTable.epbcNumber, record.epbcNumber));
-        updatedCount++;
-      }
-    } catch (err) {
-      logger.warn({ err, epbcNumber: record.epbcNumber }, "Failed to upsert EPBC record");
-    }
-  }
-
-  req.log.info({ newCount, updatedCount }, "EPBC sync complete");
+  req.log.info(
+    {
+      newCount,
+      updatedCount,
+      persistenceDurationMs: Math.round(performance.now() - persistenceStartedAt),
+    },
+    "EPBC sync complete",
+  );
   res.json({ newCount, updatedCount, total: records.length });
 });
 
