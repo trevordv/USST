@@ -1,8 +1,7 @@
 import { Router, type IRouter } from "express";
-import { eq, inArray } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 import { db, scansTable, projectsTable, scanProjectsTable } from "@workspace/db";
 import { TriggerScanBody, GetScanParams } from "@workspace/api-zod";
-import { runScan } from "../lib/scraper";
 import { filterEligibleScanProjects } from "../lib/project-eligibility";
 
 const router: IRouter = Router();
@@ -12,10 +11,10 @@ router.get("/scans", async (_req, res): Promise<void> => {
   const scans = await db
     .select()
     .from(scansTable)
-    .orderBy(scansTable.startedAt);
+    .orderBy(desc(scansTable.startedAt));
 
   res.json(
-    scans.reverse().map((s) => ({
+    scans.map((s) => ({
       ...s,
       startedAt: s.startedAt.toISOString(),
       completedAt: s.completedAt ? s.completedAt.toISOString() : null,
@@ -36,8 +35,12 @@ router.post("/scans", async (req, res): Promise<void> => {
     .values({ status: "running", sourcesScanned: 0, projectsFound: 0, newProjects: 0 })
     .returning();
 
-  // Run scan in background — don't await
-  runScan(scan.id, parsed.data.startDate ?? undefined, parsed.data.endDate ?? undefined).catch(
+  // Load the scanner only when explicitly requested, then run it in the background.
+  void import("../lib/scraper").then(({ runScan }) => runScan(
+    scan.id,
+    parsed.data.startDate ?? undefined,
+    parsed.data.endDate ?? undefined,
+  )).catch(
     (err: Error) => {
       req.log?.error({ err, scanId: scan.id }, "Scan background task failed");
     }
@@ -85,18 +88,19 @@ router.get("/scans/:id/projects", async (req, res): Promise<void> => {
     return;
   }
 
-  const [scan] = await db.select().from(scansTable).where(eq(scansTable.id, id));
+  const [[scan], relations] = await Promise.all([
+    db.select().from(scansTable).where(eq(scansTable.id, id)).limit(1),
+    db
+      .select()
+      .from(scanProjectsTable)
+      .where(eq(scanProjectsTable.scanId, id)),
+  ]);
   if (!scan) {
     res.status(404).json({ error: "Scan not found" });
     return;
   }
 
   // 1. Try modern scan_projects table
-  const relations = await db
-    .select()
-    .from(scanProjectsTable)
-    .where(eq(scanProjectsTable.scanId, id));
-
   if (relations.length > 0) {
     const projectIds = relations.map((r) => r.projectId);
     const projects = await db

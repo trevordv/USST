@@ -2,6 +2,7 @@ import type { RequestHandler } from "express";
 import { and, eq, or } from "drizzle-orm";
 import { appUsersTable, db } from "@workspace/db";
 import { logger } from "../lib/logger";
+import { shouldRefreshLastSeen } from "../lib/auth-timing";
 
 interface SupabaseUser {
   id: string;
@@ -93,15 +94,21 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
       return;
     }
 
-    const [linkedUser] = await db
-      .update(appUsersTable)
-      .set({
-        authUserId: allowedUser.authUserId ?? supabaseUser.id,
-        lastSeenAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(appUsersTable.id, allowedUser.id))
-      .returning();
+    const now = new Date();
+    const needsIdentityLink = !allowedUser.authUserId;
+    let linkedUser = allowedUser;
+    if (needsIdentityLink || shouldRefreshLastSeen(allowedUser.lastSeenAt, now)) {
+      const [updatedUser] = await db
+        .update(appUsersTable)
+        .set({
+          authUserId: allowedUser.authUserId ?? supabaseUser.id,
+          lastSeenAt: now,
+          updatedAt: now,
+        })
+        .where(eq(appUsersTable.id, allowedUser.id))
+        .returning();
+      if (updatedUser) linkedUser = updatedUser;
+    }
 
     res.locals.usstUser = {
       id: linkedUser.id,
