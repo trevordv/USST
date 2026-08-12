@@ -18,10 +18,14 @@ test("scanner and contact enrichment remain route-lazy", async () => {
 });
 
 test("the combined scanner keeps XLSX deferred and source timing enabled", async () => {
-  const scraper = await readSource("./scraper.ts");
+  const [scraper, aemoWorkbook] = await Promise.all([
+    readSource("./scraper.ts"),
+    readSource("./aemo-workbook.ts"),
+  ]);
 
   assert.doesNotMatch(scraper, /^import .* from "xlsx"/m);
-  assert.match(scraper, /await import\("xlsx"\)/);
+  assert.doesNotMatch(aemoWorkbook, /^import (?!type).* from "xlsx"/m);
+  assert.match(aemoWorkbook, /await import\("xlsx"\)/);
   assert.match(scraper, /GENERIC_SCAN_WORKERS/);
   assert.match(scraper, /CONTACT_DOMAIN_WORKERS/);
   assert.match(
