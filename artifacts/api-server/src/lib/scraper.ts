@@ -23,6 +23,9 @@
 import { db, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable, pvhContactsTable, type PvhContact } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger";
+import { contactCacheDecision } from "./learning-policy";
+import { MemoryService } from "./memory-service";
+import { postgresLearningRepository } from "./postgres-learning-repository";
 import {
   getProjectIneligibilityReason,
   hasSolarComponent,
@@ -284,6 +287,8 @@ type ScanSourceOutcome =
   | "skipped-missing-credentials"
   | "error";
 
+const learningMemory = new MemoryService(postgresLearningRepository);
+
 function logScanSourceOutcome(
   source: string,
   outcome: ScanSourceOutcome,
@@ -303,6 +308,36 @@ function logScanSourceOutcome(
   } else {
     logger.info(context, "Scan source outcome");
   }
+  const writes: Promise<unknown>[] = [learningMemory.recordAction({
+      actionType: "source_scrape",
+      entityType: "source",
+      entityId: source,
+      sourceName: source,
+      outcome,
+      durationMs: details.durationMs,
+      projectCount: details.projectCount,
+      context: {
+        method: details.method,
+        url: details.url,
+        reason: details.reason,
+        missing: details.missing,
+        fallbackUsed: details.method?.includes("openai") ?? false,
+      },
+      transientDays: 365,
+    })];
+  if (!["attempted", "fallback-used"].includes(outcome)) {
+    writes.push(learningMemory.recordObservation({
+      memoryType: outcome === "success" || outcome === "empty" ? "parser_success" : "parser_failure",
+      subjectType: "source",
+      subjectId: source,
+      key: `${details.method ?? "unknown"}:${outcome}`,
+      value: { outcome, method: details.method ?? null, url: details.url ?? null },
+      summary: `${source}: ${outcome.replaceAll("-", " ")} via ${details.method ?? "configured method"}`,
+      source: "scanner",
+      sourceReference: details.url ?? source,
+    }));
+  }
+  void Promise.all(writes).catch((err) => logger.warn({ err, source }, "Learning telemetry write failed"));
 }
 
 /**
@@ -2848,6 +2883,9 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
   const enrichedKeys = new Set<string>();
   const noDomainGroups: Array<[string, GroupEntry]> = [];
 
+  const confirmedDays = Number(process.env.CONTACT_MEMORY_CONFIRMED_DAYS ?? "90");
+  const failedDays = Number(process.env.CONTACT_MEMORY_FAILED_DAYS ?? "7");
+
   async function applyContact(g: GroupEntry, contact: ContactResult): Promise<void> {
     for (const proj of g.projects) {
       await db
@@ -2860,6 +2898,62 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
         })
         .where(eq(projectsTable.id, proj.id));
       updated++;
+    }
+    const developer = g.projects[0]?.developer?.trim();
+    if (developer && contact.email) {
+      await learningMemory.remember({
+        memoryType: "enrichment_pattern",
+        subjectType: "developer",
+        subjectId: developer.toLowerCase(),
+        key: "confirmed_contact",
+        value: { outcome: "confirmed", contact },
+        summary: `Reusable contact confirmed for ${developer}`,
+        source: "contact_enrichment",
+        sourceReference: contact.email.toLowerCase(),
+        expiresAt: new Date(Date.now() + confirmedDays * 86_400_000),
+      });
+    }
+  }
+
+  // Reuse recent confirmed contacts and suppress only identical, recently failed
+  // searches. Neither decision permanently prevents a retry.
+  const contactMemories = await postgresLearningRepository.findMemories({
+    subjectType: "developer",
+    subjectIds: [...groups.keys()],
+    memoryTypes: ["enrichment_pattern"],
+    statuses: ["active"],
+    limit: Math.min(50, groups.size * 3),
+  });
+  for (const [devKey, g] of groups) {
+    const memories = contactMemories.filter((memory) => memory.subjectId === devKey);
+    const confirmed = memories.find((memory) => memory.key === "confirmed_contact");
+    const failed = memories.find((memory) => memory.key === "failed_query");
+    if (confirmed && contactCacheDecision({ outcome: "confirmed", observedAt: confirmed.lastSeenAt, confirmedDays, failedDays }) === "reuse") {
+      const value = confirmed.valueJson.contact as ContactResult | undefined;
+      if (value?.email) {
+        await applyContact(g, value);
+        enrichedKeys.add(devKey);
+        await learningMemory.recordAction({
+          actionType: "external_api_call",
+          entityType: "developer",
+          entityId: devKey,
+          outcome: "avoided_memory_reuse",
+          context: { provider: "contact_enrichment", memoryId: confirmed.id },
+          transientDays: 365,
+        });
+        continue;
+      }
+    }
+    if (failed && contactCacheDecision({ outcome: "failed", observedAt: failed.lastSeenAt, confirmedDays, failedDays }) === "skip-identical-query") {
+      enrichedKeys.add(devKey);
+      await learningMemory.recordAction({
+        actionType: "external_api_call",
+        entityType: "developer",
+        entityId: devKey,
+        outcome: "avoided_recent_failure",
+        context: { provider: "contact_enrichment", memoryId: failed.id },
+        transientDays: 365,
+      });
     }
   }
 
@@ -3157,6 +3251,23 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     } catch (err) {
       logger.warn({ err }, "Contact enrichment: Phase 3 LinkedIn failed");
     }
+  }
+
+  for (const [devKey, g] of groups) {
+    if (enrichedKeys.has(devKey)) continue;
+    const developer = g.projects[0]?.developer?.trim();
+    if (!developer) continue;
+    await learningMemory.remember({
+      memoryType: "enrichment_pattern",
+      subjectType: "developer",
+      subjectId: devKey,
+      key: "failed_query",
+      value: { outcome: "failed", queryKey: devKey },
+      summary: `No contact found for ${developer}; identical search may retry after ${failedDays} days`,
+      source: "contact_enrichment",
+      sourceReference: devKey,
+      expiresAt: new Date(Date.now() + failedDays * 86_400_000),
+    });
   }
 
   logger.info(
@@ -3802,6 +3913,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
     for (const project of allScraped) {
       // Pre-insert quality gate — skip noise
       if (isNoisyProjectName(project.name)) {
+        void learningMemory.recordAction({ actionType: "project_classification", entityType: "project_candidate", entityId: project.sourceUrl, outcome: "rejected_noise", context: { source: project.sourceName }, transientDays: 365 });
         if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1); // sentinel
         continue;
       }
@@ -3817,6 +3929,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
           "Quality gate: ineligible scan project dropped",
         );
         if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
+        void learningMemory.recordAction({ actionType: "project_classification", entityType: "project_candidate", entityId: project.sourceUrl, outcome: `rejected_${ineligibilityReason}`, context: { source: project.sourceName, capacityMw: project.capacityMw }, transientDays: 365 });
         continue;
       }
       // Date-range gate: when a range is specified, only accept projects whose
@@ -3903,6 +4016,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
 
         linkedProjectIds.add(projectId);
         persistedLineage.push({ projectId, isNew });
+        void learningMemory.recordAction({ actionType: "project_classification", entityType: "project", entityId: projectId, outcome: isNew ? "accepted_new" : "accepted_existing", context: { source: project.sourceName }, transientDays: 365 });
         if (isNew && project.sourceUrl) existingByUrl.set(project.sourceUrl, projectId);
       } catch (err) {
         logger.warn({ err, project: project.name }, "Failed to insert project or scan relationship");

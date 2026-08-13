@@ -1,4 +1,6 @@
-import { useGetProject, getGetProjectQueryKey } from "@workspace/api-client-react";
+import { customFetch, useGetProject, getGetProjectQueryKey } from "@workspace/api-client-react";
+import { useMutation } from "@tanstack/react-query";
+import { toast } from "@/hooks/use-toast";
 import { Layout } from "@/components/layout";
 import { useParams, Link, useSearch } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -6,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { format } from "date-fns";
-import { ArrowLeft, ExternalLink, Mail, Phone, User, MapPin, Zap, Building2, Calendar } from "lucide-react";
+import { ArrowLeft, ExternalLink, Mail, Phone, User, MapPin, Zap, Building2, Calendar, CheckCircle2, Copy, ThumbsDown, X } from "lucide-react";
 
 export default function ProjectDetail() {
   const params = useParams();
@@ -31,6 +33,16 @@ export default function ProjectDetail() {
       enabled: !!id,
       queryKey: getGetProjectQueryKey(id)
     }
+  });
+
+  const feedback = useMutation({
+    mutationFn: (body: Record<string, unknown>) => customFetch("/api/learning/feedback", {
+      method: "POST",
+      responseType: "json",
+      body: JSON.stringify({ entityType: "project", entityId: id, ...body }),
+    }),
+    onSuccess: () => toast({ title: "Feedback recorded", description: "It will inform future runs after review where required." }),
+    onError: () => toast({ title: "Feedback was not recorded", variant: "destructive" }),
   });
 
   if (isLoading) {
@@ -97,6 +109,19 @@ export default function ProjectDetail() {
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="md:col-span-2 space-y-6">
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Improve future results</CardTitle>
+                <CardDescription>Optional feedback becomes evidence. It never changes USST's hard eligibility rules.</CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={() => feedback.mutate({ actionType: "confirm_project", feedbackType: "confirm", correctedValue: { projectId: id } })}><CheckCircle2 className="mr-2 h-4 w-4" />Confirm</Button>
+                <Button variant="outline" size="sm" onClick={() => feedback.mutate({ actionType: "mark_duplicate", feedbackType: "duplicate", correctedValue: { requiresDuplicateSelection: true }, reason: "Project appears to be a duplicate; administrator must identify the canonical project." })}><Copy className="mr-2 h-4 w-4" />Mark duplicate</Button>
+                <Button variant="outline" size="sm" onClick={() => feedback.mutate({ actionType: "reject_false_positive", feedbackType: "false_positive", originalValue: { name: project.name, sourceName: project.sourceName }, correctedValue: { rejected: true }, reason: "User rejected this project as a false positive." })}><ThumbsDown className="mr-2 h-4 w-4" />Reject false positive</Button>
+                {project.contactEmail && <Button variant="outline" size="sm" onClick={() => feedback.mutate({ actionType: "confirm_contact", entityType: "contact", feedbackType: "confirm_contact", correctedValue: { email: project.contactEmail, name: project.contactName } })}><Mail className="mr-2 h-4 w-4" />Confirm contact</Button>}
+                {project.contactEmail && <Button variant="outline" size="sm" onClick={() => feedback.mutate({ actionType: "reject_contact", entityType: "contact", feedbackType: "reject_contact", originalValue: { email: project.contactEmail, name: project.contactName }, correctedValue: { rejected: true } })}><X className="mr-2 h-4 w-4" />Reject contact</Button>}
+              </CardContent>
+            </Card>
             <Card>
               <CardHeader>
                 <CardTitle>Project Details</CardTitle>

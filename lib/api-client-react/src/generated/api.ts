@@ -33,6 +33,12 @@ import type {
   ExportProjectsParams,
   GetProjectStatsParams,
   HealthStatus,
+  KnowledgeItem,
+  KnowledgeReviewInput,
+  KnowledgeUpdateInput,
+  LearningDashboard,
+  LearningFeedbackInput,
+  LearningFeedbackResult,
   ListEpbcProjectsParams,
   ListProjectsParams,
   Project,
@@ -1787,5 +1793,298 @@ export const useImportEpbcProject = <TError = ErrorType<void>,
         TContext
       > => {
       return useMutation(getImportEpbcProjectMutationOptions(options));
+    }
+
+export const getGetLearningDashboardUrl = () => {
+
+
+
+
+  return `/api/learning/dashboard`
+}
+
+/**
+ * Administrator-only view of memory, knowledge candidates, feedback, conflicts, and safe aggregate metrics.
+ * @summary List scoped learning records and source reliability
+ */
+export const getLearningDashboard = async ( options?: RequestInit): Promise<LearningDashboard> => {
+
+  return customFetch<LearningDashboard>(getGetLearningDashboardUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetLearningDashboardQueryKey = () => {
+    return [
+    `/api/learning/dashboard`
+    ] as const;
+    }
+
+
+export const getGetLearningDashboardQueryOptions = <TData = Awaited<ReturnType<typeof getLearningDashboard>>, TError = ErrorType<void>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLearningDashboard>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetLearningDashboardQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getLearningDashboard>>> = ({ signal }) => getLearningDashboard({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getLearningDashboard>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetLearningDashboardQueryResult = NonNullable<Awaited<ReturnType<typeof getLearningDashboard>>>
+export type GetLearningDashboardQueryError = ErrorType<void>
+
+
+/**
+ * @summary List scoped learning records and source reliability
+ */
+
+export function useGetLearningDashboard<TData = Awaited<ReturnType<typeof getLearningDashboard>>, TError = ErrorType<void>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLearningDashboard>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetLearningDashboardQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getCreateLearningFeedbackUrl = () => {
+
+
+
+
+  return `/api/learning/feedback`
+}
+
+/**
+ * @summary Record authenticated human feedback
+ */
+export const createLearningFeedback = async (learningFeedbackInput: LearningFeedbackInput, options?: RequestInit): Promise<LearningFeedbackResult> => {
+
+  return customFetch<LearningFeedbackResult>(getCreateLearningFeedbackUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      learningFeedbackInput,)
+  }
+);}
+
+
+
+
+export const getCreateLearningFeedbackMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createLearningFeedback>>, TError,{data: BodyType<LearningFeedbackInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createLearningFeedback>>, TError,{data: BodyType<LearningFeedbackInput>}, TContext> => {
+
+const mutationKey = ['createLearningFeedback'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createLearningFeedback>>, {data: BodyType<LearningFeedbackInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  createLearningFeedback(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateLearningFeedbackMutationResult = NonNullable<Awaited<ReturnType<typeof createLearningFeedback>>>
+    export type CreateLearningFeedbackMutationBody = BodyType<LearningFeedbackInput>
+    export type CreateLearningFeedbackMutationError = ErrorType<void>
+
+    /**
+ * @summary Record authenticated human feedback
+ */
+export const useCreateLearningFeedback = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createLearningFeedback>>, TError,{data: BodyType<LearningFeedbackInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createLearningFeedback>>,
+        TError,
+        {data: BodyType<LearningFeedbackInput>},
+        TContext
+      > => {
+      return useMutation(getCreateLearningFeedbackMutationOptions(options));
+    }
+
+export const getReviewLearningCandidateUrl = (id: number,) => {
+
+
+
+
+  return `/api/learning/candidates/${id}/review`
+}
+
+/**
+ * @summary Approve or reject a knowledge candidate
+ */
+export const reviewLearningCandidate = async (id: number,
+    knowledgeReviewInput: KnowledgeReviewInput, options?: RequestInit): Promise<KnowledgeItem> => {
+
+  return customFetch<KnowledgeItem>(getReviewLearningCandidateUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      knowledgeReviewInput,)
+  }
+);}
+
+
+
+
+export const getReviewLearningCandidateMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reviewLearningCandidate>>, TError,{id: number;data: BodyType<KnowledgeReviewInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof reviewLearningCandidate>>, TError,{id: number;data: BodyType<KnowledgeReviewInput>}, TContext> => {
+
+const mutationKey = ['reviewLearningCandidate'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof reviewLearningCandidate>>, {id: number;data: BodyType<KnowledgeReviewInput>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  reviewLearningCandidate(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ReviewLearningCandidateMutationResult = NonNullable<Awaited<ReturnType<typeof reviewLearningCandidate>>>
+    export type ReviewLearningCandidateMutationBody = BodyType<KnowledgeReviewInput>
+    export type ReviewLearningCandidateMutationError = ErrorType<void>
+
+    /**
+ * @summary Approve or reject a knowledge candidate
+ */
+export const useReviewLearningCandidate = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reviewLearningCandidate>>, TError,{id: number;data: BodyType<KnowledgeReviewInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof reviewLearningCandidate>>,
+        TError,
+        {id: number;data: BodyType<KnowledgeReviewInput>},
+        TContext
+      > => {
+      return useMutation(getReviewLearningCandidateMutationOptions(options));
+    }
+
+export const getUpdateLearningKnowledgeUrl = (id: number,) => {
+
+
+
+
+  return `/api/learning/knowledge/${id}`
+}
+
+/**
+ * @summary Edit or supersede a knowledge record
+ */
+export const updateLearningKnowledge = async (id: number,
+    knowledgeUpdateInput: KnowledgeUpdateInput, options?: RequestInit): Promise<KnowledgeItem> => {
+
+  return customFetch<KnowledgeItem>(getUpdateLearningKnowledgeUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      knowledgeUpdateInput,)
+  }
+);}
+
+
+
+
+export const getUpdateLearningKnowledgeMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateLearningKnowledge>>, TError,{id: number;data: BodyType<KnowledgeUpdateInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateLearningKnowledge>>, TError,{id: number;data: BodyType<KnowledgeUpdateInput>}, TContext> => {
+
+const mutationKey = ['updateLearningKnowledge'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateLearningKnowledge>>, {id: number;data: BodyType<KnowledgeUpdateInput>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateLearningKnowledge(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateLearningKnowledgeMutationResult = NonNullable<Awaited<ReturnType<typeof updateLearningKnowledge>>>
+    export type UpdateLearningKnowledgeMutationBody = BodyType<KnowledgeUpdateInput>
+    export type UpdateLearningKnowledgeMutationError = ErrorType<void>
+
+    /**
+ * @summary Edit or supersede a knowledge record
+ */
+export const useUpdateLearningKnowledge = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateLearningKnowledge>>, TError,{id: number;data: BodyType<KnowledgeUpdateInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateLearningKnowledge>>,
+        TError,
+        {id: number;data: BodyType<KnowledgeUpdateInput>},
+        TContext
+      > => {
+      return useMutation(getUpdateLearningKnowledgeMutationOptions(options));
     }
 
