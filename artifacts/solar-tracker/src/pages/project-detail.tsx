@@ -1,5 +1,6 @@
 import { customFetch, useGetProject, getGetProjectQueryKey } from "@workspace/api-client-react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { toast } from "@/hooks/use-toast";
 import { Layout } from "@/components/layout";
 import { useParams, Link, useSearch } from "wouter";
@@ -7,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { format } from "date-fns";
 import { ArrowLeft, ExternalLink, Mail, Phone, User, MapPin, Zap, Building2, Calendar, CheckCircle2, Copy, ThumbsDown, X } from "lucide-react";
 
@@ -27,6 +30,10 @@ export default function ProjectDetail() {
     : scanId
     ? `Back to Scan RUN-${scanId.padStart(4, "0")} Results`
     : "Back to Projects";
+  const [duplicateOpen, setDuplicateOpen] = useState(false);
+  const [duplicateSearch, setDuplicateSearch] = useState("");
+  const [duplicateReason, setDuplicateReason] = useState("Same project reported under a different name or source.");
+  const [canonicalProject, setCanonicalProject] = useState<{ id: number; name: string; developer?: string | null; location?: string | null } | null>(null);
 
   const { data: project, isLoading, isError } = useGetProject(id, {
     query: {
@@ -41,8 +48,13 @@ export default function ProjectDetail() {
       responseType: "json",
       body: JSON.stringify({ entityType: "project", entityId: id, ...body }),
     }),
-    onSuccess: () => toast({ title: "Feedback recorded", description: "It will inform future runs after review where required." }),
+    onSuccess: () => { setDuplicateOpen(false); setCanonicalProject(null); toast({ title: "Feedback recorded", description: "It will inform future runs after review where required." }); },
     onError: () => toast({ title: "Feedback was not recorded", variant: "destructive" }),
+  });
+  const canonicalResults = useQuery({
+    queryKey: ["canonical-project-search", duplicateSearch],
+    queryFn: () => customFetch<Array<{ id: number; name: string; developer?: string | null; location?: string | null }>>(`/api/projects?search=${encodeURIComponent(duplicateSearch)}`, { responseType: "json" }),
+    enabled: duplicateOpen && duplicateSearch.trim().length >= 2,
   });
 
   if (isLoading) {
@@ -116,8 +128,8 @@ export default function ProjectDetail() {
               </CardHeader>
               <CardContent className="flex flex-wrap gap-2">
                 <Button variant="outline" size="sm" onClick={() => feedback.mutate({ actionType: "confirm_project", feedbackType: "confirm", correctedValue: { projectId: id } })}><CheckCircle2 className="mr-2 h-4 w-4" />Confirm</Button>
-                <Button variant="outline" size="sm" onClick={() => feedback.mutate({ actionType: "mark_duplicate", feedbackType: "duplicate", correctedValue: { requiresDuplicateSelection: true }, reason: "Project appears to be a duplicate; administrator must identify the canonical project." })}><Copy className="mr-2 h-4 w-4" />Mark duplicate</Button>
-                <Button variant="outline" size="sm" onClick={() => feedback.mutate({ actionType: "reject_false_positive", feedbackType: "false_positive", originalValue: { name: project.name, sourceName: project.sourceName }, correctedValue: { rejected: true }, reason: "User rejected this project as a false positive." })}><ThumbsDown className="mr-2 h-4 w-4" />Reject false positive</Button>
+                <Button variant="outline" size="sm" onClick={() => setDuplicateOpen(true)}><Copy className="mr-2 h-4 w-4" />Mark duplicate</Button>
+                <Button variant="outline" size="sm" onClick={() => feedback.mutate({ actionType: "reject_false_positive", feedbackType: "false_positive", originalValue: { name: project.name, sourceName: project.sourceName, sourceUrl: project.sourceUrl, developer: project.developer, location: project.location }, correctedValue: { rejected: true }, reason: "User rejected this project as a false positive." })}><ThumbsDown className="mr-2 h-4 w-4" />Reject false positive</Button>
                 {project.contactEmail && <Button variant="outline" size="sm" onClick={() => feedback.mutate({ actionType: "confirm_contact", entityType: "contact", feedbackType: "confirm_contact", correctedValue: { email: project.contactEmail, name: project.contactName } })}><Mail className="mr-2 h-4 w-4" />Confirm contact</Button>}
                 {project.contactEmail && <Button variant="outline" size="sm" onClick={() => feedback.mutate({ actionType: "reject_contact", entityType: "contact", feedbackType: "reject_contact", originalValue: { email: project.contactEmail, name: project.contactName }, correctedValue: { rejected: true } })}><X className="mr-2 h-4 w-4" />Reject contact</Button>}
               </CardContent>
@@ -241,6 +253,31 @@ export default function ProjectDetail() {
           </div>
         </div>
       </div>
+      <Dialog open={duplicateOpen} onOpenChange={setDuplicateOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Select the canonical project</DialogTitle>
+            <DialogDescription>No projects are merged or deleted. Your relationship becomes evidence and requires administrator approval.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Input value={duplicateSearch} onChange={(event) => { setDuplicateSearch(event.target.value); setCanonicalProject(null); }} placeholder="Search project name, developer, or location" />
+            <div className="max-h-56 space-y-2 overflow-y-auto rounded-md border p-2">
+              {duplicateSearch.trim().length < 2 && <p className="p-2 text-sm text-muted-foreground">Enter at least two characters.</p>}
+              {canonicalResults.data?.filter((item) => item.id !== id).map((item) => (
+                <button key={item.id} type="button" onClick={() => setCanonicalProject(item)} className={`w-full rounded-md border p-3 text-left text-sm ${canonicalProject?.id === item.id ? "border-primary bg-primary/5" : "hover:bg-muted"}`}>
+                  <span className="font-medium">{item.name}</span>
+                  <span className="mt-1 block text-xs text-muted-foreground">{[item.developer, item.location].filter(Boolean).join(" · ") || `Project #${item.id}`}</span>
+                </button>
+              ))}
+            </div>
+            <Input value={duplicateReason} onChange={(event) => setDuplicateReason(event.target.value)} placeholder="Reason for the duplicate relationship" />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDuplicateOpen(false)}>Cancel</Button>
+            <Button disabled={!canonicalProject || !duplicateReason.trim() || feedback.isPending} onClick={() => canonicalProject && feedback.mutate({ actionType: "mark_duplicate", feedbackType: "duplicate", originalValue: { duplicateProjectId: id }, correctedValue: { duplicateProjectId: id, canonicalProjectId: canonicalProject.id }, reason: duplicateReason.trim() })}>Submit for review</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Layout>
   );
 }

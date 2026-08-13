@@ -1,6 +1,8 @@
 -- Additive learning-loop storage. Runtime access is through the authenticated
 -- Railway API only; these tables are deliberately not exposed to browser roles.
 
+alter table public.projects add column if not exists developer_source_value text;
+
 create table if not exists public.agent_memory (
   id bigserial primary key,
   memory_type text not null,
@@ -55,6 +57,8 @@ create table if not exists public.agent_feedback (
   feedback_type text not null,
   reason text,
   user_id integer not null references public.app_users(id) on delete restrict,
+  duplicate_project_id integer references public.projects(id) on delete restrict,
+  canonical_project_id integer references public.projects(id) on delete restrict,
   created_at timestamptz not null default now(),
   processed_at timestamptz
 );
@@ -86,6 +90,8 @@ create table if not exists public.agent_knowledge_conflicts (
   resolved_by integer references public.app_users(id) on delete set null,
   resolved_at timestamptz,
   resolution text,
+  resolution_action text check (resolution_action in ('select_preferred', 'reject_value', 'dismiss')),
+  selected_knowledge_id bigint references public.agent_knowledge(id) on delete set null,
   created_at timestamptz not null default now()
 );
 
@@ -97,6 +103,8 @@ create index if not exists agent_knowledge_scope_idx
   on public.agent_knowledge(subject_type, subject_id, knowledge_type, approval_status);
 create index if not exists agent_feedback_entity_idx
   on public.agent_feedback(entity_type, entity_id, created_at desc);
+create index if not exists agent_feedback_duplicate_idx
+  on public.agent_feedback(duplicate_project_id, canonical_project_id) where duplicate_project_id is not null;
 create index if not exists agent_learning_events_source_idx
   on public.agent_learning_events(source_name, action_type, created_at desc);
 create index if not exists agent_learning_events_expiry_idx

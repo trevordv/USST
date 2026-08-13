@@ -1,9 +1,12 @@
 import { Router, type IRouter } from "express";
-import { CreateLearningFeedbackBody, ReviewLearningCandidateBody, UpdateLearningKnowledgeBody } from "@workspace/api-zod";
+import { CreateLearningFeedbackBody, ReviewLearningCandidateBody, ResolveLearningConflictBody, UpdateLearningKnowledgeBody } from "@workspace/api-zod";
 import type { UsstAuthUser } from "../middlewares/supabase-auth";
 import { requireAdmin } from "../middlewares/supabase-auth";
 import { MemoryService } from "../lib/memory-service";
 import { postgresLearningRepository } from "../lib/postgres-learning-repository";
+import { normalizeLearningSubject, sourceDomain } from "../lib/runtime-learning";
+import { db, projectsTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
 
 const router: IRouter = Router();
 const memory = new MemoryService(postgresLearningRepository);
@@ -23,10 +26,38 @@ router.post("/learning/feedback", async (req, res): Promise<void> => {
     return;
   }
   const user = res.locals.usstUser as UsstAuthUser;
-  const result = await memory.recordFeedback({ ...parsed.data, userId: user.id });
+  let original = parsed.data.originalValue ?? {};
+  let corrected = parsed.data.correctedValue ?? {};
+  if (parsed.data.feedbackType === "duplicate") {
+    const duplicateProjectId = Number(parsed.data.entityId);
+    const canonicalProjectId = Number(corrected.canonicalProjectId);
+    if (!Number.isInteger(duplicateProjectId) || !Number.isInteger(canonicalProjectId) || duplicateProjectId <= 0 || canonicalProjectId <= 0 || duplicateProjectId === canonicalProjectId) {
+      res.status(400).json({ error: "Duplicate feedback requires distinct duplicate and canonical project IDs" });
+      return;
+    }
+    const [duplicate, canonical] = await Promise.all([
+      db.select().from(projectsTable).where(eq(projectsTable.id, duplicateProjectId)).limit(1),
+      db.select().from(projectsTable).where(eq(projectsTable.id, canonicalProjectId)).limit(1),
+    ]);
+    if (!duplicate[0] || !canonical[0]) { res.status(400).json({ error: "Both projects must exist" }); return; }
+    original = { ...original, name: duplicate[0].name, developer: duplicate[0].developer, location: duplicate[0].location, sourceName: duplicate[0].sourceName, sourceUrl: duplicate[0].sourceUrl };
+    corrected = {
+      ...corrected, duplicateProjectId, canonicalProjectId, duplicateName: duplicate[0].name,
+      canonicalName: canonical[0].name, developer: duplicate[0].developer,
+      location: duplicate[0].location, sourceName: duplicate[0].sourceName,
+      sourceDomain: sourceDomain(duplicate[0].sourceUrl),
+    };
+  } else if (parsed.data.feedbackType === "false_positive") {
+    const projectPattern = normalizeLearningSubject(String(original.name ?? ""));
+    if (projectPattern.length < 4 || !original.sourceName && !original.sourceUrl && !original.developer && !original.location) {
+      res.status(400).json({ error: "False-positive feedback requires a project pattern and scoped source, domain, developer, or location evidence" });
+      return;
+    }
+    corrected = { ...corrected, projectPattern, sourceName: original.sourceName, sourceDomain: sourceDomain(String(original.sourceUrl ?? "")), developer: original.developer, location: original.location };
+  }
+  const result = await memory.recordFeedback({ ...parsed.data, originalValue: original, correctedValue: corrected, userId: user.id });
 
   let candidateCreated = false;
-  const corrected = parsed.data.correctedValue ?? {};
   let candidate: {
     knowledgeType: string;
     subjectType: string;
@@ -40,7 +71,7 @@ router.post("/learning/feedback", async (req, res): Promise<void> => {
     candidate = {
       knowledgeType: "project_relationship",
       subjectType: "project",
-      subjectId: parsed.data.entityId,
+      subjectId: normalizeLearningSubject(String(corrected.duplicateName)),
       canonicalKey: "duplicate_of",
       value: corrected,
       summary: parsed.data.reason || "User identified a duplicate project relationship",
@@ -49,19 +80,20 @@ router.post("/learning/feedback", async (req, res): Promise<void> => {
     candidate = {
       knowledgeType: "known_false_positive_pattern",
       subjectType: parsed.data.entityType,
-      subjectId: parsed.data.entityId,
+      subjectId: String(corrected.projectPattern),
       canonicalKey: "false_positive_pattern",
       value: corrected,
       summary: parsed.data.reason || "User rejected a false-positive extraction",
     };
-  } else if (parsed.data.feedbackType === "approve_alias" || (parsed.data.feedbackType === "correction" && "developer" in corrected)) {
+  } else if (parsed.data.feedbackType === "approve_alias" || (parsed.data.feedbackType === "correction" && ("developer" in corrected || "canonicalDeveloper" in corrected))) {
+    const isProjectAlias = corrected.canonicalProjectId != null && corrected.alias != null;
     candidate = {
-      knowledgeType: "developer_alias",
-      subjectType: "developer",
-      subjectId: String(parsed.data.originalValue?.developer ?? parsed.data.entityId ?? "").toLowerCase(),
-      canonicalKey: "canonical_developer",
-      value: corrected,
-      summary: parsed.data.reason || "Developer alias correction submitted for approval",
+      knowledgeType: isProjectAlias ? "project_alias" : "developer_alias",
+      subjectType: isProjectAlias ? "project" : "developer",
+      subjectId: normalizeLearningSubject(String(isProjectAlias ? corrected.alias : original.developer ?? parsed.data.entityId ?? "")),
+      canonicalKey: isProjectAlias ? "canonical_project" : "canonical_developer",
+      value: isProjectAlias ? corrected : { ...corrected, alias: original.developer, canonicalDeveloper: corrected.canonicalDeveloper ?? corrected.developer },
+      summary: parsed.data.reason || (isProjectAlias ? "Project alias submitted for approval" : "Developer alias correction submitted for approval"),
     };
   } else if (parsed.data.feedbackType === "confirm_contact") {
     candidate = {
@@ -115,6 +147,20 @@ router.patch("/learning/knowledge/:id", requireAdmin, async (req, res): Promise<
   }
   await memory.recordAction({ actionType: "knowledge_management", entityType: "knowledge", entityId: id, outcome: parsed.data.supersede ? "superseded" : "edited", transientDays: 365 });
   res.json(updated);
+});
+
+router.post("/learning/conflicts/:id/resolve", requireAdmin, async (req, res): Promise<void> => {
+  const id = Number(req.params.id);
+  const parsed = ResolveLearningConflictBody.safeParse(req.body);
+  if (!Number.isInteger(id) || id <= 0 || !parsed.success || (parsed.data.action !== "dismiss" && !parsed.data.knowledgeId)) {
+    res.status(400).json({ error: parsed.success ? "A conflict value must be selected" : parsed.error.message });
+    return;
+  }
+  const user = res.locals.usstUser as UsstAuthUser;
+  const conflict = await postgresLearningRepository.resolveConflict(id, parsed.data, user.id);
+  if (!conflict) { res.status(404).json({ error: "Open conflict or selected knowledge value not found" }); return; }
+  await memory.recordAction({ actionType: "conflict_resolution", entityType: "knowledge_conflict", entityId: id, outcome: parsed.data.action, context: { knowledgeId: parsed.data.knowledgeId, administratorId: user.id }, transientDays: 3650 });
+  res.json(conflict);
 });
 
 export default router;

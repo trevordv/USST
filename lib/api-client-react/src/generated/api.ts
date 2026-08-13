@@ -23,6 +23,7 @@ import type {
   AccessToken,
   AccessTokenInput,
   AccessTokenValidation,
+  ConflictResolutionInput,
   ContactEnrichment,
   ContactEnrichmentStart,
   EpbcImportResult,
@@ -2086,5 +2087,77 @@ export const useUpdateLearningKnowledge = <TError = ErrorType<void>,
         TContext
       > => {
       return useMutation(getUpdateLearningKnowledgeMutationOptions(options));
+    }
+
+export const getResolveLearningConflictUrl = (id: number,) => {
+
+
+
+
+  return `/api/learning/conflicts/${id}/resolve`
+}
+
+/**
+ * @summary Resolve, dismiss, or reject a value in a knowledge conflict
+ */
+export const resolveLearningConflict = async (id: number,
+    conflictResolutionInput: ConflictResolutionInput, options?: RequestInit): Promise<void> => {
+
+  return customFetch<void>(getResolveLearningConflictUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      conflictResolutionInput,)
+  }
+);}
+
+
+
+
+export const getResolveLearningConflictMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof resolveLearningConflict>>, TError,{id: number;data: BodyType<ConflictResolutionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof resolveLearningConflict>>, TError,{id: number;data: BodyType<ConflictResolutionInput>}, TContext> => {
+
+const mutationKey = ['resolveLearningConflict'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof resolveLearningConflict>>, {id: number;data: BodyType<ConflictResolutionInput>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  resolveLearningConflict(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ResolveLearningConflictMutationResult = NonNullable<Awaited<ReturnType<typeof resolveLearningConflict>>>
+    export type ResolveLearningConflictMutationBody = BodyType<ConflictResolutionInput>
+    export type ResolveLearningConflictMutationError = ErrorType<void>
+
+    /**
+ * @summary Resolve, dismiss, or reject a value in a knowledge conflict
+ */
+export const useResolveLearningConflict = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof resolveLearningConflict>>, TError,{id: number;data: BodyType<ConflictResolutionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof resolveLearningConflict>>,
+        TError,
+        {id: number;data: BodyType<ConflictResolutionInput>},
+        TContext
+      > => {
+      return useMutation(getResolveLearningConflictMutationOptions(options));
     }
 

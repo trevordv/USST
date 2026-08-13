@@ -26,6 +26,8 @@ import { logger } from "./logger";
 import { contactCacheDecision } from "./learning-policy";
 import { MemoryService } from "./memory-service";
 import { postgresLearningRepository } from "./postgres-learning-repository";
+import { buildAgentContext } from "./agent-context-builder";
+import { applyRuntimeLearning } from "./runtime-learning";
 import {
   getProjectIneligibilityReason,
   hasSolarComponent,
@@ -2934,10 +2936,10 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
         await applyContact(g, value);
         enrichedKeys.add(devKey);
         await learningMemory.recordAction({
-          actionType: "external_api_call",
+          actionType: "external_api_call_avoided",
           entityType: "developer",
           entityId: devKey,
-          outcome: "avoided_memory_reuse",
+          outcome: "memory_reused",
           context: { provider: "contact_enrichment", memoryId: confirmed.id },
           transientDays: 365,
         });
@@ -2947,7 +2949,7 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     if (failed && contactCacheDecision({ outcome: "failed", observedAt: failed.lastSeenAt, confirmedDays, failedDays }) === "skip-identical-query") {
       enrichedKeys.add(devKey);
       await learningMemory.recordAction({
-        actionType: "external_api_call",
+        actionType: "external_api_call_avoided",
         entityType: "developer",
         entityId: devKey,
         outcome: "avoided_recent_failure",
@@ -3897,13 +3899,16 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       country: projectsTable.country,
       sourceUrl: projectsTable.sourceUrl,
       announcedDate: projectsTable.announcedDate,
+      developer: projectsTable.developer,
+      location: projectsTable.location,
+      sourceName: projectsTable.sourceName,
     }).from(projectsTable);
     for (const r of existingRows) {
       if (r.sourceUrl) {
         existingByUrl.set(r.sourceUrl, r.id);
         if (r.announcedDate) existingDateByUrl.set(r.sourceUrl, r.announcedDate);
-        if (isEligibleScanProject(r)) eligibleExistingProjectIds.add(r.id);
       }
+      if (isEligibleScanProject(r)) eligibleExistingProjectIds.add(r.id);
     }
 
     // Load PVH fallback contacts once for the whole scan
@@ -3932,6 +3937,34 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         void learningMemory.recordAction({ actionType: "project_classification", entityType: "project_candidate", entityId: project.sourceUrl, outcome: `rejected_${ineligibilityReason}`, context: { source: project.sourceName, capacityMw: project.capacityMw }, transientDays: 365 });
         continue;
       }
+
+      // Learning is deliberately advisory and runs only after immutable hard
+      // gates. Retrieval is scoped to this candidate's name/developer/location/source.
+      const sourceDeveloper = project.developer;
+      const agentContext = await buildAgentContext(postgresLearningRepository, {
+        task: "project_classification_and_deduplication",
+        project,
+        source: project.sourceName,
+        developer: project.developer,
+      });
+      const learnedDecision = applyRuntimeLearning(project, agentContext);
+      if (learnedDecision.events.length > 0) {
+        await Promise.all(learnedDecision.events.map((outcome) => learningMemory.recordAction({
+          actionType: outcome,
+          entityType: "project_candidate",
+          entityId: project.sourceUrl,
+          outcome,
+          context: { knowledgeIds: learnedDecision.appliedKnowledgeIds, sourceName: project.sourceName },
+          sourceName: project.sourceName,
+          transientDays: 365,
+        })));
+      }
+      if (learnedDecision.rejectAsFalsePositive) {
+        logger.info({ project: project.name, source: project.sourceName, knowledgeIds: learnedDecision.appliedKnowledgeIds }, "Approved scoped false-positive knowledge avoided a repeat candidate");
+        if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
+        continue;
+      }
+      project.developer = learnedDecision.canonicalDeveloper;
       // Date-range gate: when a range is specified, only accept projects whose
       // announced date falls within it. For existing projects (already in DB),
       // use the DB-stored date — some sources assign today's date as a fallback
@@ -3946,10 +3979,10 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         if (endDate && effectiveDate > endDate) continue;
       }
 
-      const isNew = !project.sourceUrl || !existingByUrl.has(project.sourceUrl);
+      const isNew = learnedDecision.duplicateProjectId == null && (!project.sourceUrl || !existingByUrl.has(project.sourceUrl));
 
       try {
-        const existingProjectId = isNew ? null : existingByUrl.get(project.sourceUrl!)!;
+        const existingProjectId = learnedDecision.duplicateProjectId ?? (isNew ? null : existingByUrl.get(project.sourceUrl!)!);
         if (existingProjectId === -1 || (existingProjectId != null && linkedProjectIds.has(existingProjectId))) {
           continue;
         }
@@ -3984,6 +4017,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
               description: project.description,
               capacityMw: String(project.capacityMw),
               developer: project.developer,
+              developerSourceValue: sourceDeveloper,
               epc: null,
               location: project.location,
               country: project.country,

@@ -35,6 +35,8 @@ export interface Project {
   /** @nullable */
   developer?: string | null;
   /** @nullable */
+  developerSourceValue?: string | null;
+  /** @nullable */
   epc?: string | null;
   /** @nullable */
   location?: string | null;
@@ -507,6 +509,26 @@ export interface KnowledgeUpdateInput {
   summary?: string;
   valueJson?: KnowledgeUpdateInputValueJson;
   supersede?: boolean;
+}
+
+export type ConflictResolutionInputAction = typeof ConflictResolutionInputAction[keyof typeof ConflictResolutionInputAction];
+
+
+export const ConflictResolutionInputAction = {
+  select_preferred: 'select_preferred',
+  reject_value: 'reject_value',
+  dismiss: 'dismiss',
+} as const;
+
+export interface ConflictResolutionInput {
+  action: ConflictResolutionInputAction;
+  /** @minimum 1 */
+  knowledgeId?: number;
+  /**
+     * @minLength 1
+     * @maxLength 1000
+     */
+  reason: string;
 }
 
 export type LearningDashboardFeedbackItem = { [key: string]: unknown };

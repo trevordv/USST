@@ -9,6 +9,7 @@ import {
   timestamp,
 } from "drizzle-orm/pg-core";
 import { appUsersTable } from "./app-users";
+import { projectsTable } from "./projects";
 
 export const agentMemoryTable = pgTable("agent_memory", {
   id: bigserial("id", { mode: "number" }).primaryKey(),
@@ -69,6 +70,8 @@ export const agentFeedbackTable = pgTable("agent_feedback", {
   feedbackType: text("feedback_type").notNull(),
   reason: text("reason"),
   userId: integer("user_id").notNull().references(() => appUsersTable.id, { onDelete: "restrict" }),
+  duplicateProjectId: integer("duplicate_project_id").references(() => projectsTable.id, { onDelete: "restrict" }),
+  canonicalProjectId: integer("canonical_project_id").references(() => projectsTable.id, { onDelete: "restrict" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   processedAt: timestamp("processed_at", { withTimezone: true }),
 }, (table) => [index("agent_feedback_entity_idx").on(table.entityType, table.entityId, table.createdAt)]);
@@ -100,6 +103,8 @@ export const agentKnowledgeConflictsTable = pgTable("agent_knowledge_conflicts",
   resolvedBy: integer("resolved_by").references(() => appUsersTable.id, { onDelete: "set null" }),
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
   resolution: text("resolution"),
+  resolutionAction: text("resolution_action"),
+  selectedKnowledgeId: bigint("selected_knowledge_id", { mode: "number" }).references(() => agentKnowledgeTable.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

@@ -28,3 +28,16 @@ Memory and knowledge cannot override geographic scope, 5 MW minimum, required so
 ## Metrics
 
 Safe learning events support counts for memory created/reused, feedback received, candidates created, knowledge approved/rejected, and external API calls avoided. Values such as tokens, cookies, credentials, and authorization headers are redacted before persistence.
+
+## Runtime reuse and closed sequence
+
+The combined scanner calls `buildAgentContext()` only after the immutable gates pass. It retrieves at most 20 records for the current project name, developer, location, source, and source domain.
+
+`feedback -> memory -> knowledge candidate -> administrator approval -> scoped retrieval -> advisory runtime decision -> telemetry`
+
+- Approved false-positive knowledge can advise rejection only when the normalized project pattern and at least one scoped signal match. It does not perform broad text blocking.
+- Approved developer aliases canonicalise the stored developer while `developer_source_value` preserves the source spelling.
+- Approved project aliases and duplicate relationships require location, developer, source, or domain corroboration. Name similarity alone never merges projects.
+- Runtime influence is recorded as `knowledge_reused`, `false_positive_avoided`, `alias_applied`, `duplicate_candidate_matched`, or `external_api_call_avoided`, with safe provenance IDs.
+
+Duplicate feedback requires a user to search for and select a distinct canonical project. The feedback ledger stores both IDs, reason, user, and timestamp; it does not merge or delete either project. Open conflicts block ordinary approval. Administrators can reject a value while leaving the conflict open, select and approve a preferred value (rejecting alternatives), or dismiss the conflict with a required reason. The actor, action, selected value, reason, and resolution timestamp remain auditable.

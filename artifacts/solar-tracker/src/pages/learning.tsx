@@ -15,6 +15,7 @@ type MemoryItem = {
 type KnowledgeItem = {
   id: number; knowledgeType: string; summary: string; confidence: "low" | "medium" | "high";
   approvalStatus: string; evidenceCount: number; sourceMemoryIds: number[]; updatedAt: string;
+  valueJson: Record<string, unknown>; subjectId?: string | null;
 };
 type SourceReliability = {
   sourceName: string; successes: number; failures: number; fallbackSuccesses: number;
@@ -23,7 +24,7 @@ type SourceReliability = {
 };
 type Dashboard = {
   memory: MemoryItem[]; knowledge: KnowledgeItem[]; feedback: Array<Record<string, unknown>>;
-  conflicts: Array<{ id: number; summary: string; status: string }>; metrics: Array<Record<string, unknown>>;
+  conflicts: Array<{ id: number; summary: string; status: string; knowledgeIds: number[]; memoryIds: number[]; resolution?: string | null; resolutionAction?: string | null; selectedKnowledgeId?: number | null; resolvedBy?: number | null; resolvedAt?: string | null }>; metrics: Array<Record<string, unknown>>;
   sourceReliability: SourceReliability[];
 };
 
@@ -54,6 +55,16 @@ export default function LearningPage() {
       customFetch(`/api/learning/knowledge/${id}`, { method: "PATCH", responseType: "json", body: JSON.stringify(body) }),
     onSuccess: () => { void client.invalidateQueries({ queryKey: ["learning-dashboard"] }); toast({ title: "Knowledge updated" }); },
   });
+  const resolveConflict = useMutation({
+    mutationFn: ({ id, action, knowledgeId, reason }: { id: number; action: "select_preferred" | "reject_value" | "dismiss"; knowledgeId?: number; reason: string }) =>
+      customFetch(`/api/learning/conflicts/${id}/resolve`, { method: "POST", responseType: "json", body: JSON.stringify({ action, knowledgeId, reason }) }),
+    onSuccess: () => { void client.invalidateQueries({ queryKey: ["learning-dashboard"] }); toast({ title: "Conflict action recorded" }); },
+    onError: () => toast({ title: "Conflict was not updated", variant: "destructive" }),
+  });
+  const takeConflictAction = (id: number, action: "select_preferred" | "reject_value" | "dismiss", knowledgeId?: number) => {
+    const reason = window.prompt("Resolution reason (required)");
+    if (reason?.trim()) resolveConflict.mutate({ id, action, knowledgeId, reason: reason.trim() });
+  };
   const data = query.data;
   const candidates = data?.knowledge.filter((item) => item.approvalStatus === "candidate") ?? [];
 
@@ -77,6 +88,7 @@ export default function LearningPage() {
               <TabsTrigger value="pending">Pending learnings</TabsTrigger>
               <TabsTrigger value="memory">Memory</TabsTrigger>
               <TabsTrigger value="knowledge">Knowledge</TabsTrigger>
+              <TabsTrigger value="conflicts">Conflicts</TabsTrigger>
               <TabsTrigger value="sources">Source reliability</TabsTrigger>
               <TabsTrigger value="feedback">Recent feedback</TabsTrigger>
             </TabsList>
@@ -100,7 +112,7 @@ export default function LearningPage() {
                   </CardContent>
                 </Card>
               ))}
-              {data.conflicts.filter((item) => item.status === "open").map((item) => <div key={item.id} className="flex gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><div><strong>Conflicting evidence</strong><p className="mt-1">{item.summary}</p></div></div>)}
+              {data.conflicts.filter((item) => item.status === "open").map((item) => <div key={item.id} className="flex gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><div><strong>Conflicting evidence blocks approval</strong><p className="mt-1">{item.summary}</p><p className="mt-1">Resolve it in the Conflicts tab.</p></div></div>)}
             </TabsContent>
 
             <TabsContent value="memory" className="grid gap-3 lg:grid-cols-2">
@@ -109,6 +121,25 @@ export default function LearningPage() {
 
             <TabsContent value="knowledge" className="space-y-3">
               {data.knowledge.filter((item) => item.approvalStatus === "approved").map((item) => <Card key={item.id}><CardContent className="p-5"><div className="flex items-center justify-between gap-3"><p className="font-medium">{item.summary}</p><div className="flex items-center gap-2"><Badge className="bg-emerald-100 text-emerald-800">approved</Badge><Button variant="ghost" size="sm" onClick={() => manage.mutate({ id: item.id, body: { supersede: true } })}>Supersede</Button></div></div><Trace ids={item.sourceMemoryIds} /><details className="mt-3 text-xs text-muted-foreground"><summary className="cursor-pointer">Inspect evidence</summary><div className="mt-2 space-y-1 border-l-2 border-amber-200 pl-3">{data.memory.filter((memory) => item.sourceMemoryIds.includes(memory.id)).map((memory) => <p key={memory.id}>#{memory.id} · {memory.summary} · {memory.source}</p>)}</div></details></CardContent></Card>)}
+            </TabsContent>
+
+            <TabsContent value="conflicts" className="space-y-4">
+              {data.conflicts.length === 0 && <Card><CardContent className="py-10 text-center text-muted-foreground">No conflicts have been recorded.</CardContent></Card>}
+              {data.conflicts.map((conflict) => {
+                const values = data.knowledge.filter((item) => conflict.knowledgeIds.includes(item.id));
+                return <Card key={conflict.id} className={conflict.status === "open" ? "border-amber-300" : ""}>
+                  <CardHeader className="pb-3"><div className="flex items-center justify-between gap-3"><CardTitle className="text-base">Conflict #{conflict.id}</CardTitle><Badge variant={conflict.status === "open" ? "destructive" : "outline"}>{conflict.status}</Badge></div></CardHeader>
+                  <CardContent className="space-y-3 text-sm">
+                    <p>{conflict.summary}</p>
+                    {values.map((value) => <div key={value.id} className="rounded-md border p-3">
+                      <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="font-medium">Knowledge #{value.id}: {value.summary}</p><pre className="mt-2 max-w-3xl overflow-x-auto whitespace-pre-wrap rounded bg-muted p-2 text-xs">{JSON.stringify(value.valueJson, null, 2)}</pre><Trace ids={value.sourceMemoryIds} /></div>
+                      {conflict.status === "open" && <div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => takeConflictAction(conflict.id, "reject_value", value.id)}>Reject value</Button><Button size="sm" onClick={() => takeConflictAction(conflict.id, "select_preferred", value.id)}>Approve preferred & resolve</Button></div>}</div>
+                      <details className="mt-3 text-xs text-muted-foreground"><summary className="cursor-pointer">Inspect evidence</summary>{data.memory.filter((memory) => value.sourceMemoryIds.includes(memory.id) || conflict.memoryIds.includes(memory.id)).map((memory) => <p key={memory.id} className="mt-1">#{memory.id} · {memory.summary} · {memory.sourceReference ?? memory.source}</p>)}</details>
+                    </div>)}
+                    {conflict.status === "open" ? <Button variant="ghost" onClick={() => takeConflictAction(conflict.id, "dismiss")}>Dismiss conflict with reason</Button> : <p className="text-xs text-muted-foreground">{conflict.resolutionAction} by administrator #{conflict.resolvedBy ?? "unknown"} at {conflict.resolvedAt ? new Date(conflict.resolvedAt).toLocaleString() : "not recorded"}: {conflict.resolution}</p>}
+                  </CardContent>
+                </Card>;
+              })}
             </TabsContent>
 
             <TabsContent value="sources">

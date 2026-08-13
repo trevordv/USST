@@ -35,6 +35,7 @@ export const ListProjectsResponseItem = zod.object({
   "description": zod.string().nullish(),
   "capacityMw": zod.number().nullish(),
   "developer": zod.string().nullish(),
+  "developerSourceValue": zod.string().nullish(),
   "epc": zod.string().nullish(),
   "location": zod.string().nullish(),
   "country": zod.enum(['AU', 'NZ']),
@@ -86,6 +87,7 @@ export const GetProjectResponse = zod.object({
   "description": zod.string().nullish(),
   "capacityMw": zod.number().nullish(),
   "developer": zod.string().nullish(),
+  "developerSourceValue": zod.string().nullish(),
   "epc": zod.string().nullish(),
   "location": zod.string().nullish(),
   "country": zod.enum(['AU', 'NZ']),
@@ -132,6 +134,7 @@ export const UpdateProjectResponse = zod.object({
   "description": zod.string().nullish(),
   "capacityMw": zod.number().nullish(),
   "developer": zod.string().nullish(),
+  "developerSourceValue": zod.string().nullish(),
   "epc": zod.string().nullish(),
   "location": zod.string().nullish(),
   "country": zod.enum(['AU', 'NZ']),
@@ -578,6 +581,25 @@ export const UpdateLearningKnowledgeResponse = zod.object({
   "sourceMemoryIds": zod.array(zod.number()),
   "createdAt": zod.string(),
   "updatedAt": zod.string()
+})
+
+
+/**
+ * @summary Resolve, dismiss, or reject a value in a knowledge conflict
+ */
+export const ResolveLearningConflictParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+
+export const resolveLearningConflictBodyReasonMax = 1000;
+
+
+
+export const ResolveLearningConflictBody = zod.object({
+  "action": zod.enum(['select_preferred', 'reject_value', 'dismiss']),
+  "knowledgeId": zod.number().min(1).optional(),
+  "reason": zod.string().min(1).max(resolveLearningConflictBodyReasonMax)
 })
 
 

@@ -20,7 +20,8 @@ test("migration uses additive tables, RLS, and explicit browser-role revocation"
     assert.match(migration, new RegExp(`alter table public\\.${table} enable row level security`));
     assert.match(migration, new RegExp(`revoke all privileges on table public\\.${table} from anon, authenticated`));
   }
-  assert.doesNotMatch(migration, /drop table|truncate|delete from|alter table public\.projects/i);
+  assert.doesNotMatch(migration, /drop table|truncate|delete from/i);
+  assert.match(migration, /alter table public\.projects add column if not exists developer_source_value text/);
 });
 
 test("open conflicts block knowledge approval in the repository", async () => {

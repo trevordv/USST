@@ -10,6 +10,7 @@ import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { reliabilityScore } from "./learning-policy.ts";
 import type { Confidence } from "./learning-policy.ts";
 import type { KnowledgeRecord, LearningRepository, MemoryRecord } from "./memory-service.ts";
+import { planConflictResolution } from "./conflict-resolution.ts";
 
 function asMemory(row: typeof agentMemoryTable.$inferSelect): MemoryRecord {
   return { ...row, confidence: row.confidence as Confidence };
@@ -98,7 +99,7 @@ export class PostgresLearningRepository implements LearningRepository {
     await db.update(agentMemoryTable).set({ status: "superseded", supersededBy }).where(eq(agentMemoryTable.id, id));
   }
 
-  async insertFeedback(input: { actionType: string; entityType: string; entityId: string | null; originalValue: Record<string, unknown> | null; correctedValue: Record<string, unknown> | null; feedbackType: string; reason: string | null; userId: number }): Promise<{ id: number }> {
+  async insertFeedback(input: { actionType: string; entityType: string; entityId: string | null; originalValue: Record<string, unknown> | null; correctedValue: Record<string, unknown> | null; feedbackType: string; reason: string | null; userId: number; duplicateProjectId?: number | null; canonicalProjectId?: number | null }): Promise<{ id: number }> {
     const [row] = await db.insert(agentFeedbackTable).values(input).returning({ id: agentFeedbackTable.id });
     return row;
   }
@@ -168,6 +169,56 @@ export class PostgresLearningRepository implements LearningRepository {
       updatedAt: now,
     }).where(and(eq(agentKnowledgeTable.id, id), eq(agentKnowledgeTable.approvalStatus, "candidate"))).returning();
     return row ? asKnowledge(row) : null;
+  }
+
+  async resolveConflict(id: number, input: { action: "select_preferred" | "reject_value" | "dismiss"; knowledgeId?: number; reason: string }, userId: number) {
+    return db.transaction(async (tx) => {
+      const [conflict] = await tx.select().from(agentKnowledgeConflictsTable)
+        .where(and(eq(agentKnowledgeConflictsTable.id, id), eq(agentKnowledgeConflictsTable.status, "open")))
+        .limit(1);
+      if (!conflict) return null;
+      const now = new Date();
+      const plan = planConflictResolution(conflict.knowledgeIds, input.action, input.knowledgeId);
+      if (!plan) return null;
+
+      if (input.action === "dismiss") {
+        const [updated] = await tx.update(agentKnowledgeConflictsTable).set({
+          status: "dismissed", resolutionAction: input.action, resolution: input.reason,
+          resolvedBy: userId, resolvedAt: now,
+        }).where(eq(agentKnowledgeConflictsTable.id, id)).returning();
+        return updated;
+      }
+
+      if (input.action === "reject_value") {
+        const rejectedKnowledgeId = plan.rejectedKnowledgeIds[0];
+        await tx.update(agentKnowledgeTable).set({
+          approvalStatus: "rejected", rejectedBy: userId, rejectedAt: now,
+          rejectionReason: input.reason, updatedAt: now,
+        }).where(and(eq(agentKnowledgeTable.id, rejectedKnowledgeId), inArray(agentKnowledgeTable.approvalStatus, ["candidate", "approved"])));
+        const [updated] = await tx.update(agentKnowledgeConflictsTable).set({
+          resolutionAction: input.action, resolution: input.reason, resolvedBy: userId,
+        }).where(eq(agentKnowledgeConflictsTable.id, id)).returning();
+        return updated;
+      }
+
+      const selectedKnowledgeId = plan.selectedKnowledgeId!;
+      await tx.update(agentKnowledgeTable).set({
+        approvalStatus: "approved", confidence: "high", approvedBy: userId,
+        approvedAt: now, lastValidatedAt: now, updatedAt: now,
+      }).where(eq(agentKnowledgeTable.id, selectedKnowledgeId));
+      const rejectedIds = plan.rejectedKnowledgeIds;
+      if (rejectedIds.length) {
+        await tx.update(agentKnowledgeTable).set({
+          approvalStatus: "rejected", rejectedBy: userId, rejectedAt: now,
+          rejectionReason: `Conflict resolved in favour of knowledge #${selectedKnowledgeId}: ${input.reason}`, updatedAt: now,
+        }).where(inArray(agentKnowledgeTable.id, rejectedIds));
+      }
+      const [updated] = await tx.update(agentKnowledgeConflictsTable).set({
+        status: "resolved", resolutionAction: input.action, resolution: input.reason,
+        selectedKnowledgeId, resolvedBy: userId, resolvedAt: now,
+      }).where(eq(agentKnowledgeConflictsTable.id, id)).returning();
+      return updated;
+    });
   }
 
   async updateKnowledge(id: number, input: { summary?: string; valueJson?: Record<string, unknown>; supersede?: boolean }) {

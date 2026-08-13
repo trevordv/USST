@@ -52,7 +52,7 @@ export interface LearningRepository {
   findKnowledgeByKey(input: { knowledgeType: string; subjectType: string; subjectId: string | null; canonicalKey: string }): Promise<KnowledgeRecord[]>;
   createConflict(input: { knowledgeType: string; subjectType: string; subjectId: string | null; canonicalKey: string; knowledgeIds: number[]; memoryIds: number[]; summary: string }): Promise<void>;
   supersedeMemory(id: number, supersededBy: number): Promise<void>;
-  insertFeedback(input: { actionType: string; entityType: string; entityId: string | null; originalValue: Record<string, unknown> | null; correctedValue: Record<string, unknown> | null; feedbackType: string; reason: string | null; userId: number }): Promise<{ id: number }>;
+  insertFeedback(input: { actionType: string; entityType: string; entityId: string | null; originalValue: Record<string, unknown> | null; correctedValue: Record<string, unknown> | null; feedbackType: string; reason: string | null; userId: number; duplicateProjectId?: number | null; canonicalProjectId?: number | null }): Promise<{ id: number }>;
   insertEvent(input: { actionType: string; entityType: string; entityId: string | null; contextJson: Record<string, unknown>; outcome: string; durationMs?: number | null; sourceName?: string | null; projectCount?: number | null; expiresAt?: Date | null }): Promise<void>;
 }
 
@@ -213,6 +213,8 @@ export class MemoryService {
       feedbackType: input.feedbackType,
       reason: input.reason ?? null,
       userId: input.userId,
+      duplicateProjectId: input.feedbackType === "duplicate" ? Number(input.correctedValue?.duplicateProjectId) || null : null,
+      canonicalProjectId: input.feedbackType === "duplicate" ? Number(input.correctedValue?.canonicalProjectId) || null : null,
     });
     const memory = await this.remember({
       memoryType: input.feedbackType === "false_positive" ? "classification_feedback" : "workflow_feedback",

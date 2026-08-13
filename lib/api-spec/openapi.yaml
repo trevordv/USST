@@ -621,6 +621,27 @@ paths:
         "403": { description: Administrator access required }
         "404": { description: Knowledge record not found }
 
+  /learning/conflicts/{id}/resolve:
+    post:
+      operationId: resolveLearningConflict
+      tags: [learning]
+      summary: Resolve, dismiss, or reject a value in a knowledge conflict
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConflictResolutionInput" }
+      responses:
+        "200": { description: Conflict action recorded }
+        "400": { description: Invalid conflict action }
+        "403": { description: Administrator access required }
+        "404": { description: Open conflict or selected value not found }
+
 components:
   schemas:
     HealthStatus:
@@ -643,6 +664,8 @@ components:
         capacityMw:
           type: ["number", "null"]
         developer:
+          type: ["string", "null"]
+        developerSourceValue:
           type: ["string", "null"]
         epc:
           type: ["string", "null"]
@@ -1092,6 +1115,14 @@ components:
         summary: { type: string, minLength: 1, maxLength: 1000 }
         valueJson: { type: object, additionalProperties: true }
         supersede: { type: boolean }
+
+    ConflictResolutionInput:
+      type: object
+      required: [action, reason]
+      properties:
+        action: { type: string, enum: [select_preferred, reject_value, dismiss] }
+        knowledgeId: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 1, maxLength: 1000 }
 
     LearningDashboard:
       type: object
