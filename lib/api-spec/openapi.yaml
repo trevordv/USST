@@ -531,6 +531,117 @@ paths:
         "409":
           description: Already imported
 
+  /learning/dashboard:
+    get:
+      operationId: getLearningDashboard
+      tags: [learning]
+      summary: List scoped learning records and source reliability
+      description: Administrator-only view of memory, knowledge candidates, feedback, conflicts, and safe aggregate metrics.
+      responses:
+        "200":
+          description: Learning dashboard
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LearningDashboard"
+        "403":
+          description: Administrator access required
+
+  /learning/feedback:
+    post:
+      operationId: createLearningFeedback
+      tags: [learning]
+      summary: Record authenticated human feedback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LearningFeedbackInput"
+      responses:
+        "201":
+          description: Feedback recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LearningFeedbackResult"
+        "400":
+          description: Invalid feedback
+
+  /learning/candidates/{id}/review:
+    post:
+      operationId: reviewLearningCandidate
+      tags: [learning]
+      summary: Approve or reject a knowledge candidate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KnowledgeReviewInput"
+      responses:
+        "200":
+          description: Candidate reviewed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeItem"
+        "403":
+          description: Administrator access required
+        "404":
+          description: Candidate not found or already reviewed
+
+  /learning/knowledge/{id}:
+    patch:
+      operationId: updateLearningKnowledge
+      tags: [learning]
+      summary: Edit or supersede a knowledge record
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KnowledgeUpdateInput"
+      responses:
+        "200":
+          description: Knowledge updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KnowledgeItem" }
+        "403": { description: Administrator access required }
+        "404": { description: Knowledge record not found }
+
+  /learning/conflicts/{id}/resolve:
+    post:
+      operationId: resolveLearningConflict
+      tags: [learning]
+      summary: Resolve, dismiss, or reject a value in a knowledge conflict
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConflictResolutionInput" }
+      responses:
+        "200": { description: Conflict action recorded }
+        "400": { description: Invalid conflict action }
+        "403": { description: Administrator access required }
+        "404": { description: Open conflict or selected value not found }
+
 components:
   schemas:
     HealthStatus:
@@ -553,6 +664,8 @@ components:
         capacityMw:
           type: ["number", "null"]
         developer:
+          type: ["string", "null"]
+        developerSourceValue:
           type: ["string", "null"]
         epc:
           type: ["string", "null"]
@@ -907,3 +1020,129 @@ components:
           type: integer
         message:
           type: string
+
+    LearningFeedbackInput:
+      type: object
+      required: [actionType, entityType, feedbackType]
+      properties:
+        actionType: { type: string, maxLength: 80 }
+        entityType: { type: string, enum: [project, contact, source, developer, workflow] }
+        entityId: { type: ["string", "integer", "null"] }
+        originalValue:
+          type: ["object", "null"]
+          additionalProperties: true
+        correctedValue:
+          type: ["object", "null"]
+          additionalProperties: true
+        feedbackType:
+          type: string
+          enum: [confirm, correction, duplicate, false_positive, approve_alias, reject_contact, confirm_contact, source_failure]
+        reason: { type: ["string", "null"], maxLength: 1000 }
+
+    LearningFeedbackResult:
+      type: object
+      required: [id, memoryId, candidateCreated]
+      properties:
+        id: { type: integer }
+        memoryId: { type: integer }
+        candidateCreated: { type: boolean }
+
+    MemoryItem:
+      type: object
+      required: [id, memoryType, subjectType, key, summary, confidence, source, createdAt, lastSeenAt, timesObserved, status]
+      properties:
+        id: { type: integer }
+        memoryType: { type: string }
+        subjectType: { type: string }
+        subjectId: { type: ["string", "null"] }
+        key: { type: string }
+        valueJson: { type: object, additionalProperties: true }
+        summary: { type: string }
+        confidence: { type: string, enum: [low, medium, high] }
+        source: { type: string }
+        sourceReference: { type: ["string", "null"] }
+        createdAt: { type: string }
+        lastSeenAt: { type: string }
+        timesObserved: { type: integer }
+        status: { type: string }
+
+    KnowledgeItem:
+      type: object
+      required: [id, knowledgeType, subjectType, canonicalKey, summary, confidence, approvalStatus, evidenceCount, sourceMemoryIds, createdAt, updatedAt]
+      properties:
+        id: { type: integer }
+        knowledgeType: { type: string }
+        subjectType: { type: string }
+        subjectId: { type: ["string", "null"] }
+        canonicalKey: { type: string }
+        valueJson: { type: object, additionalProperties: true }
+        summary: { type: string }
+        confidence: { type: string, enum: [low, medium, high] }
+        approvalStatus: { type: string, enum: [candidate, approved, rejected, superseded] }
+        evidenceCount: { type: integer }
+        sourceMemoryIds:
+          type: array
+          items: { type: integer }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+
+    SourceReliabilityItem:
+      type: object
+      required: [sourceName, successes, failures, parserSuccesses, parserFailures, fallbackSuccesses, qualifyingProjects, reliabilityScore]
+      properties:
+        sourceName: { type: string }
+        successes: { type: integer }
+        failures: { type: integer }
+        parserSuccesses: { type: integer }
+        parserFailures: { type: integer }
+        fallbackSuccesses: { type: integer }
+        avgResponseMs: { type: ["integer", "null"] }
+        qualifyingProjects: { type: integer }
+        reliabilityScore: { type: integer, minimum: 0, maximum: 100 }
+        lastSuccess: { type: ["string", "null"] }
+        lastFailure: { type: ["string", "null"] }
+
+    KnowledgeReviewInput:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [approved, rejected] }
+        reason: { type: ["string", "null"], maxLength: 1000 }
+
+    KnowledgeUpdateInput:
+      type: object
+      properties:
+        summary: { type: string, minLength: 1, maxLength: 1000 }
+        valueJson: { type: object, additionalProperties: true }
+        supersede: { type: boolean }
+
+    ConflictResolutionInput:
+      type: object
+      required: [action, reason]
+      properties:
+        action: { type: string, enum: [select_preferred, reject_value, dismiss] }
+        knowledgeId: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+
+    LearningDashboard:
+      type: object
+      required: [memory, knowledge, feedback, conflicts, metrics, sourceReliability]
+      properties:
+        memory:
+          type: array
+          items: { $ref: "#/components/schemas/MemoryItem" }
+        knowledge:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeItem" }
+        feedback:
+          type: array
+          items: { type: object, additionalProperties: true }
+        conflicts:
+          type: array
+          items: { type: object, additionalProperties: true }
+        metrics:
+          type: array
+          items: { type: object, additionalProperties: true }
+        sourceReliability:
+          type: array
+          items: { $ref: "#/components/schemas/SourceReliabilityItem" }

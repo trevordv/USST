@@ -8,6 +8,7 @@ export const projectsTable = pgTable("projects", {
   description: text("description"),
   capacityMw: numeric("capacity_mw", { precision: 10, scale: 2 }).notNull(),
   developer: text("developer"),
+  developerSourceValue: text("developer_source_value"),
   epc: text("epc"),
   location: text("location"),
   country: text("country").notNull().default("AU"),

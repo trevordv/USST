@@ -7,17 +7,19 @@ import {
   Activity,
   LogOut,
   FileSearch,
+  BrainCircuit,
 } from "lucide-react";
 
 export function Layout({ children }: { children: ReactNode }) {
   const [location] = useLocation();
-  const { logout } = useAuth();
+  const { logout, role } = useAuth();
 
   const navItems = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
     { href: "/projects", label: "Projects", icon: Database },
     { href: "/scans", label: "Scan History", icon: Activity },
     { href: "/epbc", label: "EPBC Projects", icon: FileSearch },
+    ...(role === "admin" ? [{ href: "/learning", label: "Learning / Memory", icon: BrainCircuit }] : []),
   ];
 
   return (

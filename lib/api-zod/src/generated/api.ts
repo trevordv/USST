@@ -35,6 +35,7 @@ export const ListProjectsResponseItem = zod.object({
   "description": zod.string().nullish(),
   "capacityMw": zod.number().nullish(),
   "developer": zod.string().nullish(),
+  "developerSourceValue": zod.string().nullish(),
   "epc": zod.string().nullish(),
   "location": zod.string().nullish(),
   "country": zod.enum(['AU', 'NZ']),
@@ -86,6 +87,7 @@ export const GetProjectResponse = zod.object({
   "description": zod.string().nullish(),
   "capacityMw": zod.number().nullish(),
   "developer": zod.string().nullish(),
+  "developerSourceValue": zod.string().nullish(),
   "epc": zod.string().nullish(),
   "location": zod.string().nullish(),
   "country": zod.enum(['AU', 'NZ']),
@@ -132,6 +134,7 @@ export const UpdateProjectResponse = zod.object({
   "description": zod.string().nullish(),
   "capacityMw": zod.number().nullish(),
   "developer": zod.string().nullish(),
+  "developerSourceValue": zod.string().nullish(),
   "epc": zod.string().nullish(),
   "location": zod.string().nullish(),
   "country": zod.enum(['AU', 'NZ']),
@@ -431,6 +434,172 @@ export const ImportEpbcProjectParams = zod.object({
 export const ImportEpbcProjectResponse = zod.object({
   "projectId": zod.number(),
   "message": zod.string()
+})
+
+
+/**
+ * Administrator-only view of memory, knowledge candidates, feedback, conflicts, and safe aggregate metrics.
+ * @summary List scoped learning records and source reliability
+ */
+export const getLearningDashboardResponseSourceReliabilityItemReliabilityScoreMin = 0;
+export const getLearningDashboardResponseSourceReliabilityItemReliabilityScoreMax = 100;
+
+
+
+export const GetLearningDashboardResponse = zod.object({
+  "memory": zod.array(zod.object({
+  "id": zod.number(),
+  "memoryType": zod.string(),
+  "subjectType": zod.string(),
+  "subjectId": zod.string().nullish(),
+  "key": zod.string(),
+  "valueJson": zod.record(zod.string(), zod.unknown()).optional(),
+  "summary": zod.string(),
+  "confidence": zod.enum(['low', 'medium', 'high']),
+  "source": zod.string(),
+  "sourceReference": zod.string().nullish(),
+  "createdAt": zod.string(),
+  "lastSeenAt": zod.string(),
+  "timesObserved": zod.number(),
+  "status": zod.string()
+})),
+  "knowledge": zod.array(zod.object({
+  "id": zod.number(),
+  "knowledgeType": zod.string(),
+  "subjectType": zod.string(),
+  "subjectId": zod.string().nullish(),
+  "canonicalKey": zod.string(),
+  "valueJson": zod.record(zod.string(), zod.unknown()).optional(),
+  "summary": zod.string(),
+  "confidence": zod.enum(['low', 'medium', 'high']),
+  "approvalStatus": zod.enum(['candidate', 'approved', 'rejected', 'superseded']),
+  "evidenceCount": zod.number(),
+  "sourceMemoryIds": zod.array(zod.number()),
+  "createdAt": zod.string(),
+  "updatedAt": zod.string()
+})),
+  "feedback": zod.array(zod.record(zod.string(), zod.unknown())),
+  "conflicts": zod.array(zod.record(zod.string(), zod.unknown())),
+  "metrics": zod.array(zod.record(zod.string(), zod.unknown())),
+  "sourceReliability": zod.array(zod.object({
+  "sourceName": zod.string(),
+  "successes": zod.number(),
+  "failures": zod.number(),
+  "parserSuccesses": zod.number(),
+  "parserFailures": zod.number(),
+  "fallbackSuccesses": zod.number(),
+  "avgResponseMs": zod.number().nullish(),
+  "qualifyingProjects": zod.number(),
+  "reliabilityScore": zod.number().min(getLearningDashboardResponseSourceReliabilityItemReliabilityScoreMin).max(getLearningDashboardResponseSourceReliabilityItemReliabilityScoreMax),
+  "lastSuccess": zod.string().nullish(),
+  "lastFailure": zod.string().nullish()
+}))
+})
+
+
+/**
+ * @summary Record authenticated human feedback
+ */
+export const createLearningFeedbackBodyActionTypeMax = 80;
+
+export const createLearningFeedbackBodyReasonMax = 1000;
+
+
+
+export const CreateLearningFeedbackBody = zod.object({
+  "actionType": zod.string().max(createLearningFeedbackBodyActionTypeMax),
+  "entityType": zod.enum(['project', 'contact', 'source', 'developer', 'workflow']),
+  "entityId": zod.union([zod.string(),zod.number()]).nullish(),
+  "originalValue": zod.record(zod.string(), zod.unknown()).nullish(),
+  "correctedValue": zod.record(zod.string(), zod.unknown()).nullish(),
+  "feedbackType": zod.enum(['confirm', 'correction', 'duplicate', 'false_positive', 'approve_alias', 'reject_contact', 'confirm_contact', 'source_failure']),
+  "reason": zod.string().max(createLearningFeedbackBodyReasonMax).nullish()
+})
+
+
+/**
+ * @summary Approve or reject a knowledge candidate
+ */
+export const ReviewLearningCandidateParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const reviewLearningCandidateBodyReasonMax = 1000;
+
+
+
+export const ReviewLearningCandidateBody = zod.object({
+  "decision": zod.enum(['approved', 'rejected']),
+  "reason": zod.string().max(reviewLearningCandidateBodyReasonMax).nullish()
+})
+
+export const ReviewLearningCandidateResponse = zod.object({
+  "id": zod.number(),
+  "knowledgeType": zod.string(),
+  "subjectType": zod.string(),
+  "subjectId": zod.string().nullish(),
+  "canonicalKey": zod.string(),
+  "valueJson": zod.record(zod.string(), zod.unknown()).optional(),
+  "summary": zod.string(),
+  "confidence": zod.enum(['low', 'medium', 'high']),
+  "approvalStatus": zod.enum(['candidate', 'approved', 'rejected', 'superseded']),
+  "evidenceCount": zod.number(),
+  "sourceMemoryIds": zod.array(zod.number()),
+  "createdAt": zod.string(),
+  "updatedAt": zod.string()
+})
+
+
+/**
+ * @summary Edit or supersede a knowledge record
+ */
+export const UpdateLearningKnowledgeParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const updateLearningKnowledgeBodySummaryMax = 1000;
+
+
+
+export const UpdateLearningKnowledgeBody = zod.object({
+  "summary": zod.string().min(1).max(updateLearningKnowledgeBodySummaryMax).optional(),
+  "valueJson": zod.record(zod.string(), zod.unknown()).optional(),
+  "supersede": zod.boolean().optional()
+})
+
+export const UpdateLearningKnowledgeResponse = zod.object({
+  "id": zod.number(),
+  "knowledgeType": zod.string(),
+  "subjectType": zod.string(),
+  "subjectId": zod.string().nullish(),
+  "canonicalKey": zod.string(),
+  "valueJson": zod.record(zod.string(), zod.unknown()).optional(),
+  "summary": zod.string(),
+  "confidence": zod.enum(['low', 'medium', 'high']),
+  "approvalStatus": zod.enum(['candidate', 'approved', 'rejected', 'superseded']),
+  "evidenceCount": zod.number(),
+  "sourceMemoryIds": zod.array(zod.number()),
+  "createdAt": zod.string(),
+  "updatedAt": zod.string()
+})
+
+
+/**
+ * @summary Resolve, dismiss, or reject a value in a knowledge conflict
+ */
+export const ResolveLearningConflictParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+
+export const resolveLearningConflictBodyReasonMax = 1000;
+
+
+
+export const ResolveLearningConflictBody = zod.object({
+  "action": zod.enum(['select_preferred', 'reject_value', 'dismiss']),
+  "knowledgeId": zod.number().min(1).optional(),
+  "reason": zod.string().min(1).max(resolveLearningConflictBodyReasonMax)
 })
 
 

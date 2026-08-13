@@ -35,6 +35,8 @@ export interface Project {
   /** @nullable */
   developer?: string | null;
   /** @nullable */
+  developerSourceValue?: string | null;
+  /** @nullable */
   epc?: string | null;
   /** @nullable */
   location?: string | null;
@@ -330,6 +332,218 @@ export interface EpbcProjectPatch {
 export interface EpbcImportResult {
   projectId: number;
   message: string;
+}
+
+export type LearningFeedbackInputEntityType = typeof LearningFeedbackInputEntityType[keyof typeof LearningFeedbackInputEntityType];
+
+
+export const LearningFeedbackInputEntityType = {
+  project: 'project',
+  contact: 'contact',
+  source: 'source',
+  developer: 'developer',
+  workflow: 'workflow',
+} as const;
+
+/**
+ * @nullable
+ */
+export type LearningFeedbackInputOriginalValue = { [key: string]: unknown } | null;
+
+/**
+ * @nullable
+ */
+export type LearningFeedbackInputCorrectedValue = { [key: string]: unknown } | null;
+
+export type LearningFeedbackInputFeedbackType = typeof LearningFeedbackInputFeedbackType[keyof typeof LearningFeedbackInputFeedbackType];
+
+
+export const LearningFeedbackInputFeedbackType = {
+  confirm: 'confirm',
+  correction: 'correction',
+  duplicate: 'duplicate',
+  false_positive: 'false_positive',
+  approve_alias: 'approve_alias',
+  reject_contact: 'reject_contact',
+  confirm_contact: 'confirm_contact',
+  source_failure: 'source_failure',
+} as const;
+
+export interface LearningFeedbackInput {
+  /** @maxLength 80 */
+  actionType: string;
+  entityType: LearningFeedbackInputEntityType;
+  /** @nullable */
+  entityId?: string | number | null;
+  /** @nullable */
+  originalValue?: LearningFeedbackInputOriginalValue;
+  /** @nullable */
+  correctedValue?: LearningFeedbackInputCorrectedValue;
+  feedbackType: LearningFeedbackInputFeedbackType;
+  /**
+     * @maxLength 1000
+     * @nullable
+     */
+  reason?: string | null;
+}
+
+export interface LearningFeedbackResult {
+  id: number;
+  memoryId: number;
+  candidateCreated: boolean;
+}
+
+export type MemoryItemValueJson = { [key: string]: unknown };
+
+export type MemoryItemConfidence = typeof MemoryItemConfidence[keyof typeof MemoryItemConfidence];
+
+
+export const MemoryItemConfidence = {
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+} as const;
+
+export interface MemoryItem {
+  id: number;
+  memoryType: string;
+  subjectType: string;
+  /** @nullable */
+  subjectId?: string | null;
+  key: string;
+  valueJson?: MemoryItemValueJson;
+  summary: string;
+  confidence: MemoryItemConfidence;
+  source: string;
+  /** @nullable */
+  sourceReference?: string | null;
+  createdAt: string;
+  lastSeenAt: string;
+  timesObserved: number;
+  status: string;
+}
+
+export type KnowledgeItemValueJson = { [key: string]: unknown };
+
+export type KnowledgeItemConfidence = typeof KnowledgeItemConfidence[keyof typeof KnowledgeItemConfidence];
+
+
+export const KnowledgeItemConfidence = {
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+} as const;
+
+export type KnowledgeItemApprovalStatus = typeof KnowledgeItemApprovalStatus[keyof typeof KnowledgeItemApprovalStatus];
+
+
+export const KnowledgeItemApprovalStatus = {
+  candidate: 'candidate',
+  approved: 'approved',
+  rejected: 'rejected',
+  superseded: 'superseded',
+} as const;
+
+export interface KnowledgeItem {
+  id: number;
+  knowledgeType: string;
+  subjectType: string;
+  /** @nullable */
+  subjectId?: string | null;
+  canonicalKey: string;
+  valueJson?: KnowledgeItemValueJson;
+  summary: string;
+  confidence: KnowledgeItemConfidence;
+  approvalStatus: KnowledgeItemApprovalStatus;
+  evidenceCount: number;
+  sourceMemoryIds: number[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SourceReliabilityItem {
+  sourceName: string;
+  successes: number;
+  failures: number;
+  parserSuccesses: number;
+  parserFailures: number;
+  fallbackSuccesses: number;
+  /** @nullable */
+  avgResponseMs?: number | null;
+  qualifyingProjects: number;
+  /**
+     * @minimum 0
+     * @maximum 100
+     */
+  reliabilityScore: number;
+  /** @nullable */
+  lastSuccess?: string | null;
+  /** @nullable */
+  lastFailure?: string | null;
+}
+
+export type KnowledgeReviewInputDecision = typeof KnowledgeReviewInputDecision[keyof typeof KnowledgeReviewInputDecision];
+
+
+export const KnowledgeReviewInputDecision = {
+  approved: 'approved',
+  rejected: 'rejected',
+} as const;
+
+export interface KnowledgeReviewInput {
+  decision: KnowledgeReviewInputDecision;
+  /**
+     * @maxLength 1000
+     * @nullable
+     */
+  reason?: string | null;
+}
+
+export type KnowledgeUpdateInputValueJson = { [key: string]: unknown };
+
+export interface KnowledgeUpdateInput {
+  /**
+     * @minLength 1
+     * @maxLength 1000
+     */
+  summary?: string;
+  valueJson?: KnowledgeUpdateInputValueJson;
+  supersede?: boolean;
+}
+
+export type ConflictResolutionInputAction = typeof ConflictResolutionInputAction[keyof typeof ConflictResolutionInputAction];
+
+
+export const ConflictResolutionInputAction = {
+  select_preferred: 'select_preferred',
+  reject_value: 'reject_value',
+  dismiss: 'dismiss',
+} as const;
+
+export interface ConflictResolutionInput {
+  action: ConflictResolutionInputAction;
+  /** @minimum 1 */
+  knowledgeId?: number;
+  /**
+     * @minLength 1
+     * @maxLength 1000
+     */
+  reason: string;
+}
+
+export type LearningDashboardFeedbackItem = { [key: string]: unknown };
+
+export type LearningDashboardConflictsItem = { [key: string]: unknown };
+
+export type LearningDashboardMetricsItem = { [key: string]: unknown };
+
+export interface LearningDashboard {
+  memory: MemoryItem[];
+  knowledge: KnowledgeItem[];
+  feedback: LearningDashboardFeedbackItem[];
+  conflicts: LearningDashboardConflictsItem[];
+  metrics: LearningDashboardMetricsItem[];
+  sourceReliability: SourceReliabilityItem[];
 }
 
 export type ListProjectsParams = {

@@ -38,6 +38,16 @@ Important locations:
 - EPBC scraper: `artifacts/api-server/src/lib/epbc-scraper.ts`
 - Frontend: `artifacts/solar-tracker/src/`
 - Generated React API client: `lib/api-client-react/src/`
+- Learning services: `artifacts/api-server/src/lib/memory-service.ts`
+- Learning governance and operations: `docs/Memory-Architecture.md`, `docs/Learning-Loop.md`, `docs/Knowledge-Governance.md`, `docs/Memory-Operations.md`
+
+## Memory and learning safety
+
+- Operational data, accumulated memory, and approved knowledge are separate layers.
+- Runtime observations must not be written into `AGENTS.md`.
+- Memory may influence context but never override the AU/NZ, 5 MW, solar-component, no-wind, no-standalone-BESS, approved-source, authentication, deletion, or access-control rules.
+- Knowledge candidates preserve evidence and require administrator review. Conflicting evidence is retained, not overwritten.
+- Retrieval must be task-scoped; never load the whole memory store into an LLM prompt or store credentials in learning records.
 
 ## Contract-first rule
 
