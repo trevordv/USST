@@ -3,6 +3,7 @@ import { desc, eq, inArray } from "drizzle-orm";
 import { db, scansTable, projectsTable, scanProjectsTable } from "@workspace/db";
 import { TriggerScanBody, GetScanParams } from "@workspace/api-zod";
 import { filterEligibleScanProjects } from "../lib/project-eligibility";
+import { filterRelationsForScanWindow } from "../lib/scan-date-window";
 
 const router: IRouter = Router();
 
@@ -32,7 +33,7 @@ router.post("/scans", async (req, res): Promise<void> => {
 
   const [scan] = await db
     .insert(scansTable)
-    .values({ status: "running", sourcesScanned: 0, projectsFound: 0, newProjects: 0 })
+    .values({ status: "running", sourcesScanned: 0, projectsFound: 0, newProjects: 0, startDate: parsed.data.startDate ?? null, endDate: parsed.data.endDate ?? null })
     .returning();
 
   // Load the scanner only when explicitly requested, then run it in the background.
@@ -102,12 +103,14 @@ router.get("/scans/:id/projects", async (req, res): Promise<void> => {
 
   // 1. Try modern scan_projects table
   if (relations.length > 0) {
-    const projectIds = relations.map((r) => r.projectId);
+    const inWindowRelations = filterRelationsForScanWindow(relations, { startDate: scan.startDate, endDate: scan.endDate });
+    const projectIds = inWindowRelations.map((r) => r.projectId);
+    if (projectIds.length === 0) { res.json([]); return; }
     const projects = await db
       .select()
       .from(projectsTable)
       .where(inArray(projectsTable.id, projectIds));
-    const isNewMap = new Map(relations.map((r) => [r.projectId, r.isNew]));
+    const isNewMap = new Map(inWindowRelations.map((r) => [r.projectId, r.isNew]));
 
     res.json(
       filterEligibleScanProjects(projects).map((p) => ({

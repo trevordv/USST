@@ -542,7 +542,7 @@ components:
 
     Project:
       type: object
-      required: [id, name, country, status, announcedDate, createdAt, updatedAt]
+      required: [id, name, country, status, createdAt, updatedAt]
       properties:
         id:
           type: integer
@@ -575,7 +575,11 @@ components:
         contactPhone:
           type: ["string", "null"]
         announcedDate:
-          type: string
+          type: ["string", "null"]
+        announcedDateEvidence:
+          type: ["string", "null"]
+        lastSeenAt:
+          type: ["string", "null"]
         createdAt:
           type: string
         updatedAt:
@@ -693,6 +697,10 @@ components:
           type: integer
         errorMessage:
           type: ["string", "null"]
+        startDate:
+          type: ["string", "null"]
+        endDate:
+          type: ["string", "null"]
 
     ScanInput:
       type: object
@@ -706,7 +714,7 @@ components:
 
     ScanProject:
       type: object
-      required: [id, name, country, status, announcedDate, createdAt, updatedAt, isNew]
+      required: [id, name, country, status, createdAt, updatedAt, isNew]
       properties:
         id:
           type: integer
@@ -739,7 +747,11 @@ components:
         contactPhone:
           type: ["string", "null"]
         announcedDate:
-          type: string
+          type: ["string", "null"]
+        announcedDateEvidence:
+          type: ["string", "null"]
+        lastSeenAt:
+          type: ["string", "null"]
         createdAt:
           type: string
         updatedAt:

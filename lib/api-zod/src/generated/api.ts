@@ -44,7 +44,9 @@ export const ListProjectsResponseItem = zod.object({
   "contactName": zod.string().nullish(),
   "contactEmail": zod.string().nullish(),
   "contactPhone": zod.string().nullish(),
-  "announcedDate": zod.string(),
+  "announcedDate": zod.string().nullish(),
+  "announcedDateEvidence": zod.string().nullish(),
+  "lastSeenAt": zod.string().nullish(),
   "createdAt": zod.string(),
   "updatedAt": zod.string(),
   "scanId": zod.number().nullish()
@@ -95,7 +97,9 @@ export const GetProjectResponse = zod.object({
   "contactName": zod.string().nullish(),
   "contactEmail": zod.string().nullish(),
   "contactPhone": zod.string().nullish(),
-  "announcedDate": zod.string(),
+  "announcedDate": zod.string().nullish(),
+  "announcedDateEvidence": zod.string().nullish(),
+  "lastSeenAt": zod.string().nullish(),
   "createdAt": zod.string(),
   "updatedAt": zod.string(),
   "scanId": zod.number().nullish()
@@ -141,7 +145,9 @@ export const UpdateProjectResponse = zod.object({
   "contactName": zod.string().nullish(),
   "contactEmail": zod.string().nullish(),
   "contactPhone": zod.string().nullish(),
-  "announcedDate": zod.string(),
+  "announcedDate": zod.string().nullish(),
+  "announcedDateEvidence": zod.string().nullish(),
+  "lastSeenAt": zod.string().nullish(),
   "createdAt": zod.string(),
   "updatedAt": zod.string(),
   "scanId": zod.number().nullish()
@@ -197,7 +203,9 @@ export const ListScansResponseItem = zod.object({
   "sourcesScanned": zod.number(),
   "projectsFound": zod.number(),
   "newProjects": zod.number().optional(),
-  "errorMessage": zod.string().nullish()
+  "errorMessage": zod.string().nullish(),
+  "startDate": zod.string().nullish(),
+  "endDate": zod.string().nullish()
 })
 export const ListScansResponse = zod.array(ListScansResponseItem)
 
@@ -226,7 +234,9 @@ export const GetScanResponse = zod.object({
   "sourcesScanned": zod.number(),
   "projectsFound": zod.number(),
   "newProjects": zod.number().optional(),
-  "errorMessage": zod.string().nullish()
+  "errorMessage": zod.string().nullish(),
+  "startDate": zod.string().nullish(),
+  "endDate": zod.string().nullish()
 })
 
 
@@ -253,7 +263,9 @@ export const GetScanProjectsResponseItem = zod.object({
   "contactName": zod.string().nullish(),
   "contactEmail": zod.string().nullish(),
   "contactPhone": zod.string().nullish(),
-  "announcedDate": zod.string(),
+  "announcedDate": zod.string().nullish(),
+  "announcedDateEvidence": zod.string().nullish(),
+  "lastSeenAt": zod.string().nullish(),
   "createdAt": zod.string(),
   "updatedAt": zod.string(),
   "scanId": zod.number().nullish(),

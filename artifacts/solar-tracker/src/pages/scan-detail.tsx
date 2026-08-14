@@ -108,7 +108,7 @@ export default function ScanDetail() {
               </div>
               <div className="text-right">
                 <div className="text-sm text-muted-foreground">New</div>
-                <div className="text-xl font-mono font-bold text-primary">+{projects?.length ?? 0}</div>
+                <div className="text-xl font-mono font-bold text-primary">+{newCount}</div>
               </div>
             </div>
           </div>
