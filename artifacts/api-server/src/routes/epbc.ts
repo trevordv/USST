@@ -10,6 +10,7 @@ import {
   type EpbcRecord,
 } from "../lib/epbc-scraper";
 import { logger } from "../lib/logger";
+import { normalizeTimestamp } from "../lib/timestamp";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -59,13 +60,13 @@ router.get("/epbc/projects", async (req, res): Promise<void> => {
 router.get("/epbc/meta", async (_req, res): Promise<void> => {
   const [meta] = await db
     .select({
-      lastScrapedAt: sql<Date | null>`max(${epbcProjectsTable.scrapedAt})`,
+      lastScrapedAt: sql<Date | string | null>`max(${epbcProjectsTable.scrapedAt})`,
       total: sql<number>`count(*)::int`,
     })
     .from(epbcProjectsTable);
 
   res.json({
-    lastScrapedAt: meta?.lastScrapedAt?.toISOString() ?? null,
+    lastScrapedAt: normalizeTimestamp(meta?.lastScrapedAt),
     total: Number(meta?.total ?? 0),
   });
 });
