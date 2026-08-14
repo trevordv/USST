@@ -31,6 +31,7 @@ import {
   summarizeScanLineage,
   type ScanProjectLineage,
 } from "./project-eligibility";
+import { decideScanDateWindow, parseSourceAnnouncementDate } from "./scan-date-window";
 import {
   CONTACT_DOMAIN_WORKERS,
   GENERIC_SCAN_WORKERS,
@@ -233,7 +234,8 @@ interface ScrapedProject {
   status: "announced" | "under_development";
   sourceUrl: string;
   sourceName: string;
-  announcedDate: string;
+  announcedDate: string | null;
+  announcedDateEvidence?: "source_reported" | "unknown";
   contactName: string | null;
   contactEmail: string | null;
   contactPhone: string | null;
@@ -1228,6 +1230,9 @@ interface LuviPipelineProject {
   capacity?: unknown;
   capacityRaw?: unknown;
   epc?: unknown;
+  announcedDate?: unknown;
+  announcementDate?: unknown;
+  eventDate?: unknown;
 }
 
 /**
@@ -1266,7 +1271,6 @@ export async function scrapeLuvi(
       return [];
     }
 
-    const today = new Date().toISOString().slice(0, 10);
     const projects: ScrapedProject[] = [];
     const seenNames = new Set<string>();
 
@@ -1314,6 +1318,7 @@ export async function scrapeLuvi(
         .filter(Boolean)
         .join(" · ");
 
+      const announcedDate = parseSourceAnnouncementDate(raw as Record<string, unknown>);
       projects.push({
         name,
         description: description || name,
@@ -1324,18 +1329,15 @@ export async function scrapeLuvi(
         status: status === "Proposed" ? "announced" : "under_development",
         sourceUrl,
         sourceName: LUVI_SOURCE_NAME,
-        announcedDate: today,
+        announcedDate,
+        announcedDateEvidence: announcedDate ? "source_reported" : "unknown",
         contactName: null,
         contactEmail: null,
         contactPhone: null,
       });
     }
 
-    // LUVI's data is a current snapshot without per-project announcement dates.
-    // When a date window is requested, include the snapshot only if today is in it.
-    if ((startDate && today < startDate) || (endDate && today > endDate)) return [];
-
-    logger.info({ found: projects.length }, "LUVI pipeline scrape complete");
+    logger.info({ found: projects.length, startDate, endDate, dated: projects.filter((project) => project.announcedDate).length }, "LUVI pipeline scrape complete; unknown dates remain unknown until the lineage gate");
     return projects;
   } catch (err) {
     logger.warn({ err }, "LUVI pipeline scrape failed — password may be invalid or the payload changed");
@@ -3776,7 +3778,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
 
     // Build a lookup of existing sourceUrl -> { id, announcedDate } for quick checking
     const existingByUrl = new Map<string, number>();
-    const existingDateByUrl = new Map<string, string>(); // sourceUrl -> DB-stored announcedDate
+    const existingDateByUrl = new Map<string, string | null>(); // sourceUrl -> DB-stored announcedDate
     const eligibleExistingProjectIds = new Set<number>();
     const existingRows = await db.select({
       id: projectsTable.id,
@@ -3790,9 +3792,9 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
     for (const r of existingRows) {
       if (r.sourceUrl) {
         existingByUrl.set(r.sourceUrl, r.id);
-        if (r.announcedDate) existingDateByUrl.set(r.sourceUrl, r.announcedDate);
-        if (isEligibleScanProject(r)) eligibleExistingProjectIds.add(r.id);
+        existingDateByUrl.set(r.sourceUrl, r.announcedDate);
       }
+      if (isEligibleScanProject(r)) eligibleExistingProjectIds.add(r.id);
     }
 
     // Load PVH fallback contacts once for the whole scan
@@ -3824,19 +3826,26 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       // use the DB-stored date — some sources assign today's date as a fallback
       // for undated items, which would otherwise let old March/May records slip
       // through. For new projects, use the scraped date directly.
-      if (startDate || endDate) {
-        const isExisting = !!project.sourceUrl && existingByUrl.has(project.sourceUrl);
-        const effectiveDate = isExisting && project.sourceUrl
-          ? (existingDateByUrl.get(project.sourceUrl) ?? project.announcedDate)
-          : project.announcedDate;
-        if (startDate && effectiveDate < startDate) continue;
-        if (endDate && effectiveDate > endDate) continue;
+      const isExisting = !!project.sourceUrl && existingByUrl.has(project.sourceUrl);
+      const existingProjectId = isExisting ? existingByUrl.get(project.sourceUrl)! : null;
+      if (existingProjectId != null && existingProjectId !== -1) {
+        await db.update(projectsTable).set({ lastSeenAt: new Date() }).where(eq(projectsTable.id, existingProjectId));
+      }
+      const dateDecision = decideScanDateWindow({
+        startDate,
+        endDate,
+        scrapedAnnouncedDate: project.announcedDate,
+        persistedAnnouncedDate: project.sourceUrl ? existingDateByUrl.get(project.sourceUrl) : null,
+        existingProject: isExisting,
+      });
+      if (!dateDecision.include) {
+        logger.info({ project: project.name, source: project.sourceName, effectiveDate: dateDecision.effectiveDate, startDate, endDate, reason: dateDecision.reason }, "Date gate: project not linked to scan");
+        continue;
       }
 
-      const isNew = !project.sourceUrl || !existingByUrl.has(project.sourceUrl);
+      const isNew = !isExisting;
 
       try {
-        const existingProjectId = isNew ? null : existingByUrl.get(project.sourceUrl!)!;
         if (existingProjectId === -1 || (existingProjectId != null && linkedProjectIds.has(existingProjectId))) {
           continue;
         }
@@ -3878,6 +3887,8 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
               sourceUrl: project.sourceUrl,
               sourceName: project.sourceName,
               announcedDate: project.announcedDate,
+              announcedDateEvidence: project.announcedDateEvidence ?? (project.announcedDate ? "source_reported" : "unknown"),
+              lastSeenAt: new Date(),
               contactName,
               contactEmail,
               contactPhone,
@@ -3896,6 +3907,8 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
             projectId: persistedProjectId,
             projectName: project.name,
             isNew,
+            effectiveDate: dateDecision.effectiveDate,
+            dateEvidence: dateDecision.evidence,
           });
 
           return persistedProjectId;

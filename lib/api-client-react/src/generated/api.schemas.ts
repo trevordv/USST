@@ -50,7 +50,12 @@ export interface Project {
   contactEmail?: string | null;
   /** @nullable */
   contactPhone?: string | null;
-  announcedDate: string;
+  /** @nullable */
+  announcedDate?: string | null;
+  /** @nullable */
+  announcedDateEvidence?: string | null;
+  /** @nullable */
+  lastSeenAt?: string | null;
   createdAt: string;
   updatedAt: string;
   /** @nullable */
@@ -156,6 +161,10 @@ export interface ScanRun {
   newProjects?: number;
   /** @nullable */
   errorMessage?: string | null;
+  /** @nullable */
+  startDate?: string | null;
+  /** @nullable */
+  endDate?: string | null;
 }
 
 export interface ScanInput {
@@ -206,7 +215,12 @@ export interface ScanProject {
   contactEmail?: string | null;
   /** @nullable */
   contactPhone?: string | null;
-  announcedDate: string;
+  /** @nullable */
+  announcedDate?: string | null;
+  /** @nullable */
+  announcedDateEvidence?: string | null;
+  /** @nullable */
+  lastSeenAt?: string | null;
   createdAt: string;
   updatedAt: string;
   /** @nullable */
