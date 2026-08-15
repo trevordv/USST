@@ -3182,7 +3182,7 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
  * Start an enrichment run in the background and return the run ID.
  * The caller receives 202 Accepted immediately; the enrichment runs asynchronously.
  */
-export async function startEnrichment(): Promise<number> {
+export async function startEnrichment(): Promise<{ runId: number; completion: Promise<unknown> }> {
   const [run] = await db.insert(contactEnrichmentsTable)
     .values({ status: "running", checked: 0, updated: 0 })
     .returning();
@@ -3190,7 +3190,7 @@ export async function startEnrichment(): Promise<number> {
   const runId = run.id;
 
   // Kick off the long-running work without awaiting
-  enrichMissingContacts(runId).catch((err: Error) => {
+  const completion = enrichMissingContacts(runId).catch((err: Error) => {
     logger.error({ err, runId }, "Contact enrichment background task failed");
     db.update(contactEnrichmentsTable)
       .set({ status: "failed", completedAt: new Date(), errorMessage: err.message })
@@ -3198,7 +3198,7 @@ export async function startEnrichment(): Promise<number> {
       .catch((e) => logger.error({ err: e, runId }, "Failed to mark enrichment as failed"));
   });
 
-  return runId;
+  return { runId, completion };
 }
 
 // ──────────────────────────────────────────────────────────────

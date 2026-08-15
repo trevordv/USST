@@ -13,6 +13,8 @@ import {
   GetContactEnrichmentParams,
 } from "@workspace/api-zod";
 import { MINIMUM_SOLAR_CAPACITY_MW } from "../lib/project-eligibility";
+import { requireAdmin } from "../middlewares/supabase-auth";
+import { admitCostlyOperation } from "../lib/job-admission";
 
 const router: IRouter = Router();
 
@@ -106,7 +108,7 @@ router.get("/projects", async (req, res): Promise<void> => {
 });
 
 // POST /projects
-router.post("/projects", async (req, res): Promise<void> => {
+router.post("/projects", requireAdmin, async (req, res): Promise<void> => {
   const parsed = CreateProjectBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
@@ -251,7 +253,7 @@ router.get("/projects/:id", async (req, res): Promise<void> => {
 });
 
 // PATCH /projects/:id
-router.patch("/projects/:id", async (req, res): Promise<void> => {
+router.patch("/projects/:id", requireAdmin, async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = UpdateProjectParams.safeParse({ id: parseInt(raw, 10) });
   if (!params.success) {
@@ -284,12 +286,16 @@ router.patch("/projects/:id", async (req, res): Promise<void> => {
 });
 
 // POST /projects/enrich-contacts
-router.post("/projects/enrich-contacts", async (req, res): Promise<void> => {
+router.post("/projects/enrich-contacts", requireAdmin, async (req, res): Promise<void> => {
+  const admission = admitCostlyOperation("enrichment", res.locals.usstUser.id);
+  if (!admission) { req.log.warn({ operation: "enrichment" }, "Costly operation rejected"); res.status(429).json({ error: "Operation already running or recently started" }); return; }
   try {
     const { startEnrichment } = await import("../lib/scraper");
-    const runId = await startEnrichment();
+    const { runId, completion } = await startEnrichment();
+    void completion.finally(admission.release);
     res.status(202).json({ runId, status: "running" });
   } catch (err) {
+    admission.release();
     req.log.error({ err }, "Contact enrichment failed to start");
     res.status(500).json({ error: "Contact enrichment failed to start" });
   }
@@ -322,7 +328,7 @@ router.get("/contact-enrichments/:id", async (req, res): Promise<void> => {
 });
 
 // DELETE /projects/:id
-router.delete("/projects/:id", async (req, res): Promise<void> => {
+router.delete("/projects/:id", requireAdmin, async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = DeleteProjectParams.safeParse({ id: parseInt(raw, 10) });
   if (!params.success) {
