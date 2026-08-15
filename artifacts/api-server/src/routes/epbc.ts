@@ -11,6 +11,8 @@ import {
 } from "../lib/epbc-scraper";
 import { logger } from "../lib/logger";
 import { normalizeTimestamp } from "../lib/timestamp";
+import { requireAdmin } from "../middlewares/supabase-auth";
+import { admitCostlyOperation } from "../lib/job-admission";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -116,7 +118,7 @@ function findCol(headers: string[], aliases: string[]): number {
   return -1;
 }
 
-router.post("/epbc/upload", upload.single("file") as unknown as Parameters<typeof router.post>[1], async (req, res): Promise<void> => {
+router.post("/epbc/upload", requireAdmin, upload.single("file") as unknown as Parameters<typeof router.post>[1], async (req, res): Promise<void> => {
   const file = (req as unknown as { file?: Express.Multer.File }).file;
   if (!file) { res.status(400).json({ error: "No file uploaded" }); return; }
 
@@ -271,7 +273,10 @@ async function upsertEpbcSyncRecords(records: EpbcRecord[]): Promise<{
   return { newCount, updatedCount };
 }
 
-router.post("/epbc/sync", async (req, res): Promise<void> => {
+router.post("/epbc/sync", requireAdmin, async (req, res): Promise<void> => {
+  const admission = admitCostlyOperation("epbc-sync", res.locals.usstUser.id);
+  if (!admission) { req.log.warn({ operation: "epbc-sync" }, "Costly operation rejected"); res.status(429).json({ error: "Operation already running or recently started" }); return; }
+  try {
   const body = req.body as { startDate?: string; endDate?: string } | undefined;
   const startDate = body?.startDate || undefined;
   const endDate   = body?.endDate   || undefined;
@@ -299,12 +304,14 @@ router.post("/epbc/sync", async (req, res): Promise<void> => {
     "EPBC sync complete",
   );
   res.json({ newCount, updatedCount, total: records.length });
+  } finally { admission.release(); }
 });
 
 // ── PATCH /epbc/projects/:id ──────────────────────────────────────────────────
 
-router.patch("/epbc/projects/:id", async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+router.patch("/epbc/projects/:id", requireAdmin, async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const id = parseInt(raw, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
 
   const allowed = ["relevanceStatus", "isSolar", "isApproved", "technologyType"];
@@ -331,8 +338,9 @@ router.patch("/epbc/projects/:id", async (req, res): Promise<void> => {
 
 // ── POST /epbc/projects/:id/import ────────────────────────────────────────────
 
-router.post("/epbc/projects/:id/import", async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+router.post("/epbc/projects/:id/import", requireAdmin, async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const id = parseInt(raw, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
 
   const [epbc] = await db.select().from(epbcProjectsTable).where(eq(epbcProjectsTable.id, id)).limit(1);

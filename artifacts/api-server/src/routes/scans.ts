@@ -4,6 +4,8 @@ import { db, scansTable, projectsTable, scanProjectsTable } from "@workspace/db"
 import { TriggerScanBody, GetScanParams } from "@workspace/api-zod";
 import { filterEligibleScanProjects } from "../lib/project-eligibility";
 import { filterRelationsForScanWindow } from "../lib/scan-date-window";
+import { requireAdmin } from "../middlewares/supabase-auth";
+import { admitCostlyOperation } from "../lib/job-admission";
 
 const router: IRouter = Router();
 
@@ -24,17 +26,29 @@ router.get("/scans", async (_req, res): Promise<void> => {
 });
 
 // POST /scans
-router.post("/scans", async (req, res): Promise<void> => {
+router.post("/scans", requireAdmin, async (req, res): Promise<void> => {
   const parsed = TriggerScanBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
+  const admission = admitCostlyOperation("scan", res.locals.usstUser.id);
+  if (!admission) {
+    req.log.warn({ operation: "scan" }, "Costly operation rejected");
+    res.status(429).json({ error: "Operation already running or recently started" });
+    return;
+  }
 
-  const [scan] = await db
-    .insert(scansTable)
-    .values({ status: "running", sourcesScanned: 0, projectsFound: 0, newProjects: 0, startDate: parsed.data.startDate ?? null, endDate: parsed.data.endDate ?? null })
-    .returning();
+  let scan;
+  try {
+    [scan] = await db
+      .insert(scansTable)
+      .values({ status: "running", sourcesScanned: 0, projectsFound: 0, newProjects: 0, startDate: parsed.data.startDate ?? null, endDate: parsed.data.endDate ?? null })
+      .returning();
+  } catch (err) {
+    admission.release();
+    throw err;
+  }
 
   // Load the scanner only when explicitly requested, then run it in the background.
   void import("../lib/scraper").then(({ runScan }) => runScan(
@@ -45,7 +59,7 @@ router.post("/scans", async (req, res): Promise<void> => {
     (err: Error) => {
       req.log?.error({ err, scanId: scan.id }, "Scan background task failed");
     }
-  );
+  ).finally(admission.release);
 
   res.status(202).json({
     ...scan,

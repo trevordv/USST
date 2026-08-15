@@ -126,7 +126,11 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
 
 export const requireAdmin: RequestHandler = (_req, res, next) => {
   const user = res.locals.usstUser as UsstAuthUser | undefined;
-  if (!user || user.role !== "admin") {
+  if (!user) {
+    res.status(401).json({ error: "Authentication required" });
+    return;
+  }
+  if (user.role !== "admin") {
     res.status(403).json({ error: "Administrator access required" });
     return;
   }
