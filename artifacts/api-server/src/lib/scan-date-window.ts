@@ -1,4 +1,9 @@
-export type ScanDateEvidence = "source_reported" | "persisted_announcement" | "unknown";
+export type ScanDateEvidence =
+  | "source_reported"
+  | "source_update"
+  | "altenergy_source_update"
+  | "persisted_announcement"
+  | "unknown";
 
 export function parseSourceAnnouncementDate(raw: Record<string, unknown>): string | null {
   for (const value of [raw.announcedDate, raw.announcementDate, raw.eventDate]) {
@@ -22,18 +27,23 @@ export function decideScanDateWindow(input: {
   startDate?: string | null;
   endDate?: string | null;
   scrapedAnnouncedDate?: string | null;
+  sourceEventDate?: string | null;
+  sourceEventEvidence?: Extract<ScanDateEvidence, "source_update" | "altenergy_source_update">;
   persistedAnnouncedDate?: string | null;
   existingProject: boolean;
 }): ScanDateDecision {
   const bounded = Boolean(input.startDate || input.endDate);
-  // Rediscovery is not a new event. Existing projects use their persisted
-  // announcement date; a scraper's fallback/current date cannot refresh them.
-  const effectiveDate = input.existingProject
+  // An explicit source event is a real update and may qualify either a new or
+  // existing project for the scan window. It remains separate from the
+  // project's announcement date and therefore cannot rewrite project history.
+  const effectiveDate = input.sourceEventDate ?? (input.existingProject
     ? input.persistedAnnouncedDate ?? null
-    : input.scrapedAnnouncedDate ?? null;
+    : input.scrapedAnnouncedDate ?? null);
   const evidence: ScanDateEvidence = effectiveDate == null
     ? "unknown"
-    : input.existingProject ? "persisted_announcement" : "source_reported";
+    : input.sourceEventDate
+      ? input.sourceEventEvidence ?? "source_update"
+      : input.existingProject ? "persisted_announcement" : "source_reported";
 
   if (!bounded) return { include: true, effectiveDate, evidence, reason: "unbounded" };
   if (effectiveDate == null) return { include: false, effectiveDate: null, evidence, reason: "unknown-date" };
