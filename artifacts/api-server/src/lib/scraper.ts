@@ -243,6 +243,7 @@ interface ScrapedProject {
   announcedDateEvidence?: "source_reported" | "unknown";
   sourceEventDate?: string | null;
   sourceEventEvidence?: "source_update" | "altenergy_source_update";
+  inventoryObservation?: boolean;
   contactName: string | null;
   contactEmail: string | null;
   contactPhone: string | null;
@@ -1061,7 +1062,7 @@ export async function scrapeAltEnergy(
     for (const rec of records) {
       const url = `https://altenergy.com.au/projectdata/show/${rec.id}`;
       if (seenUrls.has(url)) continue;
-      const decision = classifyAltEnergyProjectDbRecord(rec, { startDate, endDate });
+      const decision = classifyAltEnergyProjectDbRecord(rec);
       diagnostics[decision.outcome]++;
       if (decision.outcome !== "accepted") continue;
 
@@ -1082,6 +1083,7 @@ export async function scrapeAltEnergy(
         announcedDateEvidence: "unknown",
         sourceEventDate: decision.sourceUpdatedDate,
         sourceEventEvidence: "altenergy_source_update",
+        inventoryObservation: true,
         contactName: rec.contact_name ?? null,
         contactEmail: isValidProjectContact(rec.contact_email, rec.developer || rec.owner) ? rec.contact_email : null,
         contactPhone: rec.contact_phone ?? null,
@@ -3817,6 +3819,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         scrapedAnnouncedDate: project.announcedDate,
         sourceEventDate: project.sourceEventDate,
         sourceEventEvidence: project.sourceEventEvidence,
+        inventoryObservation: project.inventoryObservation,
         persistedAnnouncedDate: project.sourceUrl ? existingDateByUrl.get(project.sourceUrl) : null,
         existingProject: isExisting,
       });

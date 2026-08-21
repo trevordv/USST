@@ -20,8 +20,7 @@ export type AltEnergyProjectDbSkipReason =
   | "skipped_energy_type"
   | "skipped_status"
   | "skipped_capacity"
-  | "skipped_country"
-  | "skipped_date_window";
+  | "skipped_country";
 
 export type AltEnergyProjectDbOutcome = AltEnergyProjectDbSkipReason | "accepted";
 
@@ -77,7 +76,6 @@ export function normalizeAltEnergyCountry(value: string | null | undefined): "AU
 
 export function classifyAltEnergyProjectDbRecord(
   record: AltEnergyProjectDbRecord,
-  window: { startDate?: string | null; endDate?: string | null } = {},
 ): AltEnergyProjectDbDecision {
   const capacityMw = parseAltEnergyCapacityMw(record.capacity);
   const country = normalizeAltEnergyCountry(record.country);
@@ -112,16 +110,6 @@ export function classifyAltEnergyProjectDbRecord(
   if (capacityMw == null || capacityMw < 5) return result("skipped_capacity");
   if (country == null) return result("skipped_country");
 
-  if (window.startDate || window.endDate) {
-    if (
-      sourceUpdatedDate == null ||
-      (window.startDate && sourceUpdatedDate < window.startDate) ||
-      (window.endDate && sourceUpdatedDate > window.endDate)
-    ) {
-      return result("skipped_date_window");
-    }
-  }
-
   return result("accepted");
 }
 
@@ -132,7 +120,6 @@ export function createAltEnergyProjectDbDiagnostics(): Record<AltEnergyProjectDb
     skipped_status: 0,
     skipped_capacity: 0,
     skipped_country: 0,
-    skipped_date_window: 0,
     accepted: 0,
   };
 }
