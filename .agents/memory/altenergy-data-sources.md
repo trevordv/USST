@@ -61,8 +61,9 @@ description: How AltEnergy's three authenticated sections work and how to scrape
 ## Issue #23 live diagnosis (2026-08-21)
 - `Bourke 2B Solar Farm` (`id=1444`) is solar-pv (`energy_id=1`), Proposed / In
   Development, NSW, AUS, capacity `4.99` MW, updated `2026-01-09 01:25:40`.
-  It fails the unchanged 5 MW minimum, so it must remain excluded
-  (`skipped_capacity` in the reason-coded classifier).
+  Its authoritative description explicitly calls it a `5 MW AC` solar farm,
+  so Issue #25 accepts it at an eligibility capacity of 5 MW while preserving
+  the raw structured 4.99 MW value as provenance.
 - `Gunnedah Solar Farm` (`id=346`) is solar-pv (`energy_id=1`), Approved / In
   Development, NSW, AUS, capacity `27` MW, updated `2026-01-06 05:48:28`.
   It is eligible and must be linked as a current inventory observation even in
@@ -80,5 +81,15 @@ description: How AltEnergy's three authenticated sections work and how to scrape
   larger DC/thermal installation (commonly 6.4 MW DC), consistent with a
   4.99 MW AC/export rating rather than a data-entry rounding rule.
 - The update/source fields contain lifecycle notes and timestamps but no
-  additional generic nominal-5-MW evidence. This is not strong enough to
-  normalize 4.99 to 5.0 in Issue #23; the strict `>= 5 MW` rule remains.
+  additional generic nominal-5-MW evidence. Issue #25 therefore accepts only
+  records with explicit qualifying AC/project evidence; it does not round or
+  normalize the other 4.99 MW records. The strict `>= 5 MW` rule remains.
+
+## Issue #25 capacity-evidence precedence
+- Parse the raw structured `capacity` first and preserve it separately in the
+  classifier decision.
+- A structured value at or above 5 MW remains authoritative and unchanged.
+- When the structured value is below 5 MW, only explicit source wording such
+  as `5 MW AC` or `5 MW solar farm` may supply the eligibility capacity.
+- Do not use larger DC-only figures, BESS/component capacities, inference, or
+  rounding to qualify a below-threshold structured value.
