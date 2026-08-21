@@ -33,6 +33,11 @@ import {
 } from "./project-eligibility";
 import { decideScanDateWindow, parseSourceAnnouncementDate } from "./scan-date-window";
 import {
+  classifyAltEnergyProjectDbRecord,
+  createAltEnergyProjectDbDiagnostics,
+  type AltEnergyProjectDbRecord,
+} from "./altenergy-project-db";
+import {
   CONTACT_DOMAIN_WORKERS,
   GENERIC_SCAN_WORKERS,
   mapWithConcurrency,
@@ -236,6 +241,9 @@ interface ScrapedProject {
   sourceName: string;
   announcedDate: string | null;
   announcedDateEvidence?: "source_reported" | "unknown";
+  sourceEventDate?: string | null;
+  sourceEventEvidence?: "source_update" | "altenergy_source_update";
+  inventoryObservation?: boolean;
   contactName: string | null;
   contactEmail: string | null;
   contactPhone: string | null;
@@ -864,7 +872,7 @@ const SOLAR_TITLE_KEYWORDS = [
 // — project data is embedded as `var project = [...]` JavaScript in the page
 // ---------------------------------------------------------------------------
 
-interface AltEnergyProjectRecord {
+interface AltEnergyProjectRecord extends AltEnergyProjectDbRecord {
   id: number;
   energy_id: number;
   type: string;
@@ -886,12 +894,6 @@ interface AltEnergyProjectRecord {
   created_at: string;
   new_updates: string | null;
 }
-
-/** energy_ids we consider "solar or closely related" */
-const SOLAR_ENERGY_IDS = new Set([1, 4, 9]); // solar-pv, solar-thermal, (hybrid)
-
-/** Wind energy IDs — excluded from all scraping */
-const WIND_ENERGY_IDS = new Set([2, 3]); // kept for reference only — not ingested
 
 /**
  * Extract the embedded `var project = [...]` JSON from an AltEnergy page.
@@ -1054,61 +1056,41 @@ export async function scrapeAltEnergy(
     const html = await fetchAltEnergy("https://altenergy.com.au/kilowatt_subcribers");
     const records = parseAltEnergyProjectDb(html);
     logger.info({ total: records.length }, "AltEnergy project DB records found");
+    const diagnostics = createAltEnergyProjectDbDiagnostics();
+    let addedFromProjectDb = 0;
 
     for (const rec of records) {
       const url = `https://altenergy.com.au/projectdata/show/${rec.id}`;
       if (seenUrls.has(url)) continue;
-
-      // Only solar-related energy types (no wind)
-      if (!SOLAR_ENERGY_IDS.has(rec.energy_id)) continue;
-
-      // Only In Development / announced projects
-      const typeStr = (rec.type ?? "").toLowerCase();
-      const statusStr = (rec.status ?? "").toLowerCase();
-      const earlyStageRecord =
-        typeStr.includes("in development") ||
-        typeStr.includes("announced") ||
-        typeStr.includes("planning") ||
-        typeStr.includes("proposed") ||
-        statusStr.includes("in development") ||
-        statusStr.includes("under development") ||
-        statusStr.includes("announced") ||
-        statusStr.includes("planning");
-      if (!earlyStageRecord) continue;
-
-      // Date range filter: use updated_at (format "2026-03-09 23:00:28")
-      if (startDate || endDate) {
-        const updatedDate = (rec.updated_at ?? "").slice(0, 10);
-        if (startDate && updatedDate < startDate) continue;
-        if (endDate && updatedDate > endDate) continue;
-      }
+      const decision = classifyAltEnergyProjectDbRecord(rec);
+      diagnostics[decision.outcome]++;
+      if (decision.outcome !== "accepted") continue;
 
       seenUrls.add(url);
-      const capacityNum = parseFloat(rec.capacity);
-
-      // Enforce >=5 MW minimum (skip projects with known sub-5MW capacity)
-      if (!isNaN(capacityNum) && capacityNum < 5) continue;
-
-      const country = rec.country === "NZ" ? "NZ" : "AU";
       const location = [rec.location, rec.state].filter(Boolean).join(", ");
 
       projects.push({
-        name: rec.project_name,
+        name: rec.project_name!,
         description: (rec.description ?? "").slice(0, 600),
-        capacityMw: isNaN(capacityNum) ? null : capacityNum,
+        capacityMw: decision.capacityMw,
         developer: rec.developer || rec.owner || null,
         location: location || null,
-        country,
+        country: decision.country!,
         status: rec.type === "In Development" ? "under_development" : determineStatus(rec.type + " " + rec.status),
         sourceUrl: url,
         sourceName: "AltEnergy Australia",
-        announcedDate: (rec.updated_at ?? "").slice(0, 10) || new Date().toISOString().slice(0, 10),
+        announcedDate: null,
+        announcedDateEvidence: "unknown",
+        sourceEventDate: decision.sourceUpdatedDate,
+        sourceEventEvidence: "altenergy_source_update",
+        inventoryObservation: true,
         contactName: rec.contact_name ?? null,
         contactEmail: isValidProjectContact(rec.contact_email, rec.developer || rec.owner) ? rec.contact_email : null,
         contactPhone: rec.contact_phone ?? null,
       });
+      addedFromProjectDb++;
     }
-    logger.info({ added: projects.length }, "AltEnergy project DB scrape complete");
+    logger.info({ total: records.length, added: addedFromProjectDb, ...diagnostics }, "AltEnergy project DB scrape complete");
   } catch (err) {
     logger.warn({ err }, "AltEnergy project DB scrape failed");
   }
@@ -3835,6 +3817,9 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         startDate,
         endDate,
         scrapedAnnouncedDate: project.announcedDate,
+        sourceEventDate: project.sourceEventDate,
+        sourceEventEvidence: project.sourceEventEvidence,
+        inventoryObservation: project.inventoryObservation,
         persistedAnnouncedDate: project.sourceUrl ? existingDateByUrl.get(project.sourceUrl) : null,
         existingProject: isExisting,
       });

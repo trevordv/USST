@@ -1,4 +1,10 @@
-export type ScanDateEvidence = "source_reported" | "persisted_announcement" | "unknown";
+export type ScanDateEvidence =
+  | "source_reported"
+  | "source_update"
+  | "altenergy_source_update"
+  | "altenergy_inventory_observation"
+  | "persisted_announcement"
+  | "unknown";
 
 export function parseSourceAnnouncementDate(raw: Record<string, unknown>): string | null {
   for (const value of [raw.announcedDate, raw.announcementDate, raw.eventDate]) {
@@ -15,25 +21,42 @@ export interface ScanDateDecision {
   include: boolean;
   effectiveDate: string | null;
   evidence: ScanDateEvidence;
-  reason: "in-window" | "unbounded" | "before-start" | "after-end" | "unknown-date";
+  reason: "in-window" | "inventory-observation" | "unbounded" | "before-start" | "after-end" | "unknown-date";
 }
 
 export function decideScanDateWindow(input: {
   startDate?: string | null;
   endDate?: string | null;
   scrapedAnnouncedDate?: string | null;
+  sourceEventDate?: string | null;
+  sourceEventEvidence?: Extract<ScanDateEvidence, "source_update" | "altenergy_source_update">;
+  inventoryObservation?: boolean;
   persistedAnnouncedDate?: string | null;
   existingProject: boolean;
 }): ScanDateDecision {
   const bounded = Boolean(input.startDate || input.endDate);
-  // Rediscovery is not a new event. Existing projects use their persisted
-  // announcement date; a scraper's fallback/current date cannot refresh them.
-  const effectiveDate = input.existingProject
+  // AltEnergy's project database is a current inventory, not an event feed.
+  // Its updated_at is provenance only, so a bounded event window must neither
+  // exclude the record nor turn that timestamp into an announcement date.
+  if (input.inventoryObservation) {
+    return {
+      include: true,
+      effectiveDate: null,
+      evidence: "altenergy_inventory_observation",
+      reason: bounded ? "inventory-observation" : "unbounded",
+    };
+  }
+  // An explicit source event is a real update and may qualify either a new or
+  // existing project for the scan window. It remains separate from the
+  // project's announcement date and therefore cannot rewrite project history.
+  const effectiveDate = input.sourceEventDate ?? (input.existingProject
     ? input.persistedAnnouncedDate ?? null
-    : input.scrapedAnnouncedDate ?? null;
+    : input.scrapedAnnouncedDate ?? null);
   const evidence: ScanDateEvidence = effectiveDate == null
     ? "unknown"
-    : input.existingProject ? "persisted_announcement" : "source_reported";
+    : input.sourceEventDate
+      ? input.sourceEventEvidence ?? "source_update"
+      : input.existingProject ? "persisted_announcement" : "source_reported";
 
   if (!bounded) return { include: true, effectiveDate, evidence, reason: "unbounded" };
   if (effectiveDate == null) return { include: false, effectiveDate: null, evidence, reason: "unknown-date" };
@@ -46,7 +69,9 @@ export function relationIsInsidePersistedWindow(input: {
   startDate?: string | null;
   endDate?: string | null;
   effectiveDate?: string | null;
+  dateEvidence?: ScanDateEvidence | string | null;
 }): boolean {
+  if (input.dateEvidence === "altenergy_inventory_observation") return true;
   if (!input.startDate && !input.endDate) return true;
   if (!input.effectiveDate) return false;
   if (input.startDate && input.effectiveDate < input.startDate) return false;
@@ -54,9 +79,13 @@ export function relationIsInsidePersistedWindow(input: {
   return true;
 }
 
-export function filterRelationsForScanWindow<T extends { effectiveDate?: string | null }>(
+export function filterRelationsForScanWindow<T extends { effectiveDate?: string | null; dateEvidence?: string | null }>(
   relations: readonly T[],
   window: { startDate?: string | null; endDate?: string | null },
 ): T[] {
-  return relations.filter((relation) => relationIsInsidePersistedWindow({ ...window, effectiveDate: relation.effectiveDate }));
+  return relations.filter((relation) => relationIsInsidePersistedWindow({
+    ...window,
+    effectiveDate: relation.effectiveDate,
+    dateEvidence: relation.dateEvidence,
+  }));
 }

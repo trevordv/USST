@@ -46,6 +46,89 @@ test("rediscovery today cannot make an old persisted announcement current", () =
   assert.equal(result.effectiveDate, "2024-03-01");
 });
 
+test("AltEnergy event/news updates still use their event date", () => {
+  const result = decideScanDateWindow({
+    ...window,
+    existingProject: true,
+    persistedAnnouncedDate: "2024-03-01",
+    scrapedAnnouncedDate: null,
+    sourceEventDate: "2026-08-12",
+    sourceEventEvidence: "altenergy_source_update",
+  });
+  assert.deepEqual(result, {
+    include: true,
+    effectiveDate: "2026-08-12",
+    evidence: "altenergy_source_update",
+    reason: "in-window",
+  });
+  assert.deepEqual(summarizeScanLineage([{ projectId: 283, isNew: false }]), {
+    projectsFound: 1,
+    newProjects: 0,
+  });
+});
+
+test("AltEnergy event/news updates outside the window are excluded", () => {
+  assert.deepEqual(decideScanDateWindow({
+    ...window,
+    existingProject: true,
+    persistedAnnouncedDate: "2024-03-01",
+    sourceEventDate: "2026-08-06",
+    sourceEventEvidence: "altenergy_source_update",
+  }), {
+    include: false,
+    effectiveDate: "2026-08-06",
+    evidence: "altenergy_source_update",
+    reason: "before-start",
+  });
+});
+
+test("new AltEnergy inventory record gets lineage but no fabricated announcement date", () => {
+  const scrapedProject = {
+    announcedDate: null,
+    sourceEventDate: "2026-08-10",
+  };
+  assert.deepEqual(decideScanDateWindow({
+    ...window,
+    existingProject: false,
+    scrapedAnnouncedDate: scrapedProject.announcedDate,
+    sourceEventDate: scrapedProject.sourceEventDate,
+    sourceEventEvidence: "altenergy_source_update",
+    inventoryObservation: true,
+  }), {
+    include: true,
+    effectiveDate: null,
+    evidence: "altenergy_inventory_observation",
+    reason: "inventory-observation",
+  });
+  assert.equal(scrapedProject.announcedDate, null);
+});
+
+test("Gunnedah inventory is linked in August despite January updated_at and preserves history", () => {
+  const historicalAnnouncement = "2026-01-06";
+  const result = decideScanDateWindow({
+    ...window,
+    existingProject: true,
+    persistedAnnouncedDate: historicalAnnouncement,
+    sourceEventDate: "2026-01-06",
+    sourceEventEvidence: "altenergy_source_update",
+    inventoryObservation: true,
+  });
+  assert.equal(result.include, true);
+  assert.equal(result.effectiveDate, null);
+  assert.equal(result.evidence, "altenergy_inventory_observation");
+  assert.equal(historicalAnnouncement, "2026-01-06");
+  const lineage = filterRelationsForScanWindow([{
+    projectId: 283,
+    isNew: false,
+    effectiveDate: result.effectiveDate,
+    dateEvidence: result.evidence,
+  }], window);
+  assert.deepEqual(summarizeScanLineage(lineage), {
+    projectsFound: 1,
+    newProjects: 0,
+  });
+});
+
 test("unknown dates are excluded from bounded scans and allowed without a date window", () => {
   assert.deepEqual(decideScanDateWindow({ ...window, existingProject: false, scrapedAnnouncedDate: null }), { include: false, effectiveDate: null, evidence: "unknown", reason: "unknown-date" });
   assert.equal(decideScanDateWindow({ existingProject: false, scrapedAnnouncedDate: null }).include, true);
