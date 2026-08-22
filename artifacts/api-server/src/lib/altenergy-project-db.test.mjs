@@ -19,7 +19,7 @@ const eligibleSolar = {
   updated_at: "2026-08-14 12:30:00",
 };
 
-test("rejects the live Bourke record at the unchanged 5 MW hard gate", () => {
+test("accepts live Bourke from explicit 5 MW AC evidence without rounding its 4.99 field", () => {
   const decision = classifyAltEnergyProjectDbRecord({
     ...eligibleSolar,
     id: 1444,
@@ -27,18 +27,82 @@ test("rejects the live Bourke record at the unchanged 5 MW hard gate", () => {
     project_name: "Bourke 2B Solar Farm",
     capacity: "4.99",
     country: "AUS",
-    description: "Solar farm development",
+    description: "Located 3km north-east of Bourke town centre, the 5 MW AC Bourke 2B Solar Farm will occupy 11.54 hectares.",
     state: "NSW",
     status: "Proposed",
     updated_at: "2026-01-09 01:25:40",
   });
 
   assert.deepEqual(decision, {
-    outcome: "skipped_capacity",
-    capacityMw: 4.99,
+    outcome: "accepted",
+    capacityMw: 5,
+    rawStructuredCapacityMw: 4.99,
+    capacityEvidence: "explicit_ac_capacity",
+    capacityEvidenceText: "5 MW AC",
     country: "AU",
     sourceUpdatedDate: "2026-01-09",
   });
+});
+
+test("rejects generic structured 4.99 without explicit qualifying evidence", () => {
+  const decision = classifyAltEnergyProjectDbRecord({
+    ...eligibleSolar,
+    capacity: "4.99",
+    description: "Proposed utility-scale solar farm",
+  });
+  assert.equal(decision.outcome, "skipped_capacity");
+  assert.equal(decision.capacityMw, 4.99);
+  assert.equal(decision.rawStructuredCapacityMw, 4.99);
+  assert.equal(decision.capacityEvidence, "none");
+});
+
+test("rejects explicit 4.99 MW project evidence", () => {
+  const decision = classifyAltEnergyProjectDbRecord({
+    ...eligibleSolar,
+    capacity: "4.99",
+    description: "The project has an AC output of 4.99 MW.",
+  });
+  assert.equal(decision.outcome, "skipped_capacity");
+  assert.equal(decision.capacityMw, 4.99);
+  assert.equal(decision.capacityEvidence, "none");
+});
+
+test("does not use a larger DC figure when AC capacity remains 4.99 MW", () => {
+  const decision = classifyAltEnergyProjectDbRecord({
+    ...eligibleSolar,
+    capacity: "4.99",
+    description: "The 6.4 MW DC solar farm has an AC output of 4.99 MW.",
+  });
+  assert.equal(decision.outcome, "skipped_capacity");
+  assert.equal(decision.capacityMw, 4.99);
+  assert.equal(decision.capacityEvidence, "none");
+});
+
+test("ordinary structured capacities at or above 5 MW remain unchanged", () => {
+  const decision = classifyAltEnergyProjectDbRecord({
+    ...eligibleSolar,
+    capacity: "27 MW",
+    description: "Approved solar farm",
+  });
+  assert.equal(decision.outcome, "accepted");
+  assert.equal(decision.capacityMw, 27);
+  assert.equal(decision.rawStructuredCapacityMw, 27);
+  assert.equal(decision.capacityEvidence, "structured_capacity");
+  assert.equal(decision.capacityEvidenceText, null);
+});
+
+test("accepts generic explicit project-capacity wording without a name exception", () => {
+  const decision = classifyAltEnergyProjectDbRecord({
+    ...eligibleSolar,
+    project_name: "Regional Renewable Precinct",
+    capacity: "4.99",
+    description: "Development of a 5 MW solar farm with associated grid connection works.",
+  });
+  assert.equal(decision.outcome, "accepted");
+  assert.equal(decision.capacityMw, 5);
+  assert.equal(decision.rawStructuredCapacityMw, 4.99);
+  assert.equal(decision.capacityEvidence, "explicit_project_capacity");
+  assert.equal(decision.capacityEvidenceText, "5 MW solar farm");
 });
 
 test("does not infer an unknown AltEnergy energy id from free text", () => {

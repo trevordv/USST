@@ -244,6 +244,9 @@ interface ScrapedProject {
   sourceEventDate?: string | null;
   sourceEventEvidence?: "source_update" | "altenergy_source_update";
   inventoryObservation?: boolean;
+  rawStructuredCapacityMw?: number | null;
+  capacityEvidence?: "structured_capacity" | "explicit_ac_capacity" | "explicit_project_capacity" | "none";
+  capacityEvidenceText?: string | null;
   contactName: string | null;
   contactEmail: string | null;
   contactPhone: string | null;
@@ -1073,6 +1076,9 @@ export async function scrapeAltEnergy(
         name: rec.project_name!,
         description: (rec.description ?? "").slice(0, 600),
         capacityMw: decision.capacityMw,
+        rawStructuredCapacityMw: decision.rawStructuredCapacityMw,
+        capacityEvidence: decision.capacityEvidence,
+        capacityEvidenceText: decision.capacityEvidenceText,
         developer: rec.developer || rec.owner || null,
         location: location || null,
         country: decision.country!,
@@ -3802,6 +3808,18 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         );
         if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
         continue;
+      }
+      if (project.capacityEvidence && project.capacityEvidence !== "structured_capacity") {
+        logger.info(
+          {
+            project: project.name,
+            rawStructuredCapacityMw: project.rawStructuredCapacityMw,
+            eligibilityCapacityMw: project.capacityMw,
+            capacityEvidence: project.capacityEvidence,
+            capacityEvidenceText: project.capacityEvidenceText,
+          },
+          "Capacity gate: explicit AltEnergy project capacity evidence applied",
+        );
       }
       // Date-range gate: when a range is specified, only accept projects whose
       // announced date falls within it. For existing projects (already in DB),
