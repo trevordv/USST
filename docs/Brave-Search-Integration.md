@@ -15,7 +15,10 @@ Brave-discovered pages are fetched through a guarded public-URL helper. It
 rejects unsafe protocols, URL credentials, localhost, private/reserved IP
 literals, and hostnames resolving to private/reserved addresses. Every redirect
 target is revalidated, redirects are capped at three, requests time out after
-ten seconds, and response bodies are capped at 1 MB.
+ten seconds, and response bodies are capped at 1 MB. Each outbound connection is
+DNS-pinned to an address from that request's validated lookup while the original
+hostname remains in the URL for Host, TLS SNI, and certificate validation;
+redirect hosts receive a fresh validation and pin.
 
 ## Project and developer research
 

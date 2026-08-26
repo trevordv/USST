@@ -1,5 +1,8 @@
 import { lookup } from "node:dns/promises";
+import http from "node:http";
+import https from "node:https";
 import { isIP } from "node:net";
+import { Readable } from "node:stream";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_BYTES = 1_000_000;
@@ -17,13 +20,22 @@ interface LookupAddress {
   family: number;
 }
 
+interface PinnedRequestInput {
+  url: URL;
+  address: LookupAddress;
+  headers?: Record<string, string>;
+  signal: AbortSignal;
+}
+
+type PinnedRequest = (input: PinnedRequestInput) => Promise<Response>;
+
 interface SafePublicFetchOptions {
   headers?: Record<string, string>;
   timeoutMs?: number;
   maxBytes?: number;
   maxRedirects?: number;
-  fetchImpl?: typeof fetch;
   lookupImpl?: (hostname: string) => Promise<LookupAddress[]>;
+  requestImpl?: PinnedRequest;
 }
 
 export function isPublicIpAddress(rawAddress: string): boolean {
@@ -55,7 +67,7 @@ export function isPublicIpAddress(rawAddress: string): boolean {
 async function validatePublicUrl(
   rawUrl: string,
   lookupImpl: (hostname: string) => Promise<LookupAddress[]>,
-): Promise<URL> {
+): Promise<{ url: URL; address: LookupAddress }> {
   const url = new URL(rawUrl);
   if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("Unsafe URL protocol");
   if (url.username || url.password) throw new Error("Credential-bearing URL rejected");
@@ -63,13 +75,49 @@ async function validatePublicUrl(
   if (hostname === "localhost" || hostname.endsWith(".local")) throw new Error("Private hostname rejected");
   if (isIP(hostname)) {
     if (!isPublicIpAddress(hostname)) throw new Error("Private IP rejected");
-    return url;
+    return { url, address: { address: hostname, family: isIP(hostname) } };
   }
   const addresses = await lookupImpl(hostname);
   if (addresses.length === 0 || addresses.some(({ address }) => !isPublicIpAddress(address))) {
     throw new Error("Hostname resolved to a private or reserved address");
   }
-  return url;
+  return { url, address: addresses[0] };
+}
+
+function pinnedRequest({ url, address, headers, signal }: PinnedRequestInput): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const transport = url.protocol === "https:" ? https : http;
+    const request = transport.request(url, {
+      headers,
+      signal,
+      // The URL hostname remains untouched, so Node preserves the Host header,
+      // TLS SNI, and certificate verification while connecting to this address.
+      lookup: (_hostname, options, callback) => {
+        if (typeof options === "object" && options.all) {
+          callback(null, [address]);
+          return;
+        }
+        callback(null, address.address, address.family);
+      },
+    }, (response) => {
+      const responseHeaders = new Headers();
+      for (const [name, value] of Object.entries(response.headers)) {
+        if (Array.isArray(value)) value.forEach((item) => responseHeaders.append(name, item));
+        else if (value !== undefined) responseHeaders.set(name, value);
+      }
+      const status = response.statusCode ?? 500;
+      const body = status === 204 || status === 205 || status === 304
+        ? null
+        : Readable.toWeb(response) as ReadableStream;
+      resolve(new Response(body, {
+        status,
+        statusText: response.statusMessage,
+        headers: responseHeaders,
+      }));
+    });
+    request.on("error", reject);
+    request.end();
+  });
 }
 
 async function readBoundedText(response: Response, maxBytes: number): Promise<string> {
@@ -107,28 +155,30 @@ export async function safeFetchPublicText(
   const lookupImpl = options.lookupImpl ?? (async (hostname: string) => lookup(hostname, { all: true }));
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+  const requestImpl = options.requestImpl ?? pinnedRequest;
   let currentUrl = rawUrl;
 
   try {
     for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount++) {
       const validated = await validatePublicUrl(currentUrl, lookupImpl);
-      const response = await (options.fetchImpl ?? fetch)(validated, {
+      const response = await requestImpl({
+        url: validated.url,
+        address: validated.address,
         signal: controller.signal,
-        redirect: "manual",
         headers: options.headers,
       });
       if (response.status >= 300 && response.status < 400) {
         if (redirectCount >= maxRedirects) throw new Error("Redirect limit exceeded");
         const location = response.headers.get("location");
         if (!location) throw new Error("Redirect missing location");
-        currentUrl = new URL(location, validated).toString();
+        currentUrl = new URL(location, validated.url).toString();
         continue;
       }
       return {
         ok: response.ok,
         status: response.status,
         text: await readBoundedText(response, maxBytes),
-        finalUrl: validated.toString(),
+        finalUrl: validated.url.toString(),
       };
     }
     throw new Error("Redirect limit exceeded");
