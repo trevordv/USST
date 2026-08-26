@@ -57,7 +57,8 @@ import {
   validateSourceRepairStrategies,
 } from "./source-repair-strategies";
 import { readAemoGenerationWorkbookRows } from "./aemo-workbook";
-import { braveWebSearch, type BraveSearchResult } from "./brave-search";
+import { researchDeveloperWithBrave, type BraveResearchEvidence } from "./brave-research";
+import { safeFetchPublicText } from "./safe-public-fetch";
 
 // ---------------------------------------------------------------------------
 // AltEnergy authenticated session
@@ -2474,15 +2475,17 @@ function extractNameNearEmail(context: string): string | null {
 
 async function scrapeUrlForContact(url: string, companyName?: string | null): Promise<{ name: string | null; email: string; phone: string | null } | null> {
   try {
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(10000),
+    const res = await safeFetchPublicText(url, {
+      timeoutMs: 10_000,
+      maxBytes: 1_000_000,
+      maxRedirects: 3,
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       },
     });
     if (!res.ok) return null;
-    const html = await res.text();
+    const html = res.text;
     const matches = extractEmailsFromHtml(html);
     for (const { email, context } of matches) {
       if (isPersonalEmail(email) && isEmailDomainRelated(email, companyName)) {
@@ -2758,7 +2761,7 @@ const NON_OFFICIAL_RESEARCH_DOMAINS = new Set([
   "crunchbase.com", "zoominfo.com", "signalhire.com", "rocketreach.co",
 ]);
 
-function isLikelyOfficialCompanyResult(result: BraveSearchResult, companyName: string): boolean {
+function isLikelyOfficialCompanyResult(result: BraveResearchEvidence, companyName: string): boolean {
   if ([...NON_OFFICIAL_RESEARCH_DOMAINS].some(
     (domain) => result.source === domain || result.source.endsWith(`.${domain}`),
   )) return false;
@@ -2930,22 +2933,16 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
       const developer = g.projects[0].developer?.trim();
       if (!developer) continue;
       const country = g.projects[0].country === "NZ" ? "NZ" : "AU";
-      const geography = country === "NZ" ? "New Zealand" : "Australia";
-      const results = await braveWebSearch({
-        query: `"${developer}" official website solar ${geography} contact team`,
-        country,
-        count: 5,
-        purpose: "developer_website_discovery",
-      });
+      const results = await researchDeveloperWithBrave(developer, country, "developer_website_discovery");
 
       for (const result of results.slice(0, 3)) {
         if (!isLikelyOfficialCompanyResult(result, developer)) continue;
         g.domain ??= result.source;
         logger.info(
           {
-            purpose: result.provenance.purpose,
-            queryHash: result.provenance.queryHash,
-            searchedAt: result.provenance.searchedAt,
+            purpose: result.purpose,
+            queryHash: result.queryHash,
+            searchedAt: result.searchedAt,
             resultUrl: result.url,
             resultTitle: result.title,
             resultDomain: result.source,
@@ -2974,8 +2971,8 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
               devKey,
               resultUrl: result.url,
               resultDomain: result.source,
-              queryHash: result.provenance.queryHash,
-              searchPurpose: result.provenance.purpose,
+              queryHash: result.queryHash,
+              searchPurpose: result.purpose,
               usePurpose: "contact_research",
             },
             "Contact enriched from Brave-discovered official page",

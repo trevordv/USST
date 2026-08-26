@@ -163,6 +163,33 @@ export const DeleteProjectParams = zod.object({
 
 
 /**
+ * Admin-only bounded Brave research. Returns evidence without creating or updating projects.
+ * @summary Research supporting public evidence for an existing project
+ */
+export const ResearchProjectParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const researchProjectResponseEvidenceMax = 5;
+
+
+
+export const ResearchProjectResponse = zod.object({
+  "projectId": zod.number(),
+  "purpose": zod.enum(['project_corroboration']),
+  "evidence": zod.array(zod.object({
+  "title": zod.string(),
+  "url": zod.string(),
+  "source": zod.string(),
+  "description": zod.string().nullish(),
+  "searchedAt": zod.string(),
+  "queryHash": zod.string(),
+  "purpose": zod.enum(['project_corroboration', 'developer_website_discovery', 'contact_research'])
+})).max(researchProjectResponseEvidenceMax)
+})
+
+
+/**
  * @summary Aggregate stats for the current project list
  */
 export const GetProjectStatsQueryParams = zod.object({

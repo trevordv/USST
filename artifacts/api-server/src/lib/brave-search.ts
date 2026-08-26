@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
-import { logger as defaultLogger } from "./logger";
+import { logger as defaultLogger } from "./logger.ts";
 
 const BRAVE_WEB_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search";
 const DEFAULT_RESULT_COUNT = 5;

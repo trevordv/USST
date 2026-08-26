@@ -31,3 +31,12 @@ test("cooldown is per administrator and operation while concurrency is global pe
   scan.release();
   assert.ok(admitCostlyOperation("scan", 2, 30_003));
 });
+
+test("project research has a dedicated costly-operation admission slot", () => {
+  resetCostlyOperationAdmissionForTests();
+  const research = admitCostlyOperation("project-research", 1, 40_000);
+  assert.ok(research);
+  assert.equal(admitCostlyOperation("project-research", 2, 40_001), null);
+  assert.ok(admitCostlyOperation("scan", 1, 40_002));
+  research.release();
+});
