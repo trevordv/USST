@@ -13,6 +13,7 @@ test("reports configuration presence without exposing secret values", () => {
     LUVI_USERNAME: "luvi-user",
     LUVI_PASSWORD: "   ",
     APIFY_API_TOKEN: "apify-secret",
+    BRAVE_SEARCH_API_KEY: "brave-secret",
     LUSHA_API_KEY: "lusha-secret",
   };
 
@@ -23,5 +24,6 @@ test("reports configuration presence without exposing secret values", () => {
   assert.equal(result.ALTENERGY_PASSWORD, "missing");
   assert.equal(result.LUVI_PASSWORD, "missing");
   assert.equal(result.LUSHA_API_KEY, "configured");
-  assert.doesNotMatch(JSON.stringify(result), /super-secret|user@example|apify-secret|lusha-secret/);
+  assert.equal(result.BRAVE_SEARCH_API_KEY, "configured");
+  assert.doesNotMatch(JSON.stringify(result), /super-secret|user@example|apify-secret|brave-secret|lusha-secret/);
 });

@@ -159,6 +159,38 @@ paths:
         "404":
           description: Not found
 
+  /projects/{id}/research:
+    post:
+      operationId: researchProject
+      tags: [projects]
+      summary: Research supporting public evidence for an existing project
+      description: Admin-only bounded Brave research. Returns evidence without creating or updating projects.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Bounded project research evidence
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectResearchResponse"
+        "400":
+          description: Invalid project ID
+        "401":
+          description: Authentication required
+        "403":
+          description: Account is not authorized
+        "404":
+          description: Project not found
+        "429":
+          description: Project research already running or in cooldown
+        "502":
+          description: Project research unavailable
+
   /projects/stats:
     get:
       operationId: getProjectStats
@@ -675,6 +707,41 @@ components:
         recentCount:
           type: integer
           description: Projects announced in the last 7 days
+
+    BraveResearchEvidence:
+      type: object
+      required: [title, url, source, searchedAt, queryHash, purpose]
+      properties:
+        title:
+          type: string
+        url:
+          type: string
+        source:
+          type: string
+        description:
+          type: ["string", "null"]
+        searchedAt:
+          type: string
+        queryHash:
+          type: string
+        purpose:
+          type: string
+          enum: [project_corroboration, developer_website_discovery, contact_research]
+
+    ProjectResearchResponse:
+      type: object
+      required: [projectId, purpose, evidence]
+      properties:
+        projectId:
+          type: integer
+        purpose:
+          type: string
+          enum: [project_corroboration]
+        evidence:
+          type: array
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/BraveResearchEvidence"
 
     ScanRun:
       type: object

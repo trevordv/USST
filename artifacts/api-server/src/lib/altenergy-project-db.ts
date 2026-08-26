@@ -1,4 +1,4 @@
-import { MINIMUM_SOLAR_CAPACITY_MW } from "./project-eligibility";
+import { MINIMUM_SOLAR_CAPACITY_MW } from "./project-eligibility.ts";
 
 export interface AltEnergyProjectDbRecord {
   id: number;

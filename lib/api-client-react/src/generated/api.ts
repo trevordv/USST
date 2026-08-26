@@ -37,6 +37,7 @@ import type {
   ListProjectsParams,
   Project,
   ProjectInput,
+  ProjectResearchResponse,
   ProjectStats,
   ProjectUpdate,
   ScanInput,
@@ -507,6 +508,77 @@ export const useDeleteProject = <TError = ErrorType<void>,
         TContext
       > => {
       return useMutation(getDeleteProjectMutationOptions(options));
+    }
+
+export const getResearchProjectUrl = (id: number,) => {
+
+
+
+
+  return `/api/projects/${id}/research`
+}
+
+/**
+ * Admin-only bounded Brave research. Returns evidence without creating or updating projects.
+ * @summary Research supporting public evidence for an existing project
+ */
+export const researchProject = async (id: number, options?: RequestInit): Promise<ProjectResearchResponse> => {
+
+  return customFetch<ProjectResearchResponse>(getResearchProjectUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+export const getResearchProjectMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof researchProject>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof researchProject>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['researchProject'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof researchProject>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  researchProject(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ResearchProjectMutationResult = NonNullable<Awaited<ReturnType<typeof researchProject>>>
+
+    export type ResearchProjectMutationError = ErrorType<void>
+
+    /**
+ * @summary Research supporting public evidence for an existing project
+ */
+export const useResearchProject = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof researchProject>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof researchProject>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getResearchProjectMutationOptions(options));
     }
 
 export const getGetProjectStatsUrl = (params?: GetProjectStatsParams,) => {

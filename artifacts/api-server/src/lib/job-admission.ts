@@ -1,4 +1,4 @@
-export type CostlyOperation = "scan" | "enrichment" | "epbc-sync";
+export type CostlyOperation = "scan" | "enrichment" | "epbc-sync" | "project-research";
 
 const COOLDOWN_MS = 15_000;
 const active = new Set<CostlyOperation>();

@@ -141,6 +141,40 @@ export interface ProjectStats {
   recentCount: number;
 }
 
+export type BraveResearchEvidencePurpose = typeof BraveResearchEvidencePurpose[keyof typeof BraveResearchEvidencePurpose];
+
+
+export const BraveResearchEvidencePurpose = {
+  project_corroboration: 'project_corroboration',
+  developer_website_discovery: 'developer_website_discovery',
+  contact_research: 'contact_research',
+} as const;
+
+export interface BraveResearchEvidence {
+  title: string;
+  url: string;
+  source: string;
+  /** @nullable */
+  description?: string | null;
+  searchedAt: string;
+  queryHash: string;
+  purpose: BraveResearchEvidencePurpose;
+}
+
+export type ProjectResearchResponsePurpose = typeof ProjectResearchResponsePurpose[keyof typeof ProjectResearchResponsePurpose];
+
+
+export const ProjectResearchResponsePurpose = {
+  project_corroboration: 'project_corroboration',
+} as const;
+
+export interface ProjectResearchResponse {
+  projectId: number;
+  purpose: ProjectResearchResponsePurpose;
+  /** @maxItems 5 */
+  evidence: BraveResearchEvidence[];
+}
+
 export type ScanRunStatus = typeof ScanRunStatus[keyof typeof ScanRunStatus];
 
 

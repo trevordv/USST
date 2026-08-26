@@ -16,8 +16,9 @@
  *  - NZ: Electricity Authority, Transpower, NZ Fast-track, NZ EPA
  *  - AltEnergy and LUVI are authenticated and handled separately
  *
- * Apify Google Search is used ONLY for the explicit contact-enrichment feature
- * (POST /projects/enrich-contacts), never during scanning.
+ * Brave Search and Apify Google Search are used ONLY for the explicit,
+ * admin-authorized contact-enrichment feature (POST /projects/enrich-contacts),
+ * never as project-ingestion sources during scanning.
  */
 
 import { db, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable, pvhContactsTable, type PvhContact } from "@workspace/db";
@@ -56,6 +57,8 @@ import {
   validateSourceRepairStrategies,
 } from "./source-repair-strategies";
 import { readAemoGenerationWorkbookRows } from "./aemo-workbook";
+import { researchDeveloperWithBrave, type BraveResearchEvidence } from "./brave-research";
+import { safeFetchPublicText } from "./safe-public-fetch";
 
 // ---------------------------------------------------------------------------
 // AltEnergy authenticated session
@@ -2472,15 +2475,17 @@ function extractNameNearEmail(context: string): string | null {
 
 async function scrapeUrlForContact(url: string, companyName?: string | null): Promise<{ name: string | null; email: string; phone: string | null } | null> {
   try {
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(10000),
+    const res = await safeFetchPublicText(url, {
+      timeoutMs: 10_000,
+      maxBytes: 1_000_000,
+      maxRedirects: 3,
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       },
     });
     if (!res.ok) return null;
-    const html = await res.text();
+    const html = res.text;
     const matches = extractEmailsFromHtml(html);
     for (const { email, context } of matches) {
       if (isPersonalEmail(email) && isEmailDomainRelated(email, companyName)) {
@@ -2749,6 +2754,34 @@ async function callLushaProspecting(
   }
 }
 
+const NON_OFFICIAL_RESEARCH_DOMAINS = new Set([
+  "linkedin.com", "facebook.com", "instagram.com", "x.com", "twitter.com",
+  "youtube.com", "wikipedia.org", "bloomberg.com", "reuters.com", "afr.com",
+  "theaustralian.com.au", "reneweconomy.com.au", "pv-magazine-australia.com",
+  "crunchbase.com", "zoominfo.com", "signalhire.com", "rocketreach.co",
+]);
+
+function isLikelyOfficialCompanyResult(result: BraveResearchEvidence, companyName: string): boolean {
+  if ([...NON_OFFICIAL_RESEARCH_DOMAINS].some(
+    (domain) => result.source === domain || result.source.endsWith(`.${domain}`),
+  )) return false;
+  const companyTokens = companyName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(" ")
+    .filter((token) => token.length >= 3 && ![
+      "pty", "ltd", "limited", "group", "energy", "solar", "renewable", "renewables",
+      "australia", "australian", "zealand", "company", "holdings", "development",
+    ].includes(token));
+  if (companyTokens.length === 0) return false;
+  const evidenceTokens = new Set(`${result.source} ${result.title} ${result.description ?? ""}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(" ")
+    .filter(Boolean));
+  return companyTokens.some((token) => evidenceTokens.has(token));
+}
+
 /**
  * Enrich projects that are missing personal contact details.
  * Phase 1:    Scrape developer/project websites directly.
@@ -2776,6 +2809,7 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     .select({
       id: projectsTable.id,
       developer: projectsTable.developer,
+      country: projectsTable.country,
       sourceUrl: projectsTable.sourceUrl,
       contactName: projectsTable.contactName,
       contactEmail: projectsTable.contactEmail,
@@ -2881,19 +2915,88 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     ...phaseOneMisses.filter((entry): entry is [string, GroupEntry] => entry !== null),
   );
 
-  // ── Phase 2: Apify Google Search for developers without a known domain ────
+  // ── Phase 2: Brave discovery for official company/contact pages ───────────
+  // This runs only inside the admin-authorized enrichment job. Results are
+  // discovery evidence: they are never passed into project ingestion.
+  const phaseBrave = noDomainGroups.filter(([k]) => !enrichedKeys.has(k));
+  const braveKey = process.env.BRAVE_SEARCH_API_KEY?.trim();
+  if (phaseBrave.length > 0 && !braveKey) {
+    logger.warn(
+      { phase: "Brave contact research", outcome: "skipped-missing-credentials", missing: ["BRAVE_SEARCH_API_KEY"] },
+      "Contact enrichment integration outcome",
+    );
+  }
+  if (phaseBrave.length > 0 && braveKey) {
+    logger.info({ count: Math.min(phaseBrave.length, 25) }, "Contact enrichment: Phase 2 Brave discovery");
+    for (const [devKey, g] of phaseBrave.slice(0, 25)) {
+      if (enrichedKeys.has(devKey)) continue;
+      const developer = g.projects[0].developer?.trim();
+      if (!developer) continue;
+      const country = g.projects[0].country === "NZ" ? "NZ" : "AU";
+      const results = await researchDeveloperWithBrave(developer, country, "developer_website_discovery");
+
+      for (const result of results.slice(0, 3)) {
+        if (!isLikelyOfficialCompanyResult(result, developer)) continue;
+        g.domain ??= result.source;
+        logger.info(
+          {
+            purpose: result.purpose,
+            queryHash: result.queryHash,
+            searchedAt: result.searchedAt,
+            resultUrl: result.url,
+            resultTitle: result.title,
+            resultDomain: result.source,
+            devKey,
+          },
+          "Brave research evidence selected",
+        );
+
+        const candidateUrls = [
+          result.url,
+          `https://${result.source}/contact`,
+          `https://${result.source}/team`,
+          `https://${result.source}/about-us`,
+        ];
+        for (const candidateUrl of [...new Set(candidateUrls)]) {
+          const contact = await scrapeUrlForContact(candidateUrl, developer);
+          if (!contact) continue;
+          await applyContact(g, {
+            name: contact.name ?? g.existingName,
+            email: contact.email,
+            phone: contact.phone,
+          });
+          enrichedKeys.add(devKey);
+          logger.info(
+            {
+              devKey,
+              resultUrl: result.url,
+              resultDomain: result.source,
+              queryHash: result.queryHash,
+              searchPurpose: result.purpose,
+              usePurpose: "contact_research",
+            },
+            "Contact enriched from Brave-discovered official page",
+          );
+          break;
+        }
+        if (enrichedKeys.has(devKey)) break;
+      }
+    }
+  }
+
+  // ── Phase 2.25: Apify fallback for still-unresolved developers ────────────
   const token = process.env.APIFY_API_TOKEN;
-  const phaseTwo = noDomainGroups.filter(([k]) => !enrichedKeys.has(k));
-  if (phaseTwo.length > 0 && !token) {
+  const phaseApify = noDomainGroups.filter(([k]) => !enrichedKeys.has(k));
+  if (phaseApify.length > 0 && !token) {
     logger.warn(
       { phase: "Apify search", outcome: "skipped-missing-credentials", missing: ["APIFY_API_TOKEN"] },
       "Contact enrichment integration outcome",
     );
   }
-  if (phaseTwo.length > 0 && token) {
-    logger.info({ count: phaseTwo.length }, "Contact enrichment: Phase 2 Apify search");
+  if (phaseApify.length > 0 && token) {
+    logger.info({ count: phaseApify.length }, "Contact enrichment: Phase 2.25 Apify search");
 
-    const queries = phaseTwo.map(([, g]) => {
+    const queries = phaseApify.map(([, g]) => {
       const dev = g.projects[0].developer ?? "solar developer";
       const person = g.existingName;
       if (person && !/team|group|office|crew/i.test(person)) {
@@ -2907,8 +3010,8 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
       await waitForApifyRun(runId);
       const items = await fetchApifyResults(runId);
 
-      for (let i = 0; i < Math.min(phaseTwo.length, items.length); i++) {
-        const [devKey, g] = phaseTwo[i];
+      for (let i = 0; i < Math.min(phaseApify.length, items.length); i++) {
+        const [devKey, g] = phaseApify[i];
         if (enrichedKeys.has(devKey)) continue;
         const results = (items[i] as ApifyDatasetItem)?.organicResults ?? [];
 

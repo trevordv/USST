@@ -252,6 +252,57 @@ router.get("/projects/:id", async (req, res): Promise<void> => {
   res.json(toProjectResponse(project));
 });
 
+// POST /projects/:id/research — bounded supporting evidence for an existing project
+router.post("/projects/:id/research", requireAdmin, async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetProjectParams.safeParse({ id: parseInt(raw, 10) });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+
+  const [project] = await db
+    .select({
+      id: projectsTable.id,
+      name: projectsTable.name,
+      developer: projectsTable.developer,
+      location: projectsTable.location,
+      country: projectsTable.country,
+      capacityMw: projectsTable.capacityMw,
+    })
+    .from(projectsTable)
+    .where(eq(projectsTable.id, params.data.id));
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+
+  const admission = admitCostlyOperation("project-research", res.locals.usstUser.id);
+  if (!admission) {
+    req.log.warn({ operation: "project-research", projectId: project.id }, "Costly operation rejected");
+    res.status(429).json({ error: "Project research already running or recently started" });
+    return;
+  }
+
+  try {
+    const { researchProjectWithBrave } = await import("../lib/brave-research");
+    const evidence = await researchProjectWithBrave({
+      projectName: project.name,
+      developer: project.developer,
+      location: project.location,
+      country: project.country,
+      capacityMw: project.capacityMw,
+    });
+    req.log.info({ projectId: project.id, resultCount: evidence.length }, "Project research completed");
+    res.json({ projectId: project.id, purpose: "project_corroboration", evidence });
+  } catch (err) {
+    req.log.error({ err, projectId: project.id }, "Project research failed");
+    res.status(502).json({ error: "Project research unavailable" });
+  } finally {
+    admission.release();
+  }
+});
+
 // PATCH /projects/:id
 router.patch("/projects/:id", requireAdmin, async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
