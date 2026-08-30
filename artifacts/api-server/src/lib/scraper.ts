@@ -57,6 +57,7 @@ import {
 } from "./source-repair-strategies";
 import { readAemoGenerationWorkbookRows } from "./aemo-workbook";
 import { parseSourceFallbackArray, sourceAcquisitionOutcome } from "./source-access-outcome";
+import { browseAiConfigurationProblem, runBrowseAiTask, type BrowseAiResult } from "./browse-ai-task";
 
 // ---------------------------------------------------------------------------
 // AltEnergy authenticated session
@@ -1733,17 +1734,6 @@ async function scrapeWithFirecrawl(
 // Browse.AI integration
 // ──────────────────────────────────────────────────────────────
 
-interface BrowseAiTaskResponse {
-  statusCode: number;
-  messageCode: string;
-  result?: {
-    id?: string;
-    status?: "successful" | "failed" | "running" | "pending";
-    capturedLists?: Record<string, Array<Record<string, string>>>;
-    capturedTexts?: Record<string, string>;
-  };
-}
-
 /** Column-name fragments Browse.AI robots use for each field (case-insensitive substring match). */
 const BA_NAME_COLS    = ["project name", "name", "title", "project", "development name"];
 const BA_CAP_COLS     = ["capacity", " mw", "size", "megawatt"];
@@ -1769,7 +1759,7 @@ function browseAiMatchCol(row: Record<string, string>, patterns: string[]): stri
  * Column names are defined by the robot configuration in the Browse.AI dashboard.
  */
 function parseBrowseAiResult(
-  result: NonNullable<BrowseAiTaskResponse["result"]>,
+  result: BrowseAiResult,
   source: ScrapeSource,
   pageUrl: string,
   startDate?: string,
@@ -1861,73 +1851,10 @@ async function scrapeWithBrowseAi(
   startDate?: string,
   endDate?: string,
 ): Promise<ScrapedProject[]> {
-  const apiKey = process.env.BROWSE_AI_API_KEY;
-  if (!apiKey) {
-    logger.warn({ source: source.name, url }, "BROWSE_AI_API_KEY not set — skipping Browse.AI source");
-    return [];
-  }
-
-  try {
-    // 1. Create task
-    const createResp = await fetch(`https://api.browse.ai/v2/robots/${robotId}/tasks`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ inputParameters: { originUrl: url } }),
-      signal: AbortSignal.timeout(15_000),
-    });
-
-    if (!createResp.ok) {
-      const body = await createResp.text().catch(() => "");
-      logger.warn({ status: createResp.status, robotId, url, body }, "Browse.AI task creation failed");
-      return [];
-    }
-
-    const createData = (await createResp.json()) as BrowseAiTaskResponse;
-    const taskId = createData.result?.id;
-    if (!taskId) {
-      logger.warn({ createData, robotId }, "Browse.AI: no task ID in creation response");
-      return [];
-    }
-
-    logger.info({ robotId, taskId, url, source: source.name }, "Browse.AI task created — polling");
-
-    // 2. Poll for completion (max 90 s, every 5 s = 18 attempts)
-    for (let attempt = 0; attempt < 18; attempt++) {
-      await new Promise((r) => setTimeout(r, 5_000));
-
-      const pollResp = await fetch(`https://api.browse.ai/v2/robots/${robotId}/tasks/${taskId}`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-        signal: AbortSignal.timeout(10_000),
-      });
-
-      if (!pollResp.ok) {
-        logger.warn({ status: pollResp.status, attempt, robotId, taskId }, "Browse.AI poll HTTP error — retrying");
-        continue;
-      }
-
-      const pollData = (await pollResp.json()) as BrowseAiTaskResponse;
-      const status = pollData.result?.status;
-
-      if (status === "successful") {
-        const results = parseBrowseAiResult(pollData.result!, source, url, startDate, endDate);
-        logger.info({ robotId, url, found: results.length, source: source.name }, "Browse.AI task complete");
-        return results;
-      }
-
-      if (status === "failed") {
-        logger.warn({ robotId, taskId, url, source: source.name }, "Browse.AI task failed");
-        return [];
-      }
-
-      logger.info({ attempt, status, robotId, taskId }, "Browse.AI task still running");
-    }
-
-    logger.warn({ robotId, taskId, url, source: source.name }, "Browse.AI task timed out after 90 s");
-    return [];
-  } catch (err) {
-    logger.warn({ err, robotId, url, source: source.name }, "Browse.AI scrape threw");
-    return [];
-  }
+  const result = await runBrowseAiTask(robotId, process.env.BROWSE_AI_API_KEY ?? "", url);
+  const projects = parseBrowseAiResult(result, source, url, startDate, endDate);
+  logger.info({ source: source.name, found: projects.length }, "Browse.AI task complete");
+  return projects;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -3584,14 +3511,25 @@ async function scrapeSource(
       const robotId = strategy.browseRobotIdEnvironmentKey
         ? process.env[strategy.browseRobotIdEnvironmentKey]?.trim()
         : undefined;
-      if (robotId && process.env.BROWSE_AI_API_KEY?.trim()) {
-        addUnique(await scrapeWithBrowseAi(robotId, source.searchUrl, source, startDate, endDate));
-        directSucceeded = projects.length > 0;
+      const configurationProblem = browseAiConfigurationProblem(robotId, process.env.BROWSE_AI_API_KEY);
+      let browseFailure = configurationProblem;
+      if (!configurationProblem && robotId) {
+        try {
+          addUnique(await scrapeWithBrowseAi(robotId, source.searchUrl, source, startDate, endDate));
+          directSucceeded = true;
+        } catch (err) {
+          failures.push(err);
+          logDirectSourceFailure(source.name, err);
+          browseFailure = "approved Browse.AI acquisition failed";
+        }
+      } else {
+        failures.push(new Error(configurationProblem));
+        logScanSourceOutcome(source.name, "extraction-failed", {
+          method: "browse-ai", reason: configurationProblem,
+        });
       }
       if (projects.length === 0) {
-        await useOpenAiFallback(robotId
-          ? "approved Browse.AI robot returned no qualifying projects"
-          : "approved Browse.AI robot is not configured");
+        await useOpenAiFallback(browseFailure ?? "approved Browse.AI robot returned no qualifying projects");
       }
     } else {
       if (source.feedUrl) {

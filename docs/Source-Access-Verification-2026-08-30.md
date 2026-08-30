@@ -57,3 +57,71 @@ After deployment, verify source-level outcomes and records, not just HTTP 200.
   worktree, whose package manifests and lockfile are unchanged from this base.
   `pnpm_config_verify_deps_before_run=warn` prevents pnpm 11 from reinstalling
   that shared tree merely because the worktree location changed.
+
+## Follow-up: live scan #101 and remaining work
+
+The authenticated verification scan on 30 August ran the deployed migration
+commit, not this patch. It completed in 608,398 ms: 34 sources, 868 found,
+100 new. Final acquisition diagnostics were 28 success, 5 extraction-failed,
+and 1 blocked. Acquisition counts are not unique eligible lineage counts.
+AltEnergy login succeeded, retrieving 2,371 inventory rows (564 accepted by
+the DB gate); combined news/inventory acquisition returned 581. LUVI returned
+204. No separate contact-enrichment request was initiated.
+
+The five zero-result sources were NSW Planning Portal, NSW Planning Renewable
+Energy, QLD Coordinator-General, NT Development Applications, and QLD Planning.
+They cannot be called inaccessible merely because a date-bounded search found
+nothing. This patch distinguishes valid empty output from errors without
+relaxing dates, capacity or project eligibility to manufacture results.
+
+NZ Environment still hit the HTTP-200 false-block defect fixed above. ARENA
+had the same HTML rejection but succeeded through RSS. AEMO's workbook was
+HTTP 403 but its scoped search fallback returned a record. Energy Magazine
+had a blocked HTML path while other acquisition returned records.
+
+### Browse.AI follow-up repairs
+
+- Missing API key, missing robot ID, valid empty results, and actual provider
+  failures now have distinct diagnostics. A successful empty robot execution
+  counts as successful acquisition, even if a later search fallback fails.
+- HTTP errors, malformed results, failed tasks and timeouts propagate into
+  per-source failure tracking; they no longer silently become empty arrays.
+- Search fallback is still attempted after robot failure. No source is removed.
+- The 90-second polling budget now includes creation, request time and delays;
+  request deadlines are capped by the remaining budget.
+- Upstream error response bodies are not logged. Six regression tests cover
+  configuration, empty results, structured records, failures, timeout and
+  no network calls without credentials.
+
+Follow-up validation: `pnpm -r --if-present test` passed 105 API + 5 frontend
+tests; `pnpm run typecheck` and `pnpm run build` passed. Existing Vite sourcemap
+warnings remain. The first sandboxed run could not resolve esbuild paths;
+the complete suite passed when rerun with approved filesystem access.
+
+### External prerequisites (not fixed by code)
+
+The four Browse.AI sources require a user-owned, approved account with robots
+trained for the exact existing official URLs and the table columns documented
+in scraper.ts. Configure secrets directly in the Railway secret store:
+
+- BROWSE_AI_API_KEY
+- BROWSE_AI_NZ_FAST_TRACK_ROBOT_ID
+- BROWSE_AI_NZ_EPA_FAST_TRACK_ROBOT_ID
+- BROWSE_AI_NZ_EPA_RMA_ROBOT_ID
+- BROWSE_AI_NZ_EPA_CONSULTATIONS_ROBOT_ID
+
+Do not paste secret values into a PR, report or chat. No connected Browse.AI
+management tool is available to create or inspect those robots here. All four
+search fallbacks returned records in scan #101, but do not prove complete
+coverage or functioning Browse.AI configuration.
+
+Publisher HTTP-403 restrictions require publisher-approved access (or an
+approved official export). They were not bypassed with proxies, forged browser
+identities, or challenge circumvention. Existing scoped fallbacks remain in
+place; no new source or broader search was added.
+
+Review and deployment are still required before this code changes live scans.
+PR #29 remains untouched, and neither PR is merged by this work. After account
+configuration and deployment, repeat a bounded scan and inspect direct and
+fallback diagnostics separately. Do not declare all-source access from an
+overall completed scan or a nonzero fallback result.
