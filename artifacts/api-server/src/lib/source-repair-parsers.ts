@@ -209,12 +209,14 @@ export function classifySourceResponse(
       "just a moment",
       "enable javascript and cookies to continue",
       "request unsuccessful",
-      "incapsula",
       "azure waf",
       "cf-chl-",
     ].some((marker) => lower.includes(marker))
   )
     return "blocked";
+  // Normal public pages also load /_Incapsula_Resource scripts. Only the
+  // challenge iframe is a blocking signal; a vendor name is not one.
+  if (/<iframe\b[^>]*src=["'][^"']*\/_incapsula_resource/i.test(body)) return "blocked";
   if (status < 200 || status >= 300) return "http-error";
   if (
     /image\//i.test(contentType) ||

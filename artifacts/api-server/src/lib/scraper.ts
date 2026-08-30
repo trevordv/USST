@@ -56,6 +56,7 @@ import {
   validateSourceRepairStrategies,
 } from "./source-repair-strategies";
 import { readAemoGenerationWorkbookRows } from "./aemo-workbook";
+import { parseSourceFallbackArray, sourceAcquisitionOutcome } from "./source-access-outcome";
 
 // ---------------------------------------------------------------------------
 // AltEnergy authenticated session
@@ -307,6 +308,9 @@ function logScanSourceOutcome(
     url?: string;
     reason?: string;
     missing?: string[];
+    directSucceeded?: boolean;
+    fallbackSucceeded?: boolean;
+    failureCount?: number;
     err?: unknown;
   } = {},
 ): void {
@@ -3288,7 +3292,7 @@ async function scrapeWithChatGpt(
     logScanSourceOutcome(source.name, "skipped-missing-credentials", {
       missing: ["OPENAI_API_KEY"],
     });
-    return [];
+    throw new Error("Source fallback unavailable: OPENAI_API_KEY is not configured");
   }
 
   try {
@@ -3346,14 +3350,7 @@ Rules:
       }
     }
 
-    // Strip markdown fences, find JSON array
-    text = text.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
-    const start = text.indexOf("[");
-    const end = text.lastIndexOf("]");
-    if (start === -1 || end === -1) return [];
-
-    const parsed = JSON.parse(text.slice(start, end + 1)) as GptSourceProject[];
-    if (!Array.isArray(parsed)) return [];
+    const parsed = parseSourceFallbackArray<GptSourceProject>(text);
 
     const results: ScrapedProject[] = [];
     for (const r of parsed) {
@@ -3392,7 +3389,7 @@ Rules:
     return eligibleResults;
   } catch (err) {
     logger.warn({ err, source: source.name }, "ChatGPT fallback failed");
-    return [];
+    throw err;
   }
 }
 
@@ -3478,7 +3475,7 @@ async function scrapeEpbcOfficialLayer(
   return sourceRepairCandidatesToProjects(candidates, source, startDate, endDate);
 }
 
-function finalFailureOutcome(failures: readonly unknown[]): ScanSourceOutcome {
+function finalFailureOutcome(failures: readonly unknown[]): "blocked" | "timeout" | "extraction-failed" {
   if (failures.some((error) => error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError"))) {
     return "timeout";
   }
@@ -3514,6 +3511,7 @@ async function scrapeSource(
   const strategy = getSourceRepairStrategy(source.name);
   let directSucceeded = false;
   let fallbackUsed = false;
+  let fallbackSucceeded = false;
 
   logScanSourceOutcome(source.name, "attempted", {
     method: strategy.mode,
@@ -3535,6 +3533,7 @@ async function scrapeSource(
       reason,
     });
     addUnique(await scrapeWithChatGpt(source, startDate, endDate));
+    fallbackSucceeded = true;
   }
 
   try {
@@ -3633,15 +3632,19 @@ async function scrapeSource(
     logger.warn({ err, source: source.name }, "Failed to scrape source");
   }
 
-  const outcome: ScanSourceOutcome = projects.length > 0
-    ? "success"
-    : directSucceeded
-      ? "empty"
-      : finalFailureOutcome(failures);
+  const outcome = sourceAcquisitionOutcome({
+    projectCount: projects.length,
+    directSucceeded,
+    fallbackSucceeded,
+    failureOutcome: finalFailureOutcome(failures),
+  });
   logScanSourceOutcome(source.name, outcome, {
     projectCount: projects.length,
     durationMs: Math.round(performance.now() - startedAt),
     method: fallbackUsed ? `${strategy.mode}+openai-web-search` : strategy.mode,
+    directSucceeded,
+    fallbackSucceeded,
+    failureCount: failures.length,
     reason: outcome === "empty" ? "no qualifying projects" : undefined,
     err: outcome === "extraction-failed" ? failures.at(-1) : undefined,
   });
