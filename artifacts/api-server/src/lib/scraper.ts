@@ -20,7 +20,7 @@
  * (POST /projects/enrich-contacts), never during scanning.
  */
 
-import { db, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable, pvhContactsTable, type PvhContact } from "@workspace/db";
+import { db, pool, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable, pvhContactsTable, type PvhContact } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger";
 import {
@@ -58,6 +58,13 @@ import {
 import { readAemoGenerationWorkbookRows } from "./aemo-workbook";
 import { parseSourceFallbackArray, sourceAcquisitionOutcome } from "./source-access-outcome";
 import { browseAiConfigurationProblem, runBrowseAiTask, type BrowseAiResult } from "./browse-ai-task";
+import { cachedSourceFallback, hashMeaningfulSourceContent, hashSourceContent } from "./ai-source-cache";
+import { recordOpenAiCacheHit } from "./openai-usage";
+import { OpenAiQualityError, runOpenAiEscalation } from "./openai-escalation";
+import {
+  assertSourceDocument, failedExtractionOutcome, paidSourceFallbackReason,
+  successfulExtractionOutcome, SourceExtractionError, type ExtractionAttempt, type ExtractionOutcome,
+} from "./source-extraction-outcome";
 
 // ---------------------------------------------------------------------------
 // AltEnergy authenticated session
@@ -311,6 +318,9 @@ function logScanSourceOutcome(
     missing?: string[];
     directSucceeded?: boolean;
     fallbackSucceeded?: boolean;
+    fallbackUsed?: boolean;
+    extractionOutcomes?: ExtractionAttempt[];
+    resultOutcome?: ExtractionOutcome;
     failureCount?: number;
     err?: unknown;
   } = {},
@@ -655,6 +665,7 @@ class SourceRequestError extends Error {
     readonly problem: SourceResponseProblem,
     readonly url: string,
     readonly status?: number,
+    readonly contentHash?: string,
   ) {
     super(message);
     this.name = "SourceRequestError";
@@ -682,6 +693,7 @@ async function fetchWithTimeout(url: string, timeoutMs = 15000): Promise<string>
         problem,
         response.url || url,
         response.status,
+        hashMeaningfulSourceContent(text),
       );
     }
     return text;
@@ -1852,9 +1864,13 @@ async function scrapeWithBrowseAi(
   endDate?: string,
 ): Promise<ScrapedProject[]> {
   const result = await runBrowseAiTask(robotId, process.env.BROWSE_AI_API_KEY ?? "", url);
-  const projects = parseBrowseAiResult(result, source, url, startDate, endDate);
-  logger.info({ source: source.name, found: projects.length }, "Browse.AI task complete");
-  return projects;
+  try {
+    const projects = parseBrowseAiResult(result, source, url, startDate, endDate);
+    logger.info({ source: source.name, found: projects.length }, "Browse.AI task complete");
+    return projects;
+  } catch {
+    throw new SourceExtractionError("parse-failed", "Browse.AI result could not be parsed");
+  }
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -2057,38 +2073,41 @@ Rules:
 Newsletter text:
 ${text.slice(0, 12000)}`;
 
-    const response = await gpt.responses.create({
-      model: "gpt-5.6-sol",
-      tools: [] as { type: string }[],
-      input: prompt,
-      max_output_tokens: 4096,
-    });
-
-    let raw = response.output_text ?? "";
-    if (!raw && Array.isArray(response.output)) {
-      for (const block of response.output) {
-        if ((block as { type: string; text?: string }).type === "message") {
-          raw = (block as { type: string; text?: string }).text ?? "";
-          break;
+    const parsed = await runOpenAiEscalation({ context: {
+      operation: "watt_news_extract", sourceName: "AltEnergy – Watts News",
+      sourceUrl: newsletterUrl, sourceIdentifier: newsletterDate,
+    }, request: model => gpt.responses.create({
+      model, tools: [] as { type: string }[], input: prompt, max_output_tokens: 4096,
+    }), validate: response => {
+      let raw = response.output_text ?? "";
+      if (!raw && Array.isArray(response.output)) {
+        for (const block of response.output) {
+          if ((block as { type: string; text?: string }).type === "message") {
+            raw = (block as { type: string; text?: string }).text ?? "";
+            break;
+          }
         }
       }
-    }
-
-    raw = raw.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
-    const start = raw.indexOf("[");
-    const end = raw.lastIndexOf("]");
-    if (start === -1 || end === -1) return [];
-
-    const parsed = JSON.parse(raw.slice(start, end + 1)) as Array<{
-      name?: string;
-      description?: string;
-      capacity_mw?: number | null;
-      developer?: string | null;
-      location?: string | null;
-      country?: string;
-      status?: string;
-    }>;
-    if (!Array.isArray(parsed)) return [];
+      raw = raw.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+      const start = raw.indexOf("[");
+      const end = raw.lastIndexOf("]");
+      if (start === -1 || end === -1) {
+        throw new OpenAiQualityError("malformed_output", "Watts News response did not contain a JSON array");
+      }
+      try {
+        const rows: unknown = JSON.parse(raw.slice(start, end + 1));
+        if (!Array.isArray(rows) || rows.some(row => !row || typeof row !== "object" || Array.isArray(row))) {
+          throw new OpenAiQualityError("schema_invalid", "Watts News response was not a project-object array");
+        }
+        return rows as Array<{
+          name?: string; description?: string; capacity_mw?: number | null;
+          developer?: string | null; location?: string | null; country?: string; status?: string;
+        }>;
+      } catch (error) {
+        if (error instanceof OpenAiQualityError) throw error;
+        throw new OpenAiQualityError("malformed_output", "Watts News response contained malformed JSON");
+      }
+    }, resultCount: rows => rows.length });
 
     return parsed
       .filter((r) => r.name)
@@ -3208,23 +3227,17 @@ interface GptSourceProject {
 
 /**
  * ChatGPT web-search fallback for a single source.
- * Called when standard HTML/RSS parsing returns 0 projects.
+ * Admitted only for configured extraction failures or explicit AI-repair paths.
+ * Cached raw responses still pass the same current eligibility gates below.
  */
 async function scrapeWithChatGpt(
   source: ScrapeSource,
   startDate?: string,
   endDate?: string,
+  contentHash = hashSourceContent("no captured source content"),
+  contentObserved = false,
 ): Promise<ScrapedProject[]> {
-  if (!process.env.OPENAI_API_KEY?.trim()) {
-    logScanSourceOutcome(source.name, "skipped-missing-credentials", {
-      missing: ["OPENAI_API_KEY"],
-    });
-    throw new Error("Source fallback unavailable: OPENAI_API_KEY is not configured");
-  }
-
   try {
-    const { openai } = await import("@workspace/integrations-openai-ai-server");
-    const gpt = openai as unknown as GptScraperOpenAI;
     const today = new Date().toISOString().slice(0, 10);
     const strategy = getSourceRepairStrategy(source.name);
     const officialHosts = [...new Set(strategy.officialUrls.map((url) => new URL(url).hostname))];
@@ -3233,24 +3246,16 @@ async function scrapeWithChatGpt(
       ? ` announced between ${startDate ?? "any date"} and ${endDate ?? today}`
       : "";
 
-    const prompt = `Today is ${today}. Search "${source.name}" (${source.searchUrl}) for utility-scale solar energy or solar+BESS hybrid projects in Australia or New Zealand${dateClause}.
+    const todayContext = startDate && endDate ? "" : `Today is ${today}. `;
+    const prompt = `${todayContext}Search "${source.name}" (${source.searchUrl}) for utility-scale solar energy or solar+BESS hybrid projects in Australia or New Zealand${dateClause}.
 
 Find all solar/PV projects ≥5 MW that have been announced, approved, or are under assessment. Include the project's MW capacity if stated.
 
-Return ONLY a valid JSON array (no prose, no markdown fences):
-[
-  {
-    "name": "Example Solar Farm",
-    "description": "150 MW solar farm in regional NSW",
-    "capacity_mw": 150,
-    "developer": "Acme Energy Pty Ltd",
-    "location": "Regional NSW",
-    "country": "AU",
-    "status": "announced",
-    "source_url": "https://example.com/project/example-solar-farm",
-    "announced_date": "2024-03-15"
-  }
-]
+Return ONLY a valid compact JSON array. No prose, no markdown fences, no chain-of-thought or reasoning in the response.
+Include only these parser fields: name, description, capacity_mw, developer, location, country, status, source_url, announced_date.
+Keep descriptions to one short factual phrase; avoid repeating source text or quoting article passages. Do not add explanations or extra fields. Omit unnecessary whitespace.
+Example shape:
+[{"name":"Example Solar Farm","description":"150 MW solar farm in regional NSW","capacity_mw":150,"developer":"Acme Energy Pty Ltd","location":"Regional NSW","country":"AU","status":"announced","source_url":"https://example.com/project/example-solar-farm","announced_date":"2024-03-15"}]
 
 Rules:
 - Search and cite ONLY these approved official hostnames: ${officialHosts.join(", ")}
@@ -3261,27 +3266,62 @@ Rules:
 - source_url: direct URL to the specific project page/article if known, otherwise use ${source.searchUrl}
 - announced_date: YYYY-MM-DD format, null if unknown
 - Exclude wind-only projects, mining, roads, housing
-- Return [] if nothing relevant found`;
+- Return [] when no valid projects are found`;
 
-    const response = await gpt.responses.create({
-      model: "gpt-5.6-sol",
-      tools: [{ type: "web_search_preview" }],
-      input: prompt,
-      max_output_tokens: 8192,
-    });
-
-    let text = response.output_text ?? "";
-    if (!text && Array.isArray(response.output)) {
-      for (const block of response.output) {
-        if (block.type === "message" && block.text) { text = block.text; break; }
-      }
-    }
-
-    const parsed = parseSourceFallbackArray<GptSourceProject>(text);
+    const model = "gpt-5.6-luna";
+    let cacheHit = false;
+    const parsed = await cachedSourceFallback<GptSourceProject>(
+      pool,
+      {
+        sourceName: source.name, sourceUrl: source.searchUrl, contentHash,
+        startDate, endDate, model, contentObserved,
+        promptHash: hashSourceContent(JSON.stringify({ prompt, maxOutputTokens: 2500, tool: "web_search_preview", escalation: "luna-terra-sol-v1" })),
+      },
+      async () => {
+        if (!process.env.OPENAI_API_KEY?.trim()) {
+          logScanSourceOutcome(source.name, "skipped-missing-credentials", {
+            missing: ["OPENAI_API_KEY"],
+          });
+          throw new Error("Source fallback unavailable: OPENAI_API_KEY is not configured");
+        }
+        const { openai } = await import("@workspace/integrations-openai-ai-server");
+        const gpt = openai as unknown as GptScraperOpenAI;
+        return runOpenAiEscalation({ context: {
+          operation: "source_fallback", sourceName: source.name,
+          sourceUrl: source.searchUrl,
+          metadata: { contentHash, startDate, endDate },
+        }, request: attemptModel => gpt.responses.create({
+          model: attemptModel, tools: [{ type: "web_search_preview" }], input: prompt, max_output_tokens: 2500,
+        }), validate: response => {
+          let text = response.output_text ?? "";
+          if (!text && Array.isArray(response.output)) {
+            for (const block of response.output) {
+              if (block.type === "message" && block.text) { text = block.text; break; }
+            }
+          }
+          try { return parseSourceFallbackArray<GptSourceProject>(text); }
+          catch (error) {
+            const reason = error instanceof Error && /invalid project array/i.test(error.message)
+              ? "schema_invalid" : "malformed_output";
+            throw new OpenAiQualityError(reason, error instanceof Error ? error.message : "Invalid source response");
+          }
+        }, resultCount: rows => rows.length });
+      },
+      value => parseSourceFallbackArray<GptSourceProject>(JSON.stringify(value)),
+      (event, fields) => {
+        if (event === "ai_source_cache_hit") cacheHit = true;
+        logger.info({ event, ...fields }, "AI source cache");
+      },
+    );
+    if (cacheHit) await recordOpenAiCacheHit({
+      operation: "source_fallback", sourceName: source.name,
+      sourceUrl: source.searchUrl, model, metadata: { contentHash, startDate, endDate },
+    }, parsed.length);
 
     const results: ScrapedProject[] = [];
     for (const r of parsed) {
       if (!r.name) continue;
+      if (r.country !== "AU" && r.country !== "NZ") continue;
       const cap = typeof r.capacity_mw === "number" ? r.capacity_mw : null;
       let sourceUrl = source.searchUrl;
       if (r.source_url) {
@@ -3366,16 +3406,19 @@ async function scrapeAemoGenerationWorkbook(
       response.status,
     );
   }
-  const rows = await readAemoGenerationWorkbookRows(
-    Buffer.from(await response.arrayBuffer()),
-  );
-  const today = new Date().toISOString().slice(0, 10);
-  return sourceRepairCandidatesToProjects(
-    parseAemoGenerationRows(rows, AEMO_GENERATION_WORKBOOK_URL, today),
-    source,
-    startDate,
-    endDate,
-  );
+  const workbook = Buffer.from(await response.arrayBuffer());
+  try {
+    const rows = await readAemoGenerationWorkbookRows(workbook);
+    const today = new Date().toISOString().slice(0, 10);
+    return sourceRepairCandidatesToProjects(
+      parseAemoGenerationRows(rows, AEMO_GENERATION_WORKBOOK_URL, today),
+      source,
+      startDate,
+      endDate,
+    );
+  } catch {
+    throw new SourceExtractionError("parse-failed", "AEMO workbook could not be parsed");
+  }
 }
 
 async function scrapeEpbcOfficialLayer(
@@ -3435,6 +3478,8 @@ async function scrapeSource(
   const projects: ScrapedProject[] = [];
   const seenUrls = new Set<string>();
   const failures: unknown[] = [];
+  const attempts: ExtractionAttempt[] = [];
+  const contentFingerprints = new Map<string, string>();
   const strategy = getSourceRepairStrategy(source.name);
   let directSucceeded = false;
   let fallbackUsed = false;
@@ -3453,121 +3498,108 @@ async function scrapeSource(
     }
   }
 
-  async function useOpenAiFallback(reason: string): Promise<void> {
-    fallbackUsed = true;
-    logScanSourceOutcome(source.name, "fallback-used", {
-      method: "openai-web-search",
-      reason,
-    });
-    addUnique(await scrapeWithChatGpt(source, startDate, endDate));
-    fallbackSucceeded = true;
+  function recordAttempt(attempt: ExtractionAttempt): void {
+    attempts.push(attempt);
+    logger.info({ source: source.name, ...attempt }, "Source extraction attempt");
   }
 
-  try {
-    if (strategy.mode === "openai-first") {
-      await useOpenAiFallback(
-        "official direct access is unreliable or does not expose extractable project rows",
-      );
-    } else if (strategy.mode === "aemo-workbook") {
-      try {
-        addUnique(await scrapeAemoGenerationWorkbook(source, startDate, endDate));
-        directSucceeded = true;
-      } catch (err) {
-        failures.push(err);
-        logDirectSourceFailure(source.name, err);
-        logger.warn({ err, source: source.name }, "AEMO official workbook extraction failed");
-        await useOpenAiFallback("official AEMO workbook was unavailable or changed shape");
-      }
-    } else if (strategy.mode === "epbc-arcgis") {
-      try {
-        addUnique(await scrapeEpbcOfficialLayer(source, startDate, endDate));
-        directSucceeded = true;
-      } catch (err) {
-        failures.push(err);
-        logDirectSourceFailure(source.name, err);
-        logger.warn({ err, source: source.name }, "EPBC official ArcGIS extraction failed");
-        await useOpenAiFallback("official EPBC ArcGIS feature layer was unavailable");
-      }
-    } else if (strategy.mode === "structured-html") {
-      const urls = [source.searchUrl, ...(source.extraUrls ?? [])];
-      const results = await Promise.allSettled(urls.map((url) => fetchForSource(source, url)));
-      for (let index = 0; index < results.length; index++) {
-        const result = results[index];
-        if (result.status === "fulfilled") {
-          directSucceeded = true;
-          addUnique(sourceRepairCandidatesToProjects(
-            parseOfficialProjectHtml(result.value, urls[index]),
-            source,
-            startDate,
-            endDate,
-          ));
-        } else {
-          failures.push(result.reason);
-          logDirectSourceFailure(source.name, result.reason);
-          logger.warn({ err: result.reason, source: source.name, url: urls[index] }, "Structured HTML fetch failed");
-        }
-      }
-    } else if (strategy.mode === "browse-ai-or-openai") {
-      const robotId = strategy.browseRobotIdEnvironmentKey
-        ? process.env[strategy.browseRobotIdEnvironmentKey]?.trim()
-        : undefined;
-      const configurationProblem = browseAiConfigurationProblem(robotId, process.env.BROWSE_AI_API_KEY);
-      let browseFailure = configurationProblem;
-      if (!configurationProblem && robotId) {
-        try {
-          addUnique(await scrapeWithBrowseAi(robotId, source.searchUrl, source, startDate, endDate));
-          directSucceeded = true;
-        } catch (err) {
-          failures.push(err);
-          logDirectSourceFailure(source.name, err);
-          browseFailure = "approved Browse.AI acquisition failed";
-        }
-      } else {
-        failures.push(new Error(configurationProblem));
-        logScanSourceOutcome(source.name, "extraction-failed", {
-          method: "browse-ai", reason: configurationProblem,
-        });
-      }
-      if (projects.length === 0) {
-        await useOpenAiFallback(browseFailure ?? "approved Browse.AI robot returned no qualifying projects");
-      }
+  async function extract<T>(
+    method: string,
+    url: string,
+    fetchInput: () => Promise<T>,
+    parse: (input: T) => ScrapedProject[],
+  ): Promise<void> {
+    let phase: "fetch" | "parse" = "fetch";
+    try {
+      const input = await fetchInput();
+      if (typeof input === "string") contentFingerprints.set(url, hashMeaningfulSourceContent(input));
+      phase = "parse";
+      const items = parse(input);
+      addUnique(items);
+      directSucceeded = true; // A fetch alone is not successful extraction.
+      recordAttempt({ method, url, outcome: successfulExtractionOutcome(items.length) });
+    } catch (err) {
+      failures.push(err);
+      logDirectSourceFailure(source.name, err);
+      if (err instanceof SourceRequestError && err.contentHash) contentFingerprints.set(url, err.contentHash);
+      recordAttempt({
+        method, url, outcome: failedExtractionOutcome(err, phase),
+        reason: err instanceof Error ? err.message : "source extraction failed",
+      });
+    }
+  }
+
+  if (strategy.mode === "openai-first") {
+    recordAttempt({
+      method: strategy.mode, url: source.searchUrl,
+      outcome: "requires-js-or-ai-repair",
+      reason: "approved source strategy: direct access is unreliable or lacks deterministically extractable rows",
+    });
+  } else if (strategy.mode === "aemo-workbook") {
+    await extract("aemo-workbook", AEMO_GENERATION_WORKBOOK_URL,
+      () => scrapeAemoGenerationWorkbook(source, startDate, endDate), items => items);
+  } else if (strategy.mode === "epbc-arcgis") {
+    await extract("epbc-arcgis", source.searchUrl,
+      () => scrapeEpbcOfficialLayer(source, startDate, endDate), items => items);
+  } else if (strategy.mode === "browse-ai-or-openai") {
+    const robotId = strategy.browseRobotIdEnvironmentKey
+      ? process.env[strategy.browseRobotIdEnvironmentKey]?.trim() : undefined;
+    const problem = browseAiConfigurationProblem(robotId, process.env.BROWSE_AI_API_KEY);
+    if (!problem && robotId) {
+      await extract("browse-ai", source.searchUrl,
+        () => scrapeWithBrowseAi(robotId, source.searchUrl, source, startDate, endDate), items => items);
     } else {
-      if (source.feedUrl) {
-        try {
-          const xml = await fetchForSource(source, source.feedUrl);
-          directSucceeded = true;
-          addUnique(parseRssFeed(xml, source, startDate, endDate));
-          logger.info({ source: source.name, rssCount: projects.length }, "RSS scraped");
-        } catch (err) {
-          failures.push(err);
-          logDirectSourceFailure(source.name, err);
-          logger.warn({ err, source: source.name, url: source.feedUrl }, "RSS fetch failed");
-        }
-      }
-
-      const htmlUrls = [source.searchUrl, ...(source.extraUrls ?? [])];
-      const htmlResults = await Promise.allSettled(
-        htmlUrls.map((url) => fetchForSource(source, url)),
-      );
-      for (let index = 0; index < htmlResults.length; index++) {
-        const result = htmlResults[index];
-        if (result.status === "fulfilled") {
-          directSucceeded = true;
-          addUnique(parseHtmlPage(result.value, source, startDate, endDate));
-        } else {
-          failures.push(result.reason);
-          logDirectSourceFailure(source.name, result.reason);
-          logger.warn({ err: result.reason, url: htmlUrls[index], source: source.name }, "HTML URL fetch failed");
-        }
-      }
+      failures.push(new Error(problem));
+      recordAttempt({
+        method: "browse-ai", url: source.searchUrl,
+        outcome: "requires-js-or-ai-repair", reason: problem,
+      });
     }
-
-    if (projects.length === 0 && strategy.fallback === "openai" && !fallbackUsed) {
-      await useOpenAiFallback("official direct extraction returned no qualifying projects");
+  } else {
+    if (strategy.mode !== "structured-html" && source.feedUrl) {
+      await extract("rss", source.feedUrl, () => fetchForSource(source, source.feedUrl!), xml => {
+        assertSourceDocument(xml, "rss");
+        return parseRssFeed(xml, source, startDate, endDate);
+      });
     }
-  } catch (err) {
-    failures.push(err);
-    logger.warn({ err, source: source.name }, "Failed to scrape source");
+    const format = strategy.mode === "structured-html" ? "structured-html" : "html";
+    // Preserve every configured HTML path even after successful RSS extraction.
+    const urls = [source.searchUrl, ...(source.extraUrls ?? [])];
+    const fetched = await Promise.allSettled(urls.map(url => fetchForSource(source, url)));
+    // Parse in configuration order to preserve first-URL-wins deduplication.
+    for (let index = 0; index < urls.length; index++) {
+      const url = urls[index];
+      await extract(format, url, async () => {
+        const result = fetched[index];
+        if (result.status === "rejected") throw result.reason;
+        return result.value;
+      }, html => {
+        assertSourceDocument(html, format);
+        return format === "structured-html"
+          ? sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, url), source, startDate, endDate)
+          : parseHtmlPage(html, source, startDate, endDate);
+      });
+    }
+  }
+
+  const fallbackReason = paidSourceFallbackReason(attempts, strategy.fallback !== "none");
+  if (fallbackReason) {
+    fallbackUsed = true;
+    logScanSourceOutcome(source.name, "fallback-used", {
+      method: "openai-web-search", reason: fallbackReason,
+      extractionOutcomes: attempts,
+    });
+    try {
+      const contentHash = hashSourceContent(JSON.stringify(attempts.map(attempt => ({
+        method: attempt.method, url: attempt.url, outcome: attempt.outcome,
+        contentHash: contentFingerprints.get(attempt.url ?? "") ?? null,
+      }))));
+      addUnique(await scrapeWithChatGpt(source, startDate, endDate, contentHash, contentFingerprints.size > 0));
+      fallbackSucceeded = true;
+    } catch (err) {
+      failures.push(err);
+      logger.warn({ err, source: source.name }, "Source AI repair failed");
+    }
   }
 
   const outcome = sourceAcquisitionOutcome({
@@ -3582,8 +3614,14 @@ async function scrapeSource(
     method: fallbackUsed ? `${strategy.mode}+openai-web-search` : strategy.mode,
     directSucceeded,
     fallbackSucceeded,
+    fallbackUsed,
+    extractionOutcomes: attempts,
+    resultOutcome: outcome === "success" || outcome === "empty"
+      ? successfulExtractionOutcome(projects.length) : undefined,
     failureCount: failures.length,
-    reason: outcome === "empty" ? "no qualifying projects" : undefined,
+    reason: outcome === "empty" && !fallbackUsed
+      ? "success-zero-results: normal extraction completed; no paid AI fallback"
+      : outcome === "empty" ? "AI repair completed with no qualifying projects" : undefined,
     err: outcome === "extraction-failed" ? failures.at(-1) : undefined,
   });
   return projects;

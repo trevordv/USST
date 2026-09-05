@@ -35,7 +35,8 @@ has not been freshly retested.
 
 ## Scope and verification limits
 
-This patch changes response classification and failure reporting only. It does
+This patch changes response classification, failure reporting and evidence-based
+paid fallback admission. It does
 not change source membership, eligibility rules, inventory semantics, dates,
 the API contract, database schema, authentication, or PR #29.
 
@@ -83,7 +84,7 @@ had a blocked HTML path while other acquisition returned records.
 
 - Missing API key, missing robot ID, valid empty results, and actual provider
   failures now have distinct diagnostics. A successful empty robot execution
-  counts as successful acquisition, even if a later search fallback fails.
+  counts as successful acquisition and does not trigger a paid search fallback.
 - HTTP errors, malformed results, failed tasks and timeouts propagate into
   per-source failure tracking; they no longer silently become empty arrays.
 - Search fallback is still attempted after robot failure. No source is removed.
@@ -125,3 +126,149 @@ PR #29 remains untouched, and neither PR is merged by this work. After account
 configuration and deployment, repeat a bounded scan and inspect direct and
 fallback diagnostics separately. Do not declare all-source access from an
 overall completed scan or a nonzero fallback result.
+
+## Evidence-based paid fallback admission
+
+Each normal extraction path logs one of `success-with-results`,
+`success-zero-results`, `fetch-failed`, `parse-failed`, `content-unusable`, or
+`requires-js-or-ai-repair`. A fetch is not successful extraction until its
+parser completes. Input checks distinguish valid empty RSS/HTML from empty
+documents, incomplete RSS, JS-only shells and unsupported parser structures.
+Project count is never used as evidence of a parser failure.
+
+When all paths succeed with zero results, OpenAI is not called. When a path
+returns results, the existing no-supplement behaviour is preserved. If no path
+returns results and a configured path genuinely fails, the approved fallback
+may repair it; a successful empty sibling does not hide that failure. All
+configured paths still run, and URL deduplication keeps configuration order.
+
+Sources explicitly registered as OpenAI-first retain their approved repair
+strategy and log it as the admission reason. Browse.AI still runs first when
+configured: valid empty output stops without OpenAI, while missing configuration
+or failure can invoke its configured fallback. Dedicated AltEnergy/LUVI paths
+and Firecrawl helper behaviour are unchanged.
+
+Existing aggregate outcome names are retained for compatibility. Per-path
+`extractionOutcomes`, `fallbackUsed`, `resultOutcome`, and the logged repair
+reason make zero-result runs and paid repairs distinguishable for cost audits.
+These changes do not alter eligibility, dates, scoring or rule governance.
+
+## Persistent paid-source cache
+
+`ai_source_fallback_cache` stores the raw structured source-fallback array,
+including successful `[]`, before project filtering. Both fresh and cached
+arrays pass the same parser and current country, capacity, technology, date and
+official-source gates. Cache entries are not eligibility decisions. Newsletter,
+authenticated AltEnergy/LUVI, Browse.AI and Firecrawl paths are unchanged.
+
+The SHA-256 key covers source name, exact source URL, observed-content
+fingerprint, optional start/end dates (null differs from a supplied date), model,
+full prompt/request-settings hash and cache schema version. Cache version 2 uses
+a meaningful-content fingerprint for each captured page/feed: canonical JSON,
+or normalised visible document text plus links and valid JSON-LD. It ignores
+whitespace, comments, presentation styles, executable scripts, metadata/form
+controls, fragments and common tracking parameters, while text, link and
+structured-data changes produce a new hash. Secret-like JSON fields are removed
+before hashing. Request headers, cookies, credentials and sessions are never
+inputs; neither raw content nor fingerprints are logged.
+
+The combined fingerprint covers every attempted path's URL, method, outcome and
+meaningful body hash, including rejected HTTP bodies where available. No source
+bodies are stored. Prompt changes (including today's date and official hostname
+restrictions) also invalidate previous entries. Deterministic fetch and parsing
+still run on every scan; hashing only controls the subsequent paid fallback.
+
+AI-first sources and transport failures do not supply a fresh source body: their
+key explicitly represents the acquisition context with an absent body hash,
+not a claim that remote content is unchanged. Those entries expire after six
+hours without sliding expiry on hits. Entries backed by observed meaningful
+content do not expire: changed content, date window, prompt/model or cache version
+selects a different key. This makes an unchanged bounded page reuse its prior
+valid result, including `[]`, without periodically repaying for the same work.
+Bounded prompts omit volatile “today” text so identical explicit windows keep the
+same request hash; open-ended windows retain the date context they need.
+
+A PostgreSQL transaction-scoped advisory lock serializes each key across API
+processes; the unique cache key and upsert additionally prevent duplicate rows.
+The connection/transaction remains held during a cache miss's paid request;
+other same-key callers wait up to 120 seconds for the lock. Failures roll back,
+release the connection and are not cached as empty successes. Cache outages fail
+closed instead of silently causing uncached repeat spend. This cannot guarantee
+exactly-once billing if a process dies after OpenAI responds but before commit.
+
+Structured events are `ai_source_cache_hit`, `ai_source_cache_miss`,
+`ai_source_cache_write`, `ai_source_cache_empty_result` and
+`ai_source_cache_error`. Empty-result events distinguish reads from writes via
+`cached`. The existing `fallbackUsed` means the repair path was admitted; a cache
+hit does not represent another paid request. Hits update `last_used_at` only.
+
+Apply `20260831114721_ai_source_fallback_cache.sql` before deploying this code.
+The additive migration changes no project/scan/learning tables. RLS is enabled;
+anon/authenticated have no table or sequence privileges, and only the backend
+service role (or database owner) may read/write the cache. Expired entries are
+ignored and refreshed in place; distinct historical keys are retained for audit
+and can be removed later by an operator without affecting project data.
+
+### Cache validation (2026-08-31)
+
+- Applied cache-only migration version `20260831114721` to connected USST
+  Supabase project `iynofxdcuvsdbmnojfzp`; the local filename matches its history.
+- Live PostgreSQL checks passed for empty JSON persistence, freshness/expiry,
+  advisory-lock availability, unique-key rejection, upsert, count/date checks,
+  RLS and backend-only privileges. Test inserts were rolled back (zero remaining).
+- Full suite: 137 API + 5 frontend tests passed. Typecheck and build passed;
+  existing Vite sourcemap and shared-dependency sync warnings remain.
+- Cache regression coverage includes hit/miss/empty, all key dimensions,
+  expiration, malformed/error results, cache outage, fetched-content hashing,
+  current eligibility gates, and eight concurrent callers producing one paid
+  invocation/one entry using a deterministic SQL-client double. No live OpenAI
+  request was needed for validation.
+- Supabase's informational [RLS enabled without policies notice](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy)
+  is intentional for this backend-only table: application users have no access.
+  Its separate [leaked-password protection warning](https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection)
+  is an existing Auth setting, outside this cache change, and was not modified.
+- Only the database migration is live. Application changes remain local pending
+  review/deployment; no PR was merged.
+
+## EPBC unresolved-first enrichment
+
+The former EPBC fallback constructed eight state queries, one query for every
+year band in the requested range, and one current-assessment query, then launched
+all of them concurrently. The observed `queryCount: 18` therefore represented
+eight states + nine annual bands + one latest sweep. It also ran this discovery
+fan-out as optional supplementation after a successful ArcGIS response.
+
+The refactored path starts with the official DCCEEW ArcGIS feature layer, applies
+its existing year and Energy-category filters, normalises records, deduplicates
+by EPBC number, and merges previously persisted EPBC detail. A record is resolved
+without AI when its technology is decisive and, for solar, capacity is known;
+clear sub-5 MW solar, wind, transmission and standalone BESS records therefore
+do not consume AI. Only unknown technology or solar with unknown capacity enters
+the unresolved queue. Complete official results use zero OpenAI calls.
+
+Unresolved records are grouped into compact batches of at most 20 official EPBC
+numbers. Thus the request bound is `ceil(unresolved / 20)`, derived from actual
+unresolved work rather than states or years, and batches execute sequentially
+rather than as a parallel fan-out. Each batch allows only its requested EPBC
+numbers back into the merge. It searches only the official EPBC portal and
+DCCEEW spatial host; AI-only records are never appended after ArcGIS succeeds.
+
+Each batch uses the persistent source cache keyed by the meaningful official
+record payload, exact date window, model and prompt. Cached data, including an
+empty array, consumes zero new OpenAI calls. The same parser, official-number
+allow-list and downstream project gates apply to cache hits. Logs report total
+candidates, deterministic resolutions, duplicates removed, cached work,
+unresolved count, maximum/planned calls, actual calls and final eligible count.
+
+If ArcGIS is wholly unavailable, one cached/bounded official-domain discovery
+request replaces the state/year fan-out. Previously persisted EPBC records are
+retained and combined with new official discoveries, preventing a transient
+source outage from erasing known coverage. This is the only potential coverage
+trade-off: discovery during a first-ever ArcGIS outage is less redundant than
+18 overlapping searches. Normal operation has no fixture coverage loss because
+ArcGIS remains comprehensive and unresolved official records receive targeted
+enrichment. No learning-loop or rule-governance behavior changes.
+
+Validation after the EPBC refactor: 144 API + 5 frontend tests passed;
+workspace typecheck and production build passed. Existing Vite sourcemap and
+shared-dependency synchronization warnings remain.
