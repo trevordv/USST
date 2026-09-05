@@ -9,6 +9,10 @@
  */
 
 import { logger } from "./logger.ts";
+import { cachedSourceFallback, hashMeaningfulSourceContent, hashSourceContent } from "./ai-source-cache.ts";
+import { isEligibleScanProject } from "./project-eligibility.ts";
+import { recordOpenAiCacheHit } from "./openai-usage.ts";
+import { OpenAiQualityError, runOpenAiEscalation } from "./openai-escalation.ts";
 
 const PORTAL_BASE = "https://epbcpublicportal.environment.gov.au";
 const ARCGIS_LAYER_URL =
@@ -349,6 +353,7 @@ export async function fetchArcGisEpbcRecords(
   fetchImplementation: FetchImplementation = fetch,
 ): Promise<EpbcRecord[]> {
   const recordsByNumber = new Map<string, EpbcRecord>();
+  let totalCandidates = 0;
   let offset = 0;
 
   for (let page = 0; page < 50; page++) {
@@ -356,7 +361,10 @@ export async function fetchArcGisEpbcRecords(
     const features = data.features ?? [];
     for (const feature of features) {
       const record = normaliseRecord(feature);
-      if (record) recordsByNumber.set(record.epbcNumber, record);
+      if (record) {
+        totalCandidates++;
+        recordsByNumber.set(record.epbcNumber, record);
+      }
     }
 
     logger.info(
@@ -367,6 +375,9 @@ export async function fetchArcGisEpbcRecords(
     if (!data.exceededTransferLimit || features.length === 0) break;
     offset += features.length;
   }
+
+  logger.info({ totalCandidates, duplicatesRemoved: totalCandidates - recordsByNumber.size },
+    "EPBC: official candidates deduplicated");
 
   return [...recordsByNumber.values()];
 }
@@ -410,16 +421,16 @@ const JSON_SCHEMA_EXAMPLE = `[
   }
 ]`;
 
-function buildSearchPrompt(focus: string, today: string): string {
-  return `Today is ${today}. Your task: find EPBC Act referrals for solar energy and solar+BESS projects from the Australian EPBC Public Portal.
+export function buildSearchPrompt(focus: string, today: string): string {
+  return `${today ? `Today is ${today}. ` : ""}Your task: find EPBC Act referrals for solar energy and solar+BESS projects from the Australian EPBC Public Portal.
 
 Search focus: ${focus}
 
-Search the EPBC portal (epbcpublicportal.environment.gov.au), government registers, and news sources to compile a comprehensive list. Look at:
+Search ONLY the official EPBC portal (epbcpublicportal.environment.gov.au) and official DCCEEW spatial service (gis.environment.gov.au). Look at:
 - The "All Referrals" table filtered by Energy industry type
 - Individual referral detail pages for solar/PV projects
 - Public notice pages (open for comment, assessment notices)
-- Any accessible government lists of EPBC renewable energy referrals
+- Official EPBC renewable-energy referral records
 
 Include ALL statuses: under assessment, open for public comment, approved, conditions varied, completed. Do NOT limit to only recent projects.
 
@@ -440,116 +451,159 @@ function extractJsonArray(text: string): GptReferral[] {
   text = text.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
   const start = text.indexOf("[");
   const end = text.lastIndexOf("]");
-  if (start === -1 || end === -1) return [];
+  if (start === -1 || end === -1) throw new Error("EPBC AI response did not contain a JSON array");
   try {
     const parsed = JSON.parse(text.slice(start, end + 1));
-    return Array.isArray(parsed) ? (parsed as GptReferral[]) : [];
+    if (!Array.isArray(parsed)) throw new Error("EPBC AI response was not an array");
+    return parsed.filter((row): row is GptReferral => Boolean(row) && typeof row === "object" && !Array.isArray(row));
   } catch {
-    return [];
+    throw new Error("EPBC AI response contained malformed JSON");
   }
 }
 
-async function runGptSearch(gpt: GptOpenAI, prompt: string): Promise<GptReferral[]> {
-  try {
-    const response = await gpt.responses.create({
-      model: "gpt-5.4",
-      tools: [{ type: "web_search_preview" }],
-      input: prompt,
-      max_output_tokens: 8192,
+async function runGptSearch(
+  gpt: GptOpenAI, prompt: string, sourceName: string, onAttempt: () => void,
+): Promise<GptReferral[]> {
+  return runOpenAiEscalation({ context: {
+    operation: "epbc_search", sourceName, sourceUrl: ARCGIS_LAYER_URL,
+    sourceIdentifier: "EPBC Public Portal",
+  }, request: model => {
+    onAttempt();
+    return gpt.responses.create({
+      model, tools: [{ type: "web_search_preview" }], input: prompt, max_output_tokens: 8192,
     });
+  }, validate: response => {
     let text = response.output_text ?? "";
     if (!text && Array.isArray(response.output)) {
       for (const block of response.output) {
         if (block.type === "message" && block.text) { text = block.text; break; }
       }
     }
-    return extractJsonArray(text);
-  } catch (err) {
-    logger.warn({ err }, "EPBC ChatGPT sub-query failed, skipping");
-    return [];
-  }
+    try { return extractJsonArray(text); }
+    catch (error) {
+      throw new OpenAiQualityError("malformed_output", error instanceof Error ? error.message : "Invalid EPBC response");
+    }
+  }, resultCount: rows => rows.length });
 }
 
-/** Split a date range into ~12-month bands for targeted searching. */
-function buildYearBands(startDate?: string, endDate?: string): string[] {
-  const start = startDate ? new Date(startDate) : new Date("2018-01-01");
-  const end   = endDate   ? new Date(endDate)   : new Date();
-
-  const bands: string[] = [];
-  const cur = new Date(start.getFullYear(), 0, 1); // snap to year start
-
-  while (cur <= end) {
-    const bandStart = cur.getFullYear();
-    cur.setFullYear(cur.getFullYear() + 1);
-    const bandEnd = Math.min(cur.getFullYear() - 1, end.getFullYear());
-    bands.push(bandStart === bandEnd ? `${bandStart}` : `${bandStart} to ${bandEnd}`);
-    if (cur > end) break;
-  }
-  return bands.length ? bands : ["all years"];
+function isDeterministicallyResolved(record: EpbcRecord): boolean {
+  if (record.isSolar) return record.sizeMw !== null;
+  return record.relevanceStatus !== "needs_review";
 }
 
-/**
- * Use OpenAI Responses API with web_search_preview across multiple parallel
- * targeted queries (by state and year range) to maximise EPBC coverage.
- * Results are deduplicated by EPBC number.
- */
-async function scrapeViaChatGpt(startDate?: string, endDate?: string): Promise<PortalReferral[]> {
+function isEligibleEpbcRecord(record: EpbcRecord): boolean {
+  return isEligibleScanProject({
+    name: record.projectName,
+    description: record.rawDescription ?? record.technologyType,
+    capacityMw: record.sizeMw,
+    country: "AU",
+  });
+}
+
+export interface EpbcEnrichmentPlan {
+  records: EpbcRecord[];
+  unresolved: EpbcRecord[];
+  totalCandidates: number;
+  duplicatesRemoved: number;
+  deterministicallyResolved: number;
+}
+
+/** Merge prior EPBC detail only after official-number deduplication. */
+export function planEpbcEnrichment(
+  candidates: readonly EpbcRecord[],
+  priorRecords: readonly EpbcRecord[] = [],
+): EpbcEnrichmentPlan {
+  const unique = [...new Map(candidates.map(record => [record.epbcNumber, record])).values()];
+  const records = mergeEpbcRecordDetails(unique, priorRecords);
+  const unresolved = records.filter(record => !isDeterministicallyResolved(record));
+  return {
+    records, unresolved, totalCandidates: candidates.length,
+    duplicatesRemoved: candidates.length - unique.length,
+    deterministicallyResolved: records.length - unresolved.length,
+  };
+}
+
+const EPBC_AI_RECORDS_PER_REQUEST = 20;
+interface EpbcFallbackResult { records: EpbcRecord[]; cached: number; aiCalls: number }
+
+/** Output-sized batches make the run bound proportional to unresolved records. */
+export function epbcAiRequestUpperBound(unresolvedCount: number): number {
+  return unresolvedCount > 0 ? Math.ceil(unresolvedCount / EPBC_AI_RECORDS_PER_REQUEST) : 0;
+}
+
+/** One bounded request per unresolved batch; no state/year discovery fan-out. */
+async function scrapeViaChatGpt(
+  startDate?: string,
+  endDate?: string,
+  unresolved: readonly EpbcRecord[] = [],
+): Promise<EpbcFallbackResult> {
   const { openai } = await import("@workspace/integrations-openai-ai-server");
+  const { pool } = await import("@workspace/db");
   const gpt = openai as unknown as GptOpenAI;
   const today = new Date().toISOString().slice(0, 10);
-
-  const states = ["NSW", "VIC", "QLD", "SA", "WA", "TAS", "NT", "ACT"];
-  const yearBands = buildYearBands(startDate, endDate);
-
-  // Human-readable date range description for the prompts
   const rangeLabel = startDate || endDate
     ? `between ${startDate ?? "any date"} and ${endDate ?? "today"}`
     : "across all years";
-
-  const queries: string[] = [];
-
-  // Per-state queries scoped to the requested date range
-  for (const state of states) {
-    queries.push(buildSearchPrompt(
-      `Solar and solar+BESS projects in ${state} referred under the EPBC Act, noticed ${rangeLabel}`,
-      today,
-    ));
-  }
-
-  // Year-band sweeps derived from the date range
-  for (const band of yearBands) {
-    queries.push(buildSearchPrompt(
-      `Solar and solar+BESS EPBC referrals from ${band} across all Australian states`,
-      today,
-    ));
-  }
-
-  // Always include a sweep for the very latest (open for comment / under assessment)
-  queries.push(buildSearchPrompt(
-    `Solar EPBC referrals ${startDate ? `after ${startDate}` : "currently"} open for public comment or under assessment`,
-    today,
-  ));
-
-  logger.info({ queryCount: queries.length }, "EPBC: running parallel ChatGPT searches");
-
-  // Run all queries in parallel (ChatGPT handles its own rate limiting)
-  const resultSets = await Promise.all(queries.map((q) => runGptSearch(gpt, q)));
-
-  // Flatten and deduplicate by EPBC number
-  const seen = new Set<string>();
-  const unique: GptReferral[] = [];
-  for (const batch of resultSets) {
-    for (const r of batch) {
-      const key = (r.epbc_number ?? "").trim();
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      unique.push(r);
+  const batches = unresolved.length > 0
+    ? Array.from({ length: epbcAiRequestUpperBound(unresolved.length) }, (_, index) =>
+      unresolved.slice(index * EPBC_AI_RECORDS_PER_REQUEST, (index + 1) * EPBC_AI_RECORDS_PER_REQUEST))
+    : [[]]; // Whole-source failure: one bounded official discovery request.
+  logger.info({ unresolved: unresolved.length, maxAiCalls: batches.length }, "EPBC: planned unresolved AI batches");
+  let cached = 0;
+  let aiCalls = 0;
+  const resultSets: GptReferral[][] = [];
+  // Deliberately sequential: this replaces the former unbounded parallel fan-out.
+  for (const batch of batches) {
+    const allowedNumbers = new Set(batch.map(record => record.epbcNumber));
+    const focus = batch.length > 0
+      ? `Resolve only these deduplicated official EPBC records (${rangeLabel}). Return no other EPBC numbers:\n${JSON.stringify(batch.map(record => ({
+        epbc_number: record.epbcNumber, project_name: record.projectName,
+        state: record.state, status: record.projectStatus, source_url: record.sourceUrl,
+      })))}`
+      : `Official solar and solar+BESS EPBC referrals ${rangeLabel}; the structured ArcGIS service is unavailable`;
+    // Official unresolved payloads carry their own stable date-window cache key;
+    // only a whole-source outage needs volatile current-date search context.
+    const prompt = buildSearchPrompt(focus, batch.length > 0 ? "" : today);
+    let wasCached = false;
+    const sourceName = batch.length ? "EPBC unresolved records" : "EPBC official-source outage";
+    const rows = await cachedSourceFallback<GptReferral>(
+      pool,
+      {
+        sourceName,
+        sourceUrl: ARCGIS_LAYER_URL,
+        contentHash: hashMeaningfulSourceContent(JSON.stringify(batch)),
+        contentObserved: batch.length > 0,
+        startDate, endDate, model: "gpt-5.6-luna",
+        promptHash: hashSourceContent(JSON.stringify({ prompt, escalation: "luna-terra-sol-v1" })),
+      },
+      async () => runGptSearch(gpt, prompt, sourceName, () => { aiCalls++; }),
+      value => {
+        if (!Array.isArray(value)) throw new Error("Cached EPBC AI result was not an array");
+        return value.filter((row): row is GptReferral => Boolean(row) && typeof row === "object" && !Array.isArray(row));
+      },
+      (event, fields) => {
+        if (event === "ai_source_cache_hit") wasCached = true;
+        logger.info({ event, workflow: "epbc", ...fields }, "EPBC AI cache");
+      },
+    );
+    if (wasCached) {
+      cached += batch.length || 1;
+      await recordOpenAiCacheHit({
+        operation: "epbc_search", sourceName, sourceUrl: ARCGIS_LAYER_URL,
+        sourceIdentifier: "EPBC Public Portal", model: "gpt-5.6-luna",
+      }, rows.length);
     }
+    resultSets.push(batch.length
+      ? rows.filter(row => allowedNumbers.has((row.epbc_number ?? "").trim()))
+      : rows);
   }
-
-  logger.info({ total: unique.length }, "EPBC: ChatGPT deduped results");
-
-  return unique.map((r): PortalReferral => ({
+  const seen = new Set<string>();
+  const unique = resultSets.flat().filter(row => {
+    const key = (row.epbc_number ?? "").trim();
+    if (!key || seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+  const records = unique.map((r): PortalReferral => ({
     epbcNumber: r.epbc_number,
     projectName: r.project_name,
     proposer: r.proponent,
@@ -562,7 +616,8 @@ async function scrapeViaChatGpt(startDate?: string, endDate?: string): Promise<P
       r.technology,
       typeof r.capacity_mw === "number" ? `${r.capacity_mw} MW` : null,
     ].filter((value): value is string => Boolean(value)).join(" - ") || undefined,
-  }));
+  })).map(raw => normaliseFallbackRecord(raw)).filter((record): record is EpbcRecord => record !== null);
+  return { records, cached, aiCalls };
 }
 
 // ── Normalise ─────────────────────────────────────────────────────────────────
@@ -575,23 +630,45 @@ function normaliseFallbackRecord(raw: PortalReferral): EpbcRecord | null {
 
 export interface EpbcFetchDependencies {
   fetchImplementation?: FetchImplementation;
-  fallback?: (startDate?: string, endDate?: string) => Promise<EpbcRecord[]>;
+  fallback?: (startDate?: string, endDate?: string, unresolved?: readonly EpbcRecord[]) => Promise<EpbcRecord[] | EpbcFallbackResult>;
+  priorRecords?: readonly EpbcRecord[];
   supplementStructuredRecords?: boolean;
 }
 
 async function fetchOpenAiFallbackRecords(
   startDate?: string,
   endDate?: string,
-): Promise<EpbcRecord[]> {
-  const raws = await scrapeViaChatGpt(startDate, endDate);
-  return raws
-    .map((raw) => normaliseFallbackRecord(raw))
-    .filter((record): record is EpbcRecord => record !== null);
+  unresolved?: readonly EpbcRecord[],
+): Promise<EpbcFallbackResult> {
+  return scrapeViaChatGpt(startDate, endDate, unresolved);
+}
+
+function fallbackResult(value: EpbcRecord[] | EpbcFallbackResult): EpbcFallbackResult {
+  return Array.isArray(value) ? { records: value, cached: 0, aiCalls: 1 } : value;
+}
+
+async function loadPriorEpbcRecords(epbcNumbers?: readonly string[]): Promise<EpbcRecord[]> {
+  if (epbcNumbers?.length === 0) return [];
+  try {
+    const { db, epbcProjectsTable } = await import("@workspace/db");
+    const { inArray } = await import("drizzle-orm");
+    const query = db.select().from(epbcProjectsTable);
+    const rows = epbcNumbers
+      ? await query.where(inArray(epbcProjectsTable.epbcNumber, [...epbcNumbers]))
+      : await query;
+    return rows.map(row => ({
+      ...row,
+      sizeMw: row.sizeMw === null ? null : Number(row.sizeMw),
+    }));
+  } catch (err) {
+    logger.warn({ err }, "EPBC: prior-result lookup failed; continuing with official data");
+    return [];
+  }
 }
 
 export function mergeEpbcRecordDetails(
-  structuredRecords: EpbcRecord[],
-  supplementalRecords: EpbcRecord[],
+  structuredRecords: readonly EpbcRecord[],
+  supplementalRecords: readonly EpbcRecord[],
 ): EpbcRecord[] {
   const supplementalByNumber = new Map(
     supplementalRecords.map((record) => [record.epbcNumber, record]),
@@ -640,16 +717,30 @@ export async function fetchEpbcRecords(
 
   try {
     logger.info({ startDate, endDate }, "EPBC: querying official ArcGIS feature layer");
-    const records = await fetchArcGisEpbcRecords(startDate, endDate, fetchImplementation);
-    logger.info({ count: records.length }, "EPBC: ArcGIS feature layer succeeded");
+    const candidates = await fetchArcGisEpbcRecords(startDate, endDate, fetchImplementation);
+    const priorRecords = dependencies.priorRecords ??
+      (supplementStructuredRecords
+        ? await loadPriorEpbcRecords(candidates.map(record => record.epbcNumber))
+        : []);
+    const plan = planEpbcEnrichment(candidates, priorRecords);
+    const records = plan.records;
+    logger.info({
+      totalCandidates: plan.totalCandidates,
+      deterministicallyResolved: plan.deterministicallyResolved,
+      duplicatesRemoved: plan.duplicatesRemoved,
+      unresolved: plan.unresolved.length,
+    }, "EPBC: deterministic resolution complete");
 
-    if (supplementStructuredRecords && records.length > 0) {
+    if (supplementStructuredRecords && plan.unresolved.length > 0) {
       try {
-        const supplementalRecords = await fallback(startDate, endDate);
-        const merged = mergeEpbcRecordDetails(records, supplementalRecords);
+        const supplemental = fallbackResult(await fallback(startDate, endDate, plan.unresolved));
+        const merged = mergeEpbcRecordDetails(records, supplemental.records);
         logger.info(
-          { structured: records.length, supplemental: supplementalRecords.length, merged: merged.length },
-          "EPBC: supplemented ArcGIS records with OpenAI details",
+          { totalCandidates: plan.totalCandidates, deterministicallyResolved: plan.deterministicallyResolved,
+            duplicatesRemoved: plan.duplicatesRemoved, cached: supplemental.cached,
+            unresolved: plan.unresolved.length, aiCalls: supplemental.aiCalls,
+            finalEligibleProjects: merged.filter(isEligibleEpbcRecord).length },
+          "EPBC: unresolved enrichment complete",
         );
         return merged;
       } catch (supplementError) {
@@ -667,8 +758,17 @@ export async function fetchEpbcRecords(
       "EPBC: ArcGIS feature layer failed, falling back to OpenAI web search",
     );
     try {
-      const records = await fallback(startDate, endDate);
-      logger.info({ count: records.length }, "EPBC: OpenAI web search fallback succeeded");
+      const result = fallbackResult(await fallback(startDate, endDate, []));
+      const priorRecords = dependencies.priorRecords ?? await loadPriorEpbcRecords();
+      const priorNumbers = new Set(priorRecords.map(record => record.epbcNumber));
+      const records = [
+        ...mergeEpbcRecordDetails(priorRecords, result.records),
+        ...result.records.filter(record => !priorNumbers.has(record.epbcNumber)),
+      ];
+      logger.info({ count: records.length, cached: result.cached, unresolved: 1,
+        deterministicallyResolved: priorRecords.length, duplicatesRemoved: result.records.length + priorRecords.length - records.length,
+        aiCalls: result.aiCalls, finalEligibleProjects: records.filter(isEligibleEpbcRecord).length },
+        "EPBC: bounded official-source outage fallback succeeded");
       return records;
     } catch (fallbackError) {
       logger.error(

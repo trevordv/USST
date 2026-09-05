@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildArcGisWhereClause,
+  buildSearchPrompt,
+  epbcAiRequestUpperBound,
   fetchArcGisEpbcRecords,
   fetchEpbcRecords,
   mapArcGisFeatureToEpbcRecord,
   mergeEpbcRecordDetails,
+  planEpbcEnrichment,
 } from "./epbc-scraper.ts";
 
 function arcGisResponse(body, status = 200) {
@@ -109,6 +112,7 @@ test("falls back to OpenAI records when the ArcGIS source is unavailable", async
 
   const records = await fetchEpbcRecords(undefined, undefined, {
     fetchImplementation: async () => arcGisResponse({ error: "unavailable" }, 503),
+    priorRecords: [],
     fallback: async () => {
       fallbackCalls++;
       return [fallbackRecord];
@@ -169,4 +173,134 @@ test("does not invoke fallback after a successful structured response", async ()
 
   assert.equal(records.length, 1);
   assert.equal(fallbackCalls, 0);
+});
+
+test("an ArcGIS outage retains prior EPBC coverage and adds bounded discoveries", async () => {
+  const prior = mapArcGisFeatureToEpbcRecord(solarAttributes);
+  const discovered = mapArcGisFeatureToEpbcRecord({
+    ...solarAttributes, REFERENCE_NUMBER: "2025/12345",
+    NAME: "New Official Solar Project 80 MW", OBJECTID: 7777,
+  });
+  assert.ok(prior && discovered);
+  const records = await fetchEpbcRecords(undefined, undefined, {
+    fetchImplementation: async () => arcGisResponse({}, 503),
+    priorRecords: [prior],
+    fallback: async () => ({ records: [discovered], cached: 0, aiCalls: 1 }),
+  });
+  assert.deepEqual(records.map(record => record.epbcNumber), [prior.epbcNumber, discovered.epbcNumber]);
+});
+
+test("complete deterministic EPBC records never invoke AI supplementation", async () => {
+  let fallbackCalls = 0;
+  const records = await fetchEpbcRecords("2025-01-01", "2025-12-31", {
+    fetchImplementation: async () => arcGisResponse({ features: [{ attributes: solarAttributes }] }),
+    supplementStructuredRecords: true,
+    priorRecords: [],
+    fallback: async () => { fallbackCalls++; return []; },
+  });
+  assert.equal(fallbackCalls, 0);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].sizeMw, 350);
+  assert.equal(records[0].isSolar, true);
+});
+
+test("deduplicates before AI and sends only genuinely unresolved official records", async () => {
+  const complete = mapArcGisFeatureToEpbcRecord(solarAttributes);
+  const unresolved = mapArcGisFeatureToEpbcRecord({
+    ...solarAttributes,
+    REFERENCE_NUMBER: "2025/10020",
+    NAME: "River Renewable Energy Project",
+    OBJECTID: 5608,
+  });
+  assert.ok(complete);
+  assert.ok(unresolved);
+  const duplicate = { ...unresolved, rawDescription: `${unresolved.rawDescription} duplicate` };
+  const plan = planEpbcEnrichment([complete, unresolved, duplicate]);
+  assert.equal(plan.totalCandidates, 3);
+  assert.equal(plan.duplicatesRemoved, 1);
+  assert.equal(plan.deterministicallyResolved, 1);
+  assert.deepEqual(plan.unresolved.map(record => record.epbcNumber), ["2025/10020"]);
+
+  let requested = [];
+  await fetchEpbcRecords(undefined, undefined, {
+    fetchImplementation: async () => arcGisResponse({
+      features: [{ attributes: solarAttributes }, { attributes: {
+        ...solarAttributes, REFERENCE_NUMBER: "2025/10020",
+        NAME: "River Renewable Energy Project", OBJECTID: 5608,
+      } }],
+    }),
+    supplementStructuredRecords: true,
+    priorRecords: [],
+    fallback: async (_start, _end, unresolvedRecords) => {
+      requested = unresolvedRecords;
+      return [];
+    },
+  });
+  assert.deepEqual(requested.map(record => record.epbcNumber), ["2025/10020"]);
+});
+
+test("prior EPBC evidence resolves an official record before paid work", () => {
+  const unresolved = mapArcGisFeatureToEpbcRecord({
+    ...solarAttributes, REFERENCE_NUMBER: "2025/10021",
+    NAME: "River Renewable Energy Project", OBJECTID: 5609,
+  });
+  assert.ok(unresolved);
+  const prior = {
+    ...unresolved,
+    technologyType: "Solar",
+    sizeMw: 75,
+    rawDescription: "75 MW solar project",
+    isRenewable: true,
+    isSolar: true,
+    relevanceStatus: "solar",
+  };
+  const plan = planEpbcEnrichment([unresolved], [prior]);
+  assert.equal(plan.unresolved.length, 0);
+  assert.equal(plan.deterministicallyResolved, 1);
+  assert.equal(plan.records[0].sizeMw, 75);
+  assert.equal(plan.records[0].isSolar, true);
+});
+
+test("cached unresolved batches report zero new AI requests and preserve empty results", async () => {
+  let cacheLookups = 0;
+  const records = await fetchEpbcRecords(undefined, undefined, {
+    fetchImplementation: async () => arcGisResponse({ features: [{ attributes: {
+      ...solarAttributes, REFERENCE_NUMBER: "2025/10022",
+      NAME: "River Renewable Energy Project", OBJECTID: 5610,
+    } }] }),
+    supplementStructuredRecords: true,
+    priorRecords: [],
+    fallback: async (_start, _end, unresolvedRecords) => {
+      cacheLookups++;
+      assert.equal(unresolvedRecords.length, 1);
+      return { records: [], cached: 1, aiCalls: 0 };
+    },
+  });
+  assert.equal(cacheLookups, 1);
+  assert.equal(records.length, 1); // Official coverage is never discarded.
+});
+
+test("technology and capacity gates remain decisive before AI planning", () => {
+  const subFive = mapArcGisFeatureToEpbcRecord({ ...solarAttributes, REFERENCE_NUMBER: "2025/10023", NAME: "4.5 MW Solar Farm" });
+  const wind = mapArcGisFeatureToEpbcRecord({ ...solarAttributes, REFERENCE_NUMBER: "2025/10024", NAME: "90 MW Wind Farm" });
+  const battery = mapArcGisFeatureToEpbcRecord({ ...solarAttributes, REFERENCE_NUMBER: "2025/10025", NAME: "50 MW Battery Project" });
+  assert.ok(subFive && wind && battery);
+  const plan = planEpbcEnrichment([subFive, wind, battery]);
+  assert.equal(plan.unresolved.length, 0);
+  assert.equal(subFive.isSolar, true);
+  assert.equal(subFive.sizeMw, 4.5);
+  assert.equal(wind.relevanceStatus, "wind");
+  assert.equal(battery.relevanceStatus, "bess");
+});
+
+test("AI work is bounded by unresolved batches and restricted to official EPBC hosts", () => {
+  assert.equal(epbcAiRequestUpperBound(0), 0);
+  assert.equal(epbcAiRequestUpperBound(1), 1);
+  assert.equal(epbcAiRequestUpperBound(20), 1);
+  assert.equal(epbcAiRequestUpperBound(21), 2);
+  const prompt = buildSearchPrompt("Resolve 2025/10020 only", "2026-09-05");
+  assert.match(prompt, /Search ONLY the official EPBC portal/);
+  assert.match(prompt, /epbcpublicportal\.environment\.gov\.au/);
+  assert.match(prompt, /gis\.environment\.gov\.au/);
+  assert.doesNotMatch(prompt, /news sources|developer sites|social media/i);
 });

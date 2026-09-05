@@ -7,6 +7,18 @@ import {
 } from "./source-repair-parsers.ts";
 import { filterEligibleScanProjects } from "./project-eligibility.ts";
 
+test("public pages with Incapsula resource scripts remain readable", () => {
+  for (const title of ["News - ARENA", "Fast-track projects | Ministry for the Environment"]) {
+    assert.equal(classifySourceResponse(200, "text/html", `<title>${title}</title><main>Solar project data</main><script src="/_Incapsula_Resource?SWJIYLWA=example" async></script>`), null);
+  }
+});
+
+test("real Incapsula challenge frames and other access barriers remain blocked", () => {
+  for (const body of ['<iframe src="/_Incapsula_Resource?incident_id=123"></iframe>', "Request unsuccessful. Incapsula incident", "<title>Just a moment...</title>", "enable javascript and cookies to continue", "Azure WAF", "cf-chl-"]) {
+    assert.equal(classifySourceResponse(200, "text/html", body), "blocked");
+  }
+});
+
 test("classifies access-control, HTTP, invalid-content, and usable responses for Railway diagnostics", () => {
   assert.equal(
     classifySourceResponse(403, "text/html", "Forbidden"),
