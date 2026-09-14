@@ -2,6 +2,7 @@ export type ScanDateEvidence =
   | "source_reported"
   | "source_update"
   | "altenergy_source_update"
+  | "altenergy_watts_news_update"
   | "altenergy_inventory_observation"
   | "persisted_announcement"
   | "unknown";
@@ -29,7 +30,7 @@ export function decideScanDateWindow(input: {
   endDate?: string | null;
   scrapedAnnouncedDate?: string | null;
   sourceEventDate?: string | null;
-  sourceEventEvidence?: Extract<ScanDateEvidence, "source_update" | "altenergy_source_update">;
+  sourceEventEvidence?: Extract<ScanDateEvidence, "source_update" | "altenergy_source_update" | "altenergy_watts_news_update">;
   inventoryObservation?: boolean;
   persistedAnnouncedDate?: string | null;
   existingProject: boolean;

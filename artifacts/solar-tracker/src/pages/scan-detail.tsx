@@ -7,8 +7,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { format } from "date-fns";
 import { ArrowLeft, CheckCircle2 } from "lucide-react";
+import { useState } from "react";
+
+type ScanResultFilter = "all" | "new" | "updated" | "inventory_observed";
 
 export default function ScanDetail() {
+  const [resultFilter, setResultFilter] = useState<ScanResultFilter>("all");
   const params = useParams();
   const scanId = parseInt(params.id || "0", 10);
 
@@ -48,10 +52,14 @@ export default function ScanDetail() {
   }
 
   const newCount = projects?.filter((p) => p.isNew).length ?? 0;
+  const updatedCount = projects?.filter((p) => p.eventType === "updated").length ?? 0;
+  const observedCount = projects?.filter((p) => p.eventType === "inventory_observed").length ?? 0;
 
-  // Sort: new projects first, then existing
+  const visibleProjects = projects?.filter((project) => resultFilter === "all" || project.eventType === resultFilter) ?? [];
+  // Sort: new projects, dated updates, then inventory observations.
+  const eventOrder = { new: 0, updated: 1, inventory_observed: 2 } as const;
   const sortedProjects = projects
-    ? [...projects].sort((a, b) => (b.isNew ? 1 : 0) - (a.isNew ? 1 : 0))
+    ? [...visibleProjects].sort((a, b) => eventOrder[a.eventType] - eventOrder[b.eventType])
     : [];
 
   return (
@@ -110,21 +118,42 @@ export default function ScanDetail() {
                 <div className="text-sm text-muted-foreground">New</div>
                 <div className="text-xl font-mono font-bold text-primary">+{newCount}</div>
               </div>
+              <div className="text-right">
+                <div className="text-sm text-muted-foreground">Updated</div>
+                <div className="text-xl font-mono font-bold text-amber-600">{updatedCount}</div>
+              </div>
             </div>
           </div>
         </div>
 
         {/* Projects table */}
         <div className="border rounded-lg bg-card overflow-hidden shadow-sm">
-          <div className="px-4 py-3 border-b bg-muted/50 flex items-center justify-between">
+          <div className="px-4 py-3 border-b bg-muted/50 flex flex-wrap items-center justify-between gap-3">
             <h2 className="font-semibold text-sm">
-              All projects found in this scan ({sortedProjects.length})
+              Qualifying scan results ({projects?.length ?? 0})
               {newCount > 0 && (
                 <span className="ml-2 text-xs font-normal text-emerald-600">
                   · {newCount} new
                 </span>
               )}
             </h2>
+            <div className="flex flex-wrap gap-2" aria-label="Scan result categories">
+              {([
+                ["all", "All", projects?.length ?? 0],
+                ["new", "New", newCount],
+                ["updated", "Updated", updatedCount],
+                ["inventory_observed", "Inventory Observed", observedCount],
+              ] as const).map(([value, label, count]) => (
+                <Button
+                  key={value}
+                  size="sm"
+                  variant={resultFilter === value ? "default" : "outline"}
+                  onClick={() => setResultFilter(value)}
+                >
+                  {label}: {count}
+                </Button>
+              ))}
+            </div>
           </div>
 
           <Table>
@@ -157,6 +186,16 @@ export default function ScanDetail() {
                           {project.isNew && (
                             <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200 text-[10px] font-bold tracking-wider uppercase px-1.5 py-0">
                               New
+                            </Badge>
+                          )}
+                          {project.eventType === "updated" && (
+                            <Badge className="bg-amber-100 text-amber-800 border-amber-200 text-[10px] font-bold tracking-wider uppercase px-1.5 py-0">
+                              Updated
+                            </Badge>
+                          )}
+                          {project.eventType === "inventory_observed" && (
+                            <Badge variant="outline" className="text-[10px] font-bold tracking-wider uppercase px-1.5 py-0">
+                              Observed
                             </Badge>
                           )}
                         </div>
@@ -203,7 +242,9 @@ export default function ScanDetail() {
                     </TableCell>
                     <TableCell>
                       <Link href={projectHref} className="block text-sm text-muted-foreground">
-                        {project.announcedDate
+                        {project.effectiveDate
+                          ? format(new Date(project.effectiveDate), "MMM d, yyyy")
+                          : project.announcedDate
                           ? format(new Date(project.announcedDate), "MMM d, yyyy")
                           : "-"}
                       </Link>

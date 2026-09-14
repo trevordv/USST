@@ -17,6 +17,19 @@ export type ProjectIneligibilityReason =
 export interface ScanProjectLineage {
   projectId: number;
   isNew: boolean;
+  eventType?: "new" | "updated" | "inventory_observed";
+}
+
+export type ScanProjectEventType = "new" | "updated" | "inventory_observed";
+
+export function classifyScanProjectEvent(input: {
+  isNew: boolean;
+  dateEvidence?: string | null;
+  eventType?: string | null;
+}): ScanProjectEventType {
+  if (input.isNew) return "new";
+  if (input.eventType === "updated" || input.dateEvidence === "altenergy_watts_news_update") return "updated";
+  return "inventory_observed";
 }
 
 export function isWindProject(
