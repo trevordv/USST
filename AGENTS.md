@@ -1,5 +1,43 @@
 # USST Codex Instructions
 
+## Governing development standard
+
+USST uses `trevordv/Agentic-App-Template` as its governing engineering baseline.
+
+Current adopted template:
+- version: v1.1
+- commit: `6bc4275ce99d9444ea383f8d48f47b6adce7e149`
+- alignment record: `docs/Agentic-Template-Alignment.md`
+
+Before non-trivial work, read:
+- `docs/Agentic-Masterplan.md`
+- `docs/Loop-Engineering.md`
+- `docs/Client-Data-Privacy.md`
+- `docs/Security-Model.md`
+- `docs/AI-Cost-Control.md`
+- `docs/Evals-Golden-Tests.md`
+- `docs/Complexity-Gates.md`
+- `docs/Engineering-Standards.md`
+- `docs/Testing-Strategy.md`
+- `docs/Production-Acceptance.md`
+- `docs/Decision-Log.md`
+
+Apply the template's simplicity-first, Loop Engineering, security/privacy, low-token, Golden Test and complexity-gate rules to all future changes.
+
+USST-specific rules in this file remain authoritative where they are more specific than the generic template. Do not rewrite proven USST architecture merely to match the template's default stack. Any material exception must be documented in `docs/Decision-Log.md`.
+
+For non-trivial changes:
+1. Define the observable outcome and acceptance criteria.
+2. Work on a dedicated branch.
+3. Implement the smallest vertical slice.
+4. Prefer deterministic code/SQL/parsing before paid AI.
+5. Test the affected behaviour, including regression/Golden Tests for production defects.
+6. Inspect real evidence/logs and fix root cause.
+7. Run applicable tests, typecheck, build, security/data checks and cost/AI checks.
+8. Open a draft PR.
+9. Do not merge unless explicitly instructed.
+
+
 ## Project purpose
 
 USST (Utility Scale Solar Tracker / Solar Project Scout) is a sales-intelligence application for discovering and maintaining Australian and New Zealand utility-scale solar projects.
