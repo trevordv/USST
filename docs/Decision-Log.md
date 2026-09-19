@@ -56,6 +56,27 @@ This log records material USST deviations from the generic Agentic App Template 
   the integration commit. Verify source outcomes and provider charges in a
   bounded staging scan before production enablement.
 
+### 2026-09-19 — Distinguish public 403 from protected access
+
+- Observed problem: RUN-0107 made zero Bright Data calls despite a plain 403
+  on an approved public Energy Magazine URL. The prior classifier grouped that
+  response with login, paywall and challenge responses. A separate Bright Data
+  diagnostic request returned HTTP 200, while an approved PV Magazine feed
+  timed out at the 30-second provider limit. A targeted Energy Magazine request
+  from Railway returned HTTP 200 and 21,601 bytes in 7.3 seconds.
+- Decision: On registry-reviewed `extraction-problematic` public sources only,
+  a plain 403 without login, payment, rate-limit or challenge evidence may be
+  retried through Web Unlocker. Parser failures and JavaScript-only shells on
+  exact approved public URLs may also be retried. Never proxy a successfully
+  parsed URL, authenticated source, registry-designated inaccessible source,
+  AEMO workbook or EPBC ArcGIS source. Keep the per-source two-URL cap and
+  existing provider timeout, response-size cap and downstream eligibility gates.
+- Security / cost impact: A plain 403 alone is not proof of a login wall; any
+  explicit authentication, paywall, rate-limit or challenge signal still blocks
+  the provider call. Approved URLs and credentials remain fixed and server-side.
+  A full scan's source lineage and provider charges should be reviewed before
+  permanent deployment.
+
 ### YYYY-MM-DD — Decision title
 
 - Observed problem:

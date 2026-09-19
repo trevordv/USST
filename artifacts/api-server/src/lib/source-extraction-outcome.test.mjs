@@ -43,6 +43,7 @@ async function run(options = {}) {
     logDirectSourceFailure() {}, finalFailureOutcome: () => "extraction-failed",
     fetchForSource: async (_, url) => {
       calls.fetch.push(url);
+      if (options.fetchByUrl?.[url]) throw options.fetchByUrl[url];
       if (options.fetchError) throw options.fetchError;
       return url.endsWith("/feed/") ? '<rss><channel></channel></rss>' : options.html ?? html;
     },
@@ -143,15 +144,33 @@ test("registry-designated JavaScript sources use Bright Data after safe direct f
   assert.equal(logs.at(-1).brightSucceeded, true);
 });
 
-test("HTTP 403 and AEMO access controls are never retried through Bright Data", async () => {
+test("plain public 403 on a reviewed source uses Bright Data but protected paths do not", async () => {
   const env = { BRIGHT_DATA_API_KEY: "test", BRIGHT_DATA_ZONE: "unlocker" };
-  const source = { searchUrl: "https://reneweconomy.com.au/?s=solar+project+announced" };
-  const ordinary = await run({ env, source, fetchError: new MockSourceRequestError("HTTP 403", "blocked") });
+  const source = { name: "Energy Magazine", searchUrl: getSourceRepairStrategy("Energy Magazine").officialUrls[1] };
+  const ordinary = await run({ env, source, fetchError: new MockSourceRequestError("HTTP 403", "public-access-block"), brightHtml: '<article class="post">Solar project</article>', projects: [project] });
+  const challenge = await run({ env, source, fetchError: new MockSourceRequestError("challenge", "blocked") });
   const aemo = await run({ env, source: { name: "AEMO" }, fetchError: new MockSourceRequestError("HTTP 403", "blocked") });
-  assert.equal(ordinary.calls.bright.length, 0);
+  assert.deepEqual(ordinary.calls.bright, [source.searchUrl]);
+  assert.equal(ordinary.calls.ai, 0);
+  assert.equal(challenge.calls.bright.length, 0);
   assert.equal(aemo.calls.bright.length, 0);
-  assert.equal(ordinary.calls.ai, 1);
   assert.equal(aemo.calls.ai, 1);
+});
+
+test("Energy Magazine's empty RSS plus plain-403 search retries only the search URL", async () => {
+  const strategy = getSourceRepairStrategy("Energy Magazine");
+  const source = { name: strategy.name, feedUrl: strategy.officialUrls[0], searchUrl: strategy.officialUrls[1] };
+  const env = { BRIGHT_DATA_API_KEY: "test", BRIGHT_DATA_ZONE: "unlocker" };
+  const { calls, logs } = await run({
+    env, source, brightHtml: '<article class="post">No matching projects</article>',
+    fetchError: undefined,
+    html: '<article class="post">No matching projects</article>',
+    // The RSS is a valid zero, while only the search page is denied.
+    fetchByUrl: { [source.searchUrl]: new MockSourceRequestError("HTTP 403", "public-access-block") },
+  });
+  assert.deepEqual(calls.bright, [source.searchUrl]);
+  assert.equal(calls.ai, 0);
+  assert.equal(logs.at(-1).brightDataCalls, 1);
 });
 
 test("parse failures, unusable documents and JS-only shells allow repair", async () => {

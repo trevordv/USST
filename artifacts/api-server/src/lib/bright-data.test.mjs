@@ -16,10 +16,16 @@ test("only failed approved public URLs are eligible for Bright Data", () => {
   assert.deepEqual(planBrightDataTargets(energy, networkFailure(target)), [{ url: target, format: "html" }]);
   assert.deepEqual(planBrightDataTargets(energy, [{ method: "html", url: target, outcome: "success-zero-results" }]), []);
   assert.deepEqual(planBrightDataTargets(energy, [{ method: "html", url: target, outcome: "fetch-failed", failureCategory: "blocked" }]), []);
+  assert.deepEqual(planBrightDataTargets(energy, [{ method: "html", url: target, outcome: "fetch-failed", failureCategory: "public-access-block" }]), [{ url: target, format: "html" }]);
   assert.deepEqual(planBrightDataTargets(energy, [{ method: "html", url: target, outcome: "fetch-failed", failureCategory: "http-error" }]), []);
   assert.deepEqual(planBrightDataTargets(energy, networkFailure("https://attacker.example/private")), []);
   assert.deepEqual(planBrightDataTargets(getSourceRepairStrategy("AltEnergy Australia"), networkFailure("https://altenergy.com.au/login")), []);
   assert.deepEqual(planBrightDataTargets(getSourceRepairStrategy("EPBC Act Referrals"), networkFailure("https://epbcpublicportal.environment.gov.au/all-referrals/")), []);
+  assert.deepEqual(planBrightDataTargets(getSourceRepairStrategy("Renew Economy"), [{ method: "html", url: "https://reneweconomy.com.au/", outcome: "fetch-failed", failureCategory: "public-access-block" }]), []);
+  assert.deepEqual(planBrightDataTargets(energy, [
+    { method: "html", url: target, outcome: "fetch-failed", failureCategory: "public-access-block" },
+    { method: "html", url: target, outcome: "success-zero-results" },
+  ]), []);
 });
 
 test("JavaScript-only public pages can use Bright Data, but access-controlled paths cannot", () => {
@@ -31,6 +37,8 @@ test("JavaScript-only public pages can use Bright Data, but access-controlled pa
   assert.deepEqual(planBrightDataTargets(nz, networkFailure(nz.officialUrls[0])), []);
   const aemo = getSourceRepairStrategy("AEMO");
   assert.deepEqual(planBrightDataTargets(aemo, networkFailure(aemo.officialUrls[1])), []);
+  const ministry = getSourceRepairStrategy("NZ Ministry for the Environment");
+  assert.deepEqual(planBrightDataTargets(ministry, [{ method: "html", url: ministry.officialUrls[0], outcome: "parse-failed", failureCategory: "parser" }]), [{ url: ministry.officialUrls[0], format: "html" }]);
 });
 
 test("Web Unlocker request is fixed-endpoint, bounded and does not log credentials", async () => {

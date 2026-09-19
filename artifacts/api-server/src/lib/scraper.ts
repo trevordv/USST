@@ -719,7 +719,7 @@ async function fetchWithTimeout(url: string, timeoutMs = 15000): Promise<string>
     });
     const text = await response.text();
     const contentType = response.headers.get("content-type") ?? "";
-    const problem = classifySourceResponse(response.status, contentType, text);
+    const problem = classifySourceResponse(response.status, contentType, text, response.headers.get("www-authenticate"));
     if (problem) {
       throw new SourceRequestError(
         `Source response rejected: ${problem} (${response.status})`,
@@ -3516,7 +3516,7 @@ function finalFailureOutcome(failures: readonly unknown[]): "blocked" | "timeout
     .filter((error): error is SourceRequestError => error instanceof SourceRequestError)
     .map((error) => error.problem);
   if (problems.includes("timeout")) return "timeout";
-  if (problems.includes("blocked")) return "blocked";
+  if (problems.includes("blocked") || problems.includes("public-access-block")) return "blocked";
   return "extraction-failed";
 }
 
@@ -3524,7 +3524,7 @@ function logDirectSourceFailure(source: string, error: unknown): void {
   if (error instanceof SourceRequestError) {
     logScanSourceOutcome(
       source,
-      error.problem === "blocked" ? "blocked" : error.problem === "timeout" ? "timeout" : "extraction-failed",
+      error.problem === "blocked" || error.problem === "public-access-block" ? "blocked" : error.problem === "timeout" ? "timeout" : "extraction-failed",
       { err: error, url: error.url, reason: error.problem },
     );
     return;

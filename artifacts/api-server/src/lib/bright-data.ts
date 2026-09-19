@@ -22,16 +22,21 @@ export function planBrightDataTargets(
 ): BrightDataTarget[] {
   if (strategy.auditGroup === "inaccessible" || strategy.mode === "authenticated" ||
       strategy.mode === "epbc-arcgis" || strategy.mode === "aemo-workbook") return [];
+  const successfullyParsedUrls = new Set(attempts.filter((attempt) =>
+    attempt.outcome === "success-with-results" || attempt.outcome === "success-zero-results",
+  ).map((attempt) => attempt.url));
   const failed = attempts.filter((attempt) =>
     (attempt.outcome === "fetch-failed" && (attempt.failureCategory === "network" || attempt.failureCategory === "timeout")) ||
+    (attempt.outcome === "fetch-failed" && attempt.failureCategory === "public-access-block" && strategy.auditGroup === "extraction-problematic") ||
     (attempt.outcome === "content-unusable" && (attempt.failureCategory === "invalid-content" || attempt.failureCategory === "parser")) ||
-    (attempt.outcome === "requires-js-or-ai-repair" && strategy.auditGroup === "extraction-problematic" && attempt.method !== "openai-first"),
+    (attempt.outcome === "parse-failed" && attempt.failureCategory === "parser") ||
+    (attempt.outcome === "requires-js-or-ai-repair" && attempt.method !== "openai-first"),
   );
   if (!failed.length) return [];
 
   const urls = failed.map((attempt) => attempt.url).filter((url): url is string => Boolean(url));
   const unique = new Set(urls);
-  return [...unique].filter((url) => strategy.officialUrls.includes(url)).slice(0, 2).map((url) => ({
+  return [...unique].filter((url) => strategy.officialUrls.includes(url) && !successfullyParsedUrls.has(url)).slice(0, 2).map((url) => ({
     url,
     format: strategy.mode === "structured-html" || strategy.mode === "openai-first"
         ? "structured-html"

@@ -192,6 +192,7 @@ export function parseAemoGenerationRows(
 
 export type SourceResponseProblem =
   | "blocked"
+  | "public-access-block"
   | "timeout"
   | "http-error"
   | "invalid-content";
@@ -200,11 +201,11 @@ export function classifySourceResponse(
   status: number,
   contentType: string,
   body: string,
+  wwwAuthenticate: string | null = null,
 ): SourceResponseProblem | null {
   const lower = body.toLowerCase();
   if (
-    status === 401 ||
-    status === 403 ||
+    wwwAuthenticate != null || status === 401 || status === 402 || status === 407 || status === 429 ||
     [
       "just a moment",
       "enable javascript and cookies to continue",
@@ -217,6 +218,14 @@ export function classifySourceResponse(
   // Normal public pages also load /_Incapsula_Resource scripts. Only the
   // challenge iframe is a blocking signal; a vendor name is not one.
   if (/<iframe\b[^>]*src=["'][^"']*\/_incapsula_resource/i.test(body)) return "blocked";
+  // A plain 403 on a pre-approved public source is distinct from a login,
+  // paywall, rate limit or challenge. Only the former may use Web Unlocker.
+  if (status === 403) {
+    if (/captcha|log[ -]?in|sign[ -]?in|authentication required|paywall|subscription required|subscribe to (?:read|access)|too many requests|rate limit/i.test(body)) {
+      return "blocked";
+    }
+    return "public-access-block";
+  }
   if (status < 200 || status >= 300) return "http-error";
   if (
     /image\//i.test(contentType) ||

@@ -85,9 +85,11 @@ Set only the credentials actually used by the existing USST configuration:
   Data Web Unlocker zone Overview. Do not use a `VITE_` variable.
 
 Bright Data is used only after an approved public URL has a technical network,
-timeout, unusable-content or JavaScript-rendering failure. It is **not** used
-for HTTP 403, CAPTCHA/challenge, authentication, rate-limit responses or
-sources designated access-controlled in the registry. It never expands the
+timeout, unusable-content, parser or JavaScript-rendering failure. A plain HTTP
+403 may also qualify, but only for a registry-reviewed `extraction-problematic`
+public source with no login, paywall, rate-limit or challenge evidence. It is
+**not** used for those protected responses or sources designated inaccessible
+in the registry. It never expands the
 approved source list, replaces AltEnergy/LUVI authenticated access, or bypasses
 project eligibility and date gates. A successfully parsed zero result does not
 trigger it. A provider failure retains the existing bounded AI fallback.
