@@ -3,7 +3,7 @@ import type { ExtractionAttempt } from "./source-extraction-outcome.ts";
 import { classifySourceResponse } from "./source-repair-parsers.ts";
 
 const BRIGHT_DATA_ENDPOINT = "https://api.brightdata.com/request";
-const BRIGHT_DATA_TIMEOUT_MS = 30_000;
+const BRIGHT_DATA_TIMEOUT_MS = 45_000;
 const HTML_LIMIT_BYTES = 2 * 1024 * 1024;
 
 export interface BrightDataTarget {

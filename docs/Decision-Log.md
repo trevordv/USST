@@ -49,7 +49,7 @@ This log records material USST deviations from the generic Agentic App Template 
   source, at most 42 calls across the 21 working/extraction-problematic source
   slots in a scan; normal successful direct paths cost zero. A successful
   alternate parse, including zero results, avoids an OpenAI repair for the
-  recovered URL. Each call has a 30-second timeout and 2 MB response cap.
+  recovered URL. Each call has a 45-second timeout and 2 MB response cap.
 - Deployment impact: Requires `BRIGHT_DATA_API_KEY` and `BRIGHT_DATA_ZONE` in
   Railway. Without both, current scan behavior is unchanged. No migration.
 - Rollback / exit path: Unset either variable to disable the adapter, or revert
@@ -62,7 +62,7 @@ This log records material USST deviations from the generic Agentic App Template 
   on an approved public Energy Magazine URL. The prior classifier grouped that
   response with login, paywall and challenge responses. A separate Bright Data
   diagnostic request returned HTTP 200, while an approved PV Magazine feed
-  timed out at the 30-second provider limit. A targeted Energy Magazine request
+  timed out at the former 30-second provider limit. A targeted Energy Magazine request
   from Railway returned HTTP 200 and 21,601 bytes in 7.3 seconds.
 - Decision: On registry-reviewed `extraction-problematic` public sources only,
   a plain 403 without login, payment, rate-limit or challenge evidence may be
@@ -70,7 +70,12 @@ This log records material USST deviations from the generic Agentic App Template 
   exact approved public URLs may also be retried. Never proxy a successfully
   parsed URL, authenticated source, registry-designated inaccessible source,
   AEMO workbook or EPBC ArcGIS source. Keep the per-source two-URL cap and
-  existing provider timeout, response-size cap and downstream eligibility gates.
+  bounded provider timeout, response-size cap and downstream eligibility gates.
+  RUN-0108 subsequently attempted Bright Data for Energy Magazine, but the
+  request timed out at 30 seconds during the concurrent scan. The same approved
+  URL succeeded from the Railway container in 21.7 seconds when retried alone.
+  Increase only the provider timeout to 45 seconds; keep the two-URL and 2 MB
+  caps, and measure the next bounded scan before merging.
 - Security / cost impact: A plain 403 alone is not proof of a login wall; any
   explicit authentication, paywall, rate-limit or challenge signal still blocks
   the provider call. Approved URLs and credentials remain fixed and server-side.
