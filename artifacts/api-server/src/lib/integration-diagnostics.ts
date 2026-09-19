@@ -13,6 +13,16 @@ export const REQUIRED_INTEGRATION_KEYS = [
 export type RequiredIntegrationKey = (typeof REQUIRED_INTEGRATION_KEYS)[number];
 export type IntegrationConfigurationStatus = "configured" | "missing";
 
+export const OPTIONAL_SCAN_INTEGRATION_KEYS = ["BRIGHT_DATA_API_KEY", "BRIGHT_DATA_ZONE"] as const;
+
+export function getOptionalScanIntegrationConfiguration(
+  environment: NodeJS.ProcessEnv = process.env,
+): Record<(typeof OPTIONAL_SCAN_INTEGRATION_KEYS)[number], IntegrationConfigurationStatus> {
+  return Object.fromEntries(OPTIONAL_SCAN_INTEGRATION_KEYS.map((key) => [
+    key, environment[key]?.trim() ? "configured" : "missing",
+  ])) as Record<(typeof OPTIONAL_SCAN_INTEGRATION_KEYS)[number], IntegrationConfigurationStatus>;
+}
+
 export function getIntegrationConfiguration(
   environment: NodeJS.ProcessEnv = process.env,
 ): Record<RequiredIntegrationKey, IntegrationConfigurationStatus> {
@@ -26,7 +36,10 @@ export function getIntegrationConfiguration(
 
 export function logIntegrationConfiguration(): void {
   logger.info(
-    { integrations: getIntegrationConfiguration() },
+    {
+      integrations: getIntegrationConfiguration(),
+      optionalScanIntegrations: getOptionalScanIntegrationConfiguration(),
+    },
     "Runtime integration configuration",
   );
 }

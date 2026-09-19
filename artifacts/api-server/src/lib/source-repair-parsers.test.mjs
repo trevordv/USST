@@ -19,11 +19,20 @@ test("real Incapsula challenge frames and other access barriers remain blocked",
   }
 });
 
-test("classifies access-control, HTTP, invalid-content, and usable responses for Railway diagnostics", () => {
+test("distinguishes plain public 403 from authentication, paywall and challenge responses", () => {
   assert.equal(
     classifySourceResponse(403, "text/html", "Forbidden"),
-    "blocked",
+    "public-access-block",
   );
+  for (const [status, body] of [
+    [401, "Unauthorized"], [402, "Payment required"], [403, "Please sign in"],
+    [403, "Subscription required"], [403, '<iframe src="/_Incapsula_Resource?incident_id=123"></iframe>'],
+    [429, "Too many requests"],
+  ]) assert.equal(classifySourceResponse(status, "text/html", body), "blocked");
+  assert.equal(classifySourceResponse(403, "text/html", "Forbidden", 'Basic realm="private"'), "blocked");
+});
+
+test("classifies challenge, HTTP, invalid-content, and usable responses for Railway diagnostics", () => {
   assert.equal(
     classifySourceResponse(
       200,

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   getIntegrationConfiguration,
+  getOptionalScanIntegrationConfiguration,
   REQUIRED_INTEGRATION_KEYS,
 } from "./integration-diagnostics.ts";
 
@@ -24,4 +25,13 @@ test("reports configuration presence without exposing secret values", () => {
   assert.equal(result.LUVI_PASSWORD, "missing");
   assert.equal(result.LUSHA_API_KEY, "configured");
   assert.doesNotMatch(JSON.stringify(result), /super-secret|user@example|apify-secret|lusha-secret/);
+});
+
+test("Bright Data readiness reports only presence of the key and zone", () => {
+  const result = getOptionalScanIntegrationConfiguration({
+    BRIGHT_DATA_API_KEY: "never-log-this-value",
+    BRIGHT_DATA_ZONE: "",
+  });
+  assert.deepEqual(result, { BRIGHT_DATA_API_KEY: "configured", BRIGHT_DATA_ZONE: "missing" });
+  assert.doesNotMatch(JSON.stringify(result), /never-log-this-value/);
 });

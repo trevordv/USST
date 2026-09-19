@@ -4,30 +4,46 @@ import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 import * as outcomes from "./source-extraction-outcome.ts";
 import { sourceAcquisitionOutcome } from "./source-access-outcome.ts";
-import { getSourceRepairStrategy } from "./source-repair-strategies.ts";
+import { AEMO_GENERATION_WORKBOOK_URL, getSourceRepairStrategy } from "./source-repair-strategies.ts";
 import { browseAiConfigurationProblem } from "./browse-ai-task.ts";
 import { filterEligibleScanProjects } from "./project-eligibility.ts";
 import { hashMeaningfulSourceContent, hashSourceContent } from "./ai-source-cache.ts";
+import { planBrightDataTargets, brightDataConfigured } from "./bright-data.ts";
 
 const scraper = await readFile(new URL("./scraper.ts", import.meta.url), "utf8");
 const start = scraper.indexOf("async function scrapeSource(");
 const end = scraper.indexOf("export async function runScan(", start);
 assert.ok(start >= 0 && end > start);
 const compiled = stripTypeScriptTypes(scraper.slice(start, end));
+const candidateStart = scraper.indexOf("function sourceRepairCandidatesToProjects(");
+const candidateEnd = scraper.indexOf("async function scrapeAemoGenerationWorkbook(", candidateStart);
+assert.ok(candidateStart >= 0 && candidateEnd > candidateStart);
+const mapCandidates = new Function("isEligibleScanProject", `${stripTypeScriptTypes(scraper.slice(candidateStart, candidateEnd))}\nreturn sourceRepairCandidatesToProjects;`)(() => true);
 const html = '<article class="post"><h2>Project updates</h2></article>';
 const project = { name: "River Solar Farm", description: "Proposed solar farm", capacityMw: 50, country: "AU", sourceUrl: "https://reneweconomy.com.au/river" };
+class MockSourceRequestError extends Error {
+  constructor(message, problem) { super(message); this.problem = problem; }
+}
 
 async function run(options = {}) {
-  const logs = [], calls = { ai: 0, aiHashes: [], fetch: [], browse: 0, special: 0 };
+  const logs = [], calls = { ai: 0, aiHashes: [], fetch: [], browse: 0, bright: [], special: 0 };
   const deps = {
     ...outcomes, sourceAcquisitionOutcome, getSourceRepairStrategy, browseAiConfigurationProblem,
-    hashMeaningfulSourceContent, hashSourceContent, SourceRequestError: class extends Error {},
+    planBrightDataTargets, brightDataConfigured: () => brightDataConfigured(options.env ?? {}),
+    diagnosticUrl: url => url ? new URL(url).origin + new URL(url).pathname : undefined,
+    fetchApprovedBrightData: async (_name, target) => {
+      calls.bright.push(target.url);
+      if (options.brightError) throw options.brightError;
+      return Buffer.from(options.brightHtml ?? '<h2>Project updates</h2>');
+    },
+    hashMeaningfulSourceContent, hashSourceContent, SourceRequestError: MockSourceRequestError,
     process: { env: options.env ?? {} },
     logger: { info: (fields, message) => logs.push({ ...fields, message }), warn() {} },
     logScanSourceOutcome: (source, outcome, fields) => logs.push({ source, outcome, ...fields }),
     logDirectSourceFailure() {}, finalFailureOutcome: () => "extraction-failed",
     fetchForSource: async (_, url) => {
       calls.fetch.push(url);
+      if (options.fetchByUrl?.[url]) throw options.fetchByUrl[url];
       if (options.fetchError) throw options.fetchError;
       return url.endsWith("/feed/") ? '<rss><channel></channel></rss>' : options.html ?? html;
     },
@@ -37,7 +53,7 @@ async function run(options = {}) {
     sourceRepairCandidatesToProjects: items => filterEligibleScanProjects(items),
     scrapeWithChatGpt: async (_source, _start, _end, contentHash) => { calls.ai++; calls.aiHashes.push(contentHash); return filterEligibleScanProjects(options.aiProjects ?? []); },
     scrapeWithBrowseAi: async () => { calls.browse++; if (options.browseError) throw options.browseError; return options.projects ?? []; },
-    AEMO_GENERATION_WORKBOOK_URL: "https://www.aemo.com.au/workbook.xlsx",
+    AEMO_GENERATION_WORKBOOK_URL,
     scrapeAemoGenerationWorkbook: async () => { calls.special++; if (options.fetchError) throw options.fetchError; return options.projects ?? []; },
     scrapeEpbcOfficialLayer: async () => { calls.special++; return options.projects ?? []; },
   };
@@ -64,10 +80,97 @@ test("valid results perform no AI call and keep duplicate URL handling", async (
 });
 
 test("fetch failures allow one configured AI repair and log the evidence", async () => {
-  const { calls, logs } = await run({ fetchError: new Error("HTTP 403") });
+  const { calls, logs } = await run({ fetchError: new Error("ECONNRESET") });
   assert.equal(calls.ai, 1);
-  assert.match(logs.find(l => l.outcome === "fallback-used").reason, /fetch-failed.*HTTP 403/);
+  assert.match(logs.find(l => l.outcome === "fallback-used").reason, /fetch-failed.*network/);
   assert.equal(logs.at(-1).directSucceeded, false);
+});
+
+test("a network-failed approved source uses Bright Data before AI and passes existing eligibility gates", async () => {
+  const env = { BRIGHT_DATA_API_KEY: "test", BRIGHT_DATA_ZONE: "unlocker" };
+  const source = { searchUrl: "https://reneweconomy.com.au/?s=solar+project+announced" };
+  const { calls, results, logs } = await run({ env, source, fetchError: new Error("ECONNRESET"), brightHtml: '<article class="post">Solar project</article>', projects: [project] });
+  assert.equal(calls.bright.length, 1);
+  assert.equal(calls.ai, 0);
+  assert.deepEqual(results, [project]);
+  assert.equal(logs.at(-1).directSucceeded, false);
+  assert.equal(logs.at(-1).brightSucceeded, true);
+  assert.equal(logs.at(-1).brightDataCalls, 1);
+  assert.ok(logs.at(-1).extractionOutcomes.some(a => a.method === "bright-data-html" && a.outcome === "success-with-results"));
+  assert.deepEqual(filterEligibleScanProjects([{ ...project, capacityMw: 4.99 }, { ...project, country: "US" }]), []);
+});
+
+test("Bright Data valid zero is not another reason for AI fallback", async () => {
+  const env = { BRIGHT_DATA_API_KEY: "test", BRIGHT_DATA_ZONE: "unlocker" };
+  const source = { searchUrl: "https://reneweconomy.com.au/?s=solar+project+announced" };
+  const { calls, logs } = await run({ env, source, fetchError: new Error("ECONNRESET"), brightHtml: '<article class="post">No projects found</article>' });
+  assert.equal(calls.bright.length, 1);
+  assert.equal(calls.ai, 0);
+  assert.equal(logs.at(-1).resultOutcome, "success-zero-results");
+});
+
+test("Bright Data structured candidates do not fabricate announcement dates or bypass a bounded date window", () => {
+  const candidate = { ...project, announcedDate: null };
+  const source = { name: "RenewMap", country: "AU" };
+  assert.deepEqual(mapCandidates([candidate], source, "2026-08-01", "2026-08-31", true), []);
+  assert.equal(mapCandidates([candidate], source, undefined, undefined, true)[0].announcedDate, null);
+  assert.equal(mapCandidates([{ ...candidate, announcedDate: "2026-08-15" }], source, "2026-08-01", "2026-08-31", true).length, 1);
+});
+
+test("Bright Data failure retains the prior bounded AI fallback", async () => {
+  const env = { BRIGHT_DATA_API_KEY: "test", BRIGHT_DATA_ZONE: "unlocker" };
+  const source = { searchUrl: "https://reneweconomy.com.au/?s=solar+project+announced" };
+  const { calls } = await run({ env, source, fetchError: new Error("ECONNRESET"), brightError: new Error("provider unavailable") });
+  assert.equal(calls.bright.length, 1);
+  assert.equal(calls.ai, 1);
+});
+
+test("unparseable Bright Data content is hashed before bounded AI repair", async () => {
+  const env = { BRIGHT_DATA_API_KEY: "test", BRIGHT_DATA_ZONE: "unlocker" };
+  const source = { searchUrl: "https://reneweconomy.com.au/?s=solar+project+announced" };
+  const first = await run({ env, source, fetchError: new Error("ECONNRESET"), brightHtml: "changed page markup" });
+  const second = await run({ env, source, fetchError: new Error("ECONNRESET"), brightHtml: "different page markup" });
+  assert.equal(first.calls.ai, 1);
+  assert.equal(second.calls.ai, 1);
+  assert.notEqual(first.calls.aiHashes[0], second.calls.aiHashes[0]);
+});
+
+test("registry-designated JavaScript sources use Bright Data after safe direct failure", async () => {
+  const env = { BRIGHT_DATA_API_KEY: "test", BRIGHT_DATA_ZONE: "unlocker" };
+  const source = { name: "RenewMap", searchUrl: "https://renewmap.com.au/resources/" };
+  const { calls, logs } = await run({ env, source, fetchError: new Error("ECONNRESET"), brightHtml: "<h2>Solar project</h2>", projects: [project] });
+  assert.deepEqual(calls.bright, getSourceRepairStrategy("RenewMap").officialUrls);
+  assert.equal(calls.ai, 0);
+  assert.equal(logs.at(-1).brightSucceeded, true);
+});
+
+test("plain public 403 on a reviewed source uses Bright Data but protected paths do not", async () => {
+  const env = { BRIGHT_DATA_API_KEY: "test", BRIGHT_DATA_ZONE: "unlocker" };
+  const source = { name: "Energy Magazine", searchUrl: getSourceRepairStrategy("Energy Magazine").officialUrls[1] };
+  const ordinary = await run({ env, source, fetchError: new MockSourceRequestError("HTTP 403", "public-access-block"), brightHtml: '<article class="post">Solar project</article>', projects: [project] });
+  const challenge = await run({ env, source, fetchError: new MockSourceRequestError("challenge", "blocked") });
+  const aemo = await run({ env, source: { name: "AEMO" }, fetchError: new MockSourceRequestError("HTTP 403", "blocked") });
+  assert.deepEqual(ordinary.calls.bright, [source.searchUrl]);
+  assert.equal(ordinary.calls.ai, 0);
+  assert.equal(challenge.calls.bright.length, 0);
+  assert.equal(aemo.calls.bright.length, 0);
+  assert.equal(aemo.calls.ai, 1);
+});
+
+test("Energy Magazine's empty RSS plus plain-403 search retries only the search URL", async () => {
+  const strategy = getSourceRepairStrategy("Energy Magazine");
+  const source = { name: strategy.name, feedUrl: strategy.officialUrls[0], searchUrl: strategy.officialUrls[1] };
+  const env = { BRIGHT_DATA_API_KEY: "test", BRIGHT_DATA_ZONE: "unlocker" };
+  const { calls, logs } = await run({
+    env, source, brightHtml: '<article class="post">No matching projects</article>',
+    fetchError: undefined,
+    html: '<article class="post">No matching projects</article>',
+    // The RSS is a valid zero, while only the search page is denied.
+    fetchByUrl: { [source.searchUrl]: new MockSourceRequestError("HTTP 403", "public-access-block") },
+  });
+  assert.deepEqual(calls.bright, [source.searchUrl]);
+  assert.equal(calls.ai, 0);
+  assert.equal(logs.at(-1).brightDataCalls, 1);
 });
 
 test("parse failures, unusable documents and JS-only shells allow repair", async () => {
@@ -123,6 +226,21 @@ test("Browse.AI remains first when configured; valid zero and nonzero results ne
     const { calls } = await run(options);
     assert.equal(calls.ai, 1);
   }
+});
+
+test("Browse.AI failure does not bypass the NZ site's access controls through Bright Data", async () => {
+  const env = {
+    BROWSE_AI_API_KEY: "test", BROWSE_AI_NZ_FAST_TRACK_ROBOT_ID: "robot",
+    BRIGHT_DATA_API_KEY: "test", BRIGHT_DATA_ZONE: "unlocker",
+  };
+  const { calls } = await run({
+    source: { name: "NZ Fast-track" }, env,
+    browseError: new Error("robot unavailable"),
+    brightHtml: "<h2>Solar project</h2>", projects: [project],
+  });
+  assert.equal(calls.browse, 1);
+  assert.equal(calls.bright.length, 0);
+  assert.equal(calls.ai, 1);
 });
 
 test("structured sources do not search after valid empty acquisition", async () => {
