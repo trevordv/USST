@@ -123,7 +123,7 @@ export default function Projects() {
       <div className="flex flex-col gap-6">
         {scanId != null && (
           <div className="flex items-center gap-3 px-4 py-2.5 bg-primary/10 border border-primary/20 rounded-lg text-sm">
-            <span className="font-medium text-primary">Showing new projects from scan RUN-{scanId.toString().padStart(4, '0')}</span>
+            <span className="font-medium text-primary">Showing projects first created in scan RUN-{scanId.toString().padStart(4, '0')}</span>
             <Button
               variant="ghost"
               size="sm"

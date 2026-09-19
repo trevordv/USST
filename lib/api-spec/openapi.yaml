@@ -304,7 +304,7 @@ paths:
       operationId: getScanProjects
       tags: [scans]
       summary: List all projects discovered by a scan
-      description: Returns every project found by this scan run (both new and existing), with an isNew flag on each.
+      description: Returns every qualifying project linked to this scan, including new projects, dated updates to canonical projects, and current inventory observations.
       parameters:
         - name: id
           in: path
@@ -714,7 +714,7 @@ components:
 
     ScanProject:
       type: object
-      required: [id, name, country, status, createdAt, updatedAt, isNew]
+      required: [id, name, country, status, createdAt, updatedAt, isNew, eventType, effectiveDate, dateEvidence, eventSourceUrl, eventSourceName]
       properties:
         id:
           type: integer
@@ -761,6 +761,22 @@ components:
         isNew:
           type: boolean
           description: True if this project was newly inserted during this scan
+        eventType:
+          type: string
+          enum: [new, updated, inventory_observed]
+          description: How the canonical project relates to this scan; this does not redefine isNew.
+        effectiveDate:
+          type: ["string", "null"]
+          format: date
+          description: Date of the source event, or null for an undated inventory observation.
+        dateEvidence:
+          type: string
+          description: Provenance classification supporting the effective date.
+        eventSourceUrl:
+          type: ["string", "null"]
+          description: Source URL for this scan event, which may differ from the canonical project's source URL.
+        eventSourceName:
+          type: ["string", "null"]
 
     ContactEnrichment:
       type: object

@@ -30,8 +30,11 @@ export const scanProjectsTable = pgTable("scan_projects", {
   // projectName at the time of scan for traceability
   projectName: text("project_name"),
   isNew: boolean("is_new").notNull().default(false),
+  eventType: text("event_type").notNull().default("inventory_observed"),
   effectiveDate: date("effective_date", { mode: "string" }),
   dateEvidence: text("date_evidence").notNull().default("unknown"),
+  sourceUrl: text("source_url"),
+  sourceName: text("source_name"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

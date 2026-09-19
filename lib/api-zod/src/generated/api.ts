@@ -241,7 +241,7 @@ export const GetScanResponse = zod.object({
 
 
 /**
- * Returns every project found by this scan run (both new and existing), with an isNew flag on each.
+ * Returns every qualifying project linked to this scan, including new projects, dated updates to canonical projects, and current inventory observations.
  * @summary List all projects discovered by a scan
  */
 export const GetScanProjectsParams = zod.object({
@@ -269,7 +269,12 @@ export const GetScanProjectsResponseItem = zod.object({
   "createdAt": zod.string(),
   "updatedAt": zod.string(),
   "scanId": zod.number().nullish(),
-  "isNew": zod.boolean().describe('True if this project was newly inserted during this scan')
+  "isNew": zod.boolean().describe('True if this project was newly inserted during this scan'),
+  "eventType": zod.enum(['new', 'updated', 'inventory_observed']).describe('How the canonical project relates to this scan; this does not redefine isNew.'),
+  "effectiveDate": zod.coerce.date().nullable().describe('Date of the source event, or null for an undated inventory observation.'),
+  "dateEvidence": zod.string().describe('Provenance classification supporting the effective date.'),
+  "eventSourceUrl": zod.string().nullable().describe('Source URL for this scan event, which may differ from the canonical project\'s source URL.'),
+  "eventSourceName": zod.string().nullable()
 })
 export const GetScanProjectsResponse = zod.array(GetScanProjectsResponseItem)
 

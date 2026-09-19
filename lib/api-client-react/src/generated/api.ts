@@ -981,7 +981,7 @@ export const getGetScanProjectsUrl = (id: number,) => {
 }
 
 /**
- * Returns every project found by this scan run (both new and existing), with an isNew flag on each.
+ * Returns every qualifying project linked to this scan, including new projects, dated updates to canonical projects, and current inventory observations.
  * @summary List all projects discovered by a scan
  */
 export const getScanProjects = async (id: number, options?: RequestInit): Promise<ScanProject[]> => {

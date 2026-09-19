@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { summarizeScanLineage, getProjectIneligibilityReason } from "./project-eligibility.ts";
+import { classifyScanProjectEvent, summarizeScanLineage, getProjectIneligibilityReason } from "./project-eligibility.ts";
 import { decideScanDateWindow, filterRelationsForScanWindow, parseSourceAnnouncementDate } from "./scan-date-window.ts";
 
 const window = { startDate: "2026-08-07", endDate: "2026-08-14" };
@@ -65,6 +65,23 @@ test("AltEnergy event/news updates still use their event date", () => {
     projectsFound: 1,
     newProjects: 0,
   });
+});
+
+test("Watts News evidence creates a dated Updated event without redefining is_new", () => {
+  const result = decideScanDateWindow({
+    startDate: "2026-09-07",
+    endDate: "2026-09-14",
+    existingProject: true,
+    persistedAnnouncedDate: "2026-03-26",
+    scrapedAnnouncedDate: "2026-09-11",
+    sourceEventDate: "2026-09-11",
+    sourceEventEvidence: "altenergy_watts_news_update",
+  });
+  assert.equal(result.effectiveDate, "2026-09-11");
+  assert.equal(result.evidence, "altenergy_watts_news_update");
+  assert.equal(classifyScanProjectEvent({ isNew: false, dateEvidence: result.evidence }), "updated");
+  assert.equal(classifyScanProjectEvent({ isNew: true, dateEvidence: result.evidence }), "new");
+  assert.equal(classifyScanProjectEvent({ isNew: false, dateEvidence: "altenergy_inventory_observation" }), "inventory_observed");
 });
 
 test("AltEnergy event/news updates outside the window are excluded", () => {
@@ -157,8 +174,20 @@ test("routes persist the requested window and both scan views use authoritative 
   ]);
   assert.match(scanRoutes, /startDate: parsed\.data\.startDate/);
   assert.match(scanRoutes, /filterRelationsForScanWindow/);
+  assert.match(scanRoutes, /eventSourceUrl/);
   assert.match(projectRoutes, /eq\(projectsTable\.scanId, scanId\)/);
   assert.match(detail, /\+\{newCount\}/);
+  assert.match(detail, /Inventory Observed/);
+  assert.match(detail, /Updated/);
+});
+
+test("Watts News fallback repairs bounded sections instead of using a newsletter-wide zero gate", async () => {
+  const scraper = await readFile(new URL("./scraper.ts", import.meta.url), "utf8");
+  assert.match(scraper, /parseWattNewsSections\(newsletterHtml/);
+  assert.match(scraper, /parseWattNewsWithChatGpt\(section\.text/);
+  assert.doesNotMatch(scraper, /foundInNewsletter\s*===\s*0/);
+  assert.match(scraper, /solar_capacity_mw is solar generation MW only/);
+  assert.match(scraper, /!eligibleExistingProjectIds\.has\(existingProjectId\) && !wattsMatch/);
 });
 
 test("the schema migration preserves historical production values for an explicit remediation", async () => {

@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import { desc, eq, inArray } from "drizzle-orm";
 import { db, scansTable, projectsTable, scanProjectsTable } from "@workspace/db";
 import { TriggerScanBody, GetScanParams } from "@workspace/api-zod";
-import { filterEligibleScanProjects } from "../lib/project-eligibility";
+import { classifyScanProjectEvent, filterEligibleScanProjects } from "../lib/project-eligibility";
 import { filterRelationsForScanWindow } from "../lib/scan-date-window";
 import { requireAdmin } from "../middlewares/supabase-auth";
 import { admitCostlyOperation } from "../lib/job-admission";
@@ -124,16 +124,28 @@ router.get("/scans/:id/projects", async (req, res): Promise<void> => {
       .select()
       .from(projectsTable)
       .where(inArray(projectsTable.id, projectIds));
-    const isNewMap = new Map(inWindowRelations.map((r) => [r.projectId, r.isNew]));
+    const relationMap = new Map(inWindowRelations.map((r) => [r.projectId, r]));
 
     res.json(
-      filterEligibleScanProjects(projects).map((p) => ({
-        ...p,
-        capacityMw: p.capacityMw != null ? parseFloat(p.capacityMw) : null,
-        createdAt: p.createdAt.toISOString(),
-        updatedAt: p.updatedAt.toISOString(),
-        isNew: isNewMap.get(p.id) ?? false,
-      }))
+      filterEligibleScanProjects(projects).map((p) => {
+        const relation = relationMap.get(p.id);
+        return {
+          ...p,
+          capacityMw: p.capacityMw != null ? parseFloat(p.capacityMw) : null,
+          createdAt: p.createdAt.toISOString(),
+          updatedAt: p.updatedAt.toISOString(),
+          isNew: relation?.isNew ?? false,
+          eventType: classifyScanProjectEvent({
+            isNew: relation?.isNew ?? false,
+            dateEvidence: relation?.dateEvidence,
+            eventType: relation?.eventType,
+          }),
+          effectiveDate: relation?.effectiveDate ?? null,
+          dateEvidence: relation?.dateEvidence ?? "unknown",
+          eventSourceUrl: relation?.sourceUrl ?? p.sourceUrl,
+          eventSourceName: relation?.sourceName ?? p.sourceName,
+        };
+      })
     );
     return;
   }
@@ -152,6 +164,11 @@ router.get("/scans/:id/projects", async (req, res): Promise<void> => {
       createdAt: p.createdAt.toISOString(),
       updatedAt: p.updatedAt.toISOString(),
       isNew: true,
+      eventType: "new",
+      effectiveDate: p.announcedDate,
+      dateEvidence: p.announcedDate ? "source_reported" : "unknown",
+      eventSourceUrl: p.sourceUrl,
+      eventSourceName: p.sourceName,
     }))
   );
 });

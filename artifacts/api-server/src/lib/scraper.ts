@@ -21,7 +21,7 @@
  */
 
 import { db, pool, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable, pvhContactsTable, type PvhContact } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { logger } from "./logger";
 import {
   getProjectIneligibilityReason,
@@ -65,6 +65,16 @@ import {
   assertSourceDocument, failedExtractionOutcome, paidSourceFallbackReason,
   successfulExtractionOutcome, SourceExtractionError, type ExtractionAttempt, type ExtractionOutcome,
 } from "./source-extraction-outcome";
+import {
+  WATTS_NEWS_UPDATE_EVIDENCE,
+  describeWattsNewsEvidence,
+  extractWattNewsProject,
+  extractWattsNewsCapacities,
+  findCanonicalWattsNewsMatch,
+  parseWattNewsSections,
+  planWattsNewsCanonicalUpdates,
+  type WattsNewsProjectEvidence,
+} from "./watts-news";
 
 // ---------------------------------------------------------------------------
 // AltEnergy authenticated session
@@ -251,8 +261,10 @@ interface ScrapedProject {
   announcedDate: string | null;
   announcedDateEvidence?: "source_reported" | "unknown";
   sourceEventDate?: string | null;
-  sourceEventEvidence?: "source_update" | "altenergy_source_update";
+  sourceEventEvidence?: "source_update" | "altenergy_source_update" | "altenergy_watts_news_update";
   inventoryObservation?: boolean;
+  eventType?: "new" | "updated" | "inventory_observed";
+  wattsNewsEvidence?: WattsNewsProjectEvidence;
   rawStructuredCapacityMw?: number | null;
   capacityEvidence?: "structured_capacity" | "explicit_ac_capacity" | "explicit_project_capacity" | "none";
   capacityEvidenceText?: string | null;
@@ -1132,7 +1144,14 @@ export async function scrapeAltEnergy(
 
       try {
         const newsletterHtml = await fetchAltEnergy(newsletter.url);
-        let foundInNewsletter = 0;
+        const diagnostics = {
+          newslettersFetched: 1,
+          candidateSections: 0,
+          deterministicSectionsResolved: 0,
+          aiRepairedSections: 0,
+          unresolvedMissingCapacity: 0,
+          rejectedStatusTechnology: 0,
+        };
 
         // 3a. Parse the Project Milestones Summary table (top of every newsletter).
         //     This catches all newly-added projects even if they have no dedicated article section.
@@ -1141,75 +1160,83 @@ export async function scrapeAltEnergy(
           if (!seenUrls.has(p.sourceUrl)) {
             seenUrls.add(p.sourceUrl);
             projects.push(p);
-            foundInNewsletter++;
             logger.info({ name: p.name }, "Watt News milestones table: project found");
           }
         }
 
-        // 3b. Parse "NEW PROJECT:" and "PROJECT UPDATE:" article sections from the body text.
-        //     Strip HTML and increase limit to capture full newsletter content.
-        const text = newsletterHtml
-          .replace(/<script[\s\S]*?<\/script>/gi, " ")
-          .replace(/<style[\s\S]*?<\/style>/gi, " ")
-          .replace(/<[^>]+>/g, " ")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 20000);
-
-        const sections = text.split(/(?=NEW PROJECT:|PROJECT UPDATE:|PROJECT MILESTONE:)/i);
+        // 3b. Parse bounded project articles from the newsletter DOM. Each
+        // unresolved section is repaired independently; a successful section
+        // never suppresses repair of another one.
+        const sections = parseWattNewsSections(newsletterHtml, newsletter.url);
+        diagnostics.candidateSections = sections.length;
         for (const section of sections) {
-          const isNew = /^NEW PROJECT:/i.test(section);
-          const isUpdate = /^PROJECT UPDATE:/i.test(section);
-          if (!isNew && !isUpdate) continue;
+          let evidence = extractWattNewsProject(section, newsletter.date);
+          if (!evidence.activeLifecycle) {
+            diagnostics.rejectedStatusTechnology++;
+            continue;
+          }
 
-          const snippet = section.slice(0, 700);
-          const sectionLower = snippet.toLowerCase();
+          const deterministicallyResolved = evidence.technologyResolved && evidence.solarCapacityMw != null;
+          if (!deterministicallyResolved) {
+            logger.info(
+              { url: section.sourceUrl, missingTechnology: !evidence.technologyResolved, missingSolarCapacity: evidence.solarCapacityMw == null },
+              "Watt News section requires bounded AI repair",
+            );
+            const repaired = (await parseWattNewsWithChatGpt(section.text, newsletter.date, section.sourceUrl))[0];
+            if (repaired) {
+              evidence = {
+                ...evidence,
+                name: repaired.name || evidence.name,
+                description: repaired.description || evidence.description,
+                developer: repaired.developer ?? evidence.developer,
+                location: repaired.location ?? evidence.location,
+                country: repaired.country,
+                status: repaired.status,
+                solarCapacityMw: repaired.capacityMw ?? evidence.solarCapacityMw,
+                technologyResolved: hasSolarComponent(repaired.name, repaired.description) || evidence.technologyResolved,
+              };
+              diagnostics.aiRepairedSections++;
+            }
+          } else {
+            diagnostics.deterministicSectionsResolved++;
+          }
 
-          // Must have a solar keyword in the section
-          if (!SOLAR_TITLE_KEYWORDS.some((kw) => sectionLower.includes(kw))) continue;
-
-          const nameMatch = section.match(/^(?:NEW PROJECT|PROJECT UPDATE|PROJECT MILESTONE):\s*([^\n.]+)/i);
-          const name = nameMatch?.[1]?.trim();
-          if (!name || name.length < 5) continue;
-
-          const projectUrl = `${newsletter.url}#${encodeURIComponent(name.slice(0, 40))}`;
-          if (seenUrls.has(projectUrl)) continue;
-          seenUrls.add(projectUrl);
-
-          const capacityMw = extractCapacity(snippet);
-          if (capacityMw == null || capacityMw < 5) continue;
-
+          if (!evidence.technologyResolved) {
+            diagnostics.rejectedStatusTechnology++;
+            continue;
+          }
+          // A missing section capacity is retained only so a later strong
+          // canonical match can reuse verified existing capacity. An unmatched
+          // project still fails the ordinary missing-capacity gate.
+          if (evidence.solarCapacityMw == null) diagnostics.unresolvedMissingCapacity++;
+          if (seenUrls.has(section.sourceUrl)) continue;
+          seenUrls.add(section.sourceUrl);
           projects.push({
-            name,
-            description: snippet.replace(/^[^\n]+\n/, "").trim().slice(0, 600),
-            capacityMw,
-            developer: extractDeveloper(snippet),
-            location: extractLocation(snippet, "AU"),
-            country: "AU",
-            status: isNew ? "announced" : "under_development",
-            sourceUrl: projectUrl,
+            name: evidence.name,
+            description: describeWattsNewsEvidence(evidence),
+            capacityMw: evidence.solarCapacityMw,
+            developer: evidence.developer,
+            location: evidence.location,
+            country: evidence.country,
+            status: evidence.status,
+            sourceUrl: section.sourceUrl,
             sourceName: "AltEnergy – Watts News",
             announcedDate: newsletter.date,
+            sourceEventDate: newsletter.date,
+            sourceEventEvidence: WATTS_NEWS_UPDATE_EVIDENCE,
+            eventType: "updated",
+            wattsNewsEvidence: evidence,
             contactName: null,
             contactEmail: null,
             contactPhone: null,
           });
-          foundInNewsletter++;
+          logger.info({ name: evidence.name, deterministic: deterministicallyResolved }, "Watt News project section accepted for canonical resolution");
         }
 
-        // 3c. ChatGPT fallback — fires when HTML parsing found nothing for this newsletter.
-        //     Sends the stripped page text to GPT-4o for project extraction.
-        if (foundInNewsletter === 0) {
-          logger.info({ url: newsletter.url }, "Watt News HTML parsing found 0 projects — trying ChatGPT fallback");
-          const gptProjs = await parseWattNewsWithChatGpt(text, newsletter.date, newsletter.url);
-          for (const p of gptProjs) {
-            if (!seenUrls.has(p.sourceUrl)) {
-              seenUrls.add(p.sourceUrl);
-              projects.push(p);
-              logger.info({ name: p.name }, "Watt News ChatGPT fallback: project found");
-            }
-          }
-        }
+        logger.info(
+          { url: newsletter.url, ...diagnostics },
+          "AltEnergy Watts News newsletter diagnostics",
+        );
       } catch (err) {
         logger.warn({ err, url: newsletter.url }, "Watt News article fetch failed");
       }
@@ -2005,7 +2032,12 @@ function parseWattNewsMilestonesTable(
       // Reject wind
       if (isWindProject(projectName, descRaw)) continue;
 
-      const capacityMw = extractCapacity(fullText);
+      const capacities = extractWattsNewsCapacities(fullText);
+      // In a hybrid milestone row, a generic MW value can describe the BESS.
+      // Only fall back to the legacy generic extractor when battery terminology
+      // is absent; otherwise require explicitly solar-labelled capacity.
+      const capacityMw = capacities.solarCapacityMw
+        ?? (!/\b(?:BESS|battery|energy storage)\b/i.test(fullText) ? extractCapacity(fullText) : null);
       if (capacityMw == null || capacityMw < 5) continue;
 
       const country: "AU" | "NZ" = /\bNZ\b/.test(stateRaw) ? "NZ" : "AU";
@@ -2023,6 +2055,9 @@ function parseWattNewsMilestonesTable(
         sourceUrl: `${newsletterUrl}#milestone-${encodeURIComponent(projectName.slice(0, 40))}`,
         sourceName: "AltEnergy – Watts News",
         announcedDate: newsletterDate,
+        sourceEventDate: newsletterDate,
+        sourceEventEvidence: WATTS_NEWS_UPDATE_EVIDENCE,
+        eventType: "updated",
         contactName: null,
         contactEmail: null,
         contactPhone: null,
@@ -2034,8 +2069,8 @@ function parseWattNewsMilestonesTable(
 }
 
 /**
- * Use ChatGPT to extract solar/hybrid projects from a Watts News newsletter
- * when HTML table/section parsing yields nothing.
+ * Repair one bounded Watts News project section when deterministic extraction
+ * cannot establish project identity, technology, or solar capacity.
  */
 async function parseWattNewsWithChatGpt(
   text: string,
@@ -2046,7 +2081,7 @@ async function parseWattNewsWithChatGpt(
     const { openai } = await import("@workspace/integrations-openai-ai-server");
     const gpt = openai as unknown as GptScraperOpenAI;
 
-    const prompt = `The following is the text content of an AltEnergy Watts News newsletter dated ${newsletterDate}.
+    const prompt = `The following is one bounded project article section from an AltEnergy Watts News newsletter dated ${newsletterDate}.
 
 Extract all solar or solar+BESS hybrid projects ≥5 MW in Australia or New Zealand that are newly announced, proposed, approved, or being assessed. Do NOT include standalone battery/BESS-only projects, wind-only projects, or operational projects.
 
@@ -2055,7 +2090,9 @@ Return ONLY a valid JSON array (no prose, no markdown fences):
   {
     "name": "Example Solar Farm",
     "description": "250 MW solar farm in regional VIC",
-    "capacity_mw": 250,
+    "solar_capacity_mw": 250,
+    "bess_power_mw": 200,
+    "bess_energy_mwh": 800,
     "developer": "Acme Energy",
     "location": "Regional VIC",
     "country": "AU",
@@ -2066,11 +2103,13 @@ Return ONLY a valid JSON array (no prose, no markdown fences):
 Rules:
 - country: "AU" or "NZ" only
 - status: "announced" or "under_development"
-- capacity_mw: number (MW) or null — exclude projects <5 MW
+- solar_capacity_mw is solar generation MW only, never BESS power or MWh
+- bess_power_mw and bess_energy_mwh are optional battery evidence
+- use null when an explicit value is absent; never invent capacity
 - Exclude: wind-only, BESS-only, operational/generating, headlines about industry trends or policy
 - Return [] if nothing relevant found
 
-Newsletter text:
+Bounded article section:
 ${text.slice(0, 12000)}`;
 
     const parsed = await runOpenAiEscalation({ context: {
@@ -2100,7 +2139,8 @@ ${text.slice(0, 12000)}`;
           throw new OpenAiQualityError("schema_invalid", "Watts News response was not a project-object array");
         }
         return rows as Array<{
-          name?: string; description?: string; capacity_mw?: number | null;
+          name?: string; description?: string; solar_capacity_mw?: number | null;
+          bess_power_mw?: number | null; bess_energy_mwh?: number | null;
           developer?: string | null; location?: string | null; country?: string; status?: string;
         }>;
       } catch (error) {
@@ -2110,11 +2150,11 @@ ${text.slice(0, 12000)}`;
     }, resultCount: rows => rows.length });
 
     return parsed
-      .filter((r) => r.name)
+      .filter((r) => r.name && (r.country === "AU" || r.country === "NZ"))
       .map((r) => {
         const fullText = `${r.name ?? ""} ${r.description ?? ""}`;
         // Use GPT-provided capacity first; fall back to regex extraction from description
-        let capacityMw: number | null = typeof r.capacity_mw === "number" ? r.capacity_mw : null;
+        let capacityMw: number | null = typeof r.solar_capacity_mw === "number" ? r.solar_capacity_mw : null;
         if (capacityMw == null) capacityMw = extractCapacity(fullText);
         return {
           name: r.name!,
@@ -2122,7 +2162,7 @@ ${text.slice(0, 12000)}`;
           capacityMw,
           developer: r.developer ?? null,
           location: r.location ?? null,
-          country: (r.country === "NZ" ? "NZ" : "AU") as "AU" | "NZ",
+          country: r.country as "AU" | "NZ",
           status: (r.status === "under_development" ? "under_development" : "announced") as "announced" | "under_development",
           sourceUrl: `${newsletterUrl}#gpt-${encodeURIComponent((r.name ?? "").slice(0, 40))}`,
           sourceName: "AltEnergy – Watts News",
@@ -3746,17 +3786,23 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
     // Build a lookup of existing sourceUrl -> { id, announcedDate } for quick checking
     const existingByUrl = new Map<string, number>();
     const existingDateByUrl = new Map<string, string | null>(); // sourceUrl -> DB-stored announcedDate
+    const existingDateById = new Map<number, string | null>();
     const eligibleExistingProjectIds = new Set<number>();
     const existingRows = await db.select({
       id: projectsTable.id,
       name: projectsTable.name,
       description: projectsTable.description,
       capacityMw: projectsTable.capacityMw,
+      developer: projectsTable.developer,
+      location: projectsTable.location,
       country: projectsTable.country,
       sourceUrl: projectsTable.sourceUrl,
+      sourceName: projectsTable.sourceName,
+      status: projectsTable.status,
       announcedDate: projectsTable.announcedDate,
     }).from(projectsTable);
     for (const r of existingRows) {
+      existingDateById.set(r.id, r.announcedDate);
       if (r.sourceUrl) {
         existingByUrl.set(r.sourceUrl, r.id);
         existingDateByUrl.set(r.sourceUrl, r.announcedDate);
@@ -3766,9 +3812,35 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
 
     // Load PVH fallback contacts once for the whole scan
     const pvhContacts = await db.select().from(pvhContactsTable);
+    const wattsPersistenceDiagnostics = {
+      acceptedNew: 0,
+      canonicalUpdatesMatched: 0,
+      inventoryObservations: 0,
+      duplicateMatches: 0,
+      rejectedMissingCapacity: 0,
+      rejectedStatusTechnology: 0,
+    };
 
     // Insert / record every project found by this scan (deduplicate by sourceUrl)
     for (const project of allScraped) {
+      // Resolve dated Watts News events against canonical projects before the
+      // quality gate. This permits a strongly matched update with no capacity
+      // in the article (for example Wooderson) to reuse verified canonical
+      // capacity, while an unmatched/new article can never invent it.
+      const wattsMatch = project.wattsNewsEvidence
+        ? findCanonicalWattsNewsMatch(project.wattsNewsEvidence, existingRows)
+        : null;
+      const urlMatchedProjectId = project.sourceUrl ? existingByUrl.get(project.sourceUrl) : undefined;
+      let existingProjectId = wattsMatch?.project.id ?? (urlMatchedProjectId != null && urlMatchedProjectId !== -1 ? urlMatchedProjectId : null);
+      if (wattsMatch) {
+        wattsPersistenceDiagnostics.canonicalUpdatesMatched++;
+        if (project.capacityMw == null) project.capacityMw = Number(wattsMatch.project.capacityMw);
+        logger.info(
+          { project: project.name, projectId: wattsMatch.project.id, matchReason: wattsMatch.reason, matchScore: wattsMatch.score, reusedCanonicalCapacity: project.wattsNewsEvidence?.solarCapacityMw == null },
+          "AltEnergy Watts News canonical project matched",
+        );
+      }
+
       // Pre-insert quality gate — skip noise
       if (isNoisyProjectName(project.name)) {
         if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1); // sentinel
@@ -3776,6 +3848,13 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       }
       const ineligibilityReason = getProjectIneligibilityReason(project);
       if (ineligibilityReason) {
+        if (project.sourceName === "AltEnergy – Watts News") {
+          if (ineligibilityReason === "missing-capacity" || ineligibilityReason === "below-minimum-capacity") {
+            wattsPersistenceDiagnostics.rejectedMissingCapacity++;
+          } else {
+            wattsPersistenceDiagnostics.rejectedStatusTechnology++;
+          }
+        }
         logger.info(
           {
             project: project.name,
@@ -3805,8 +3884,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       // use the DB-stored date — some sources assign today's date as a fallback
       // for undated items, which would otherwise let old March/May records slip
       // through. For new projects, use the scraped date directly.
-      const isExisting = !!project.sourceUrl && existingByUrl.has(project.sourceUrl);
-      const existingProjectId = isExisting ? existingByUrl.get(project.sourceUrl)! : null;
+      const isExisting = existingProjectId != null;
       if (existingProjectId != null && existingProjectId !== -1) {
         await db.update(projectsTable).set({ lastSeenAt: new Date() }).where(eq(projectsTable.id, existingProjectId));
       }
@@ -3817,7 +3895,9 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         sourceEventDate: project.sourceEventDate,
         sourceEventEvidence: project.sourceEventEvidence,
         inventoryObservation: project.inventoryObservation,
-        persistedAnnouncedDate: project.sourceUrl ? existingDateByUrl.get(project.sourceUrl) : null,
+        persistedAnnouncedDate: existingProjectId != null
+          ? existingDateById.get(existingProjectId)
+          : project.sourceUrl ? existingDateByUrl.get(project.sourceUrl) : null,
         existingProject: isExisting,
       });
       if (!dateDecision.include) {
@@ -3828,15 +3908,21 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       const isNew = !isExisting;
 
       try {
-        if (existingProjectId === -1 || (existingProjectId != null && linkedProjectIds.has(existingProjectId))) {
+        if (urlMatchedProjectId === -1) {
           continue;
         }
-        if (existingProjectId != null && !eligibleExistingProjectIds.has(existingProjectId)) {
+        if (existingProjectId != null && !eligibleExistingProjectIds.has(existingProjectId) && !wattsMatch) {
           logger.info(
             { project: project.name, projectId: existingProjectId },
             "Quality gate: ineligible historical project not linked to new scan",
           );
           continue;
+        }
+        if (existingProjectId != null && !eligibleExistingProjectIds.has(existingProjectId) && wattsMatch) {
+          logger.info(
+            { project: project.name, projectId: existingProjectId, matchReason: wattsMatch.reason },
+            "Dated Watts News evidence restored eligibility for a strongly matched canonical project",
+          );
         }
 
         const projectId = await db.transaction(async (tx) => {
@@ -3883,21 +3969,46 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
             throw new Error("Project insert did not return an id");
           }
 
-          // Record all found projects (new and existing) in scan_projects.
-          await tx.insert(scanProjectsTable).values({
-            scanId,
-            projectId: persistedProjectId,
+          const eventType = isNew
+            ? "new"
+            : project.eventType ?? (project.inventoryObservation ? "inventory_observed" : "updated");
+
+          if (wattsMatch && project.wattsNewsEvidence) {
+            const canonical = wattsMatch.project;
+            const { updates: fieldUpdates, decisions } = planWattsNewsCanonicalUpdates(project.wattsNewsEvidence, canonical);
+            const updates: Partial<typeof projectsTable.$inferInsert> = { ...fieldUpdates, lastSeenAt: new Date() };
+            await tx.update(projectsTable).set(updates).where(eq(projectsTable.id, persistedProjectId));
+            logger.info({ projectId: persistedProjectId, sourceUrl: project.sourceUrl, decisions }, "Canonical field precedence evaluated for Watts News update");
+          }
+
+          const relationValues = {
             projectName: project.name,
             isNew,
+            eventType,
             effectiveDate: dateDecision.effectiveDate,
             dateEvidence: dateDecision.evidence,
-          });
+            sourceUrl: project.sourceUrl,
+            sourceName: project.sourceName,
+          };
+          if (linkedProjectIds.has(persistedProjectId)) {
+            if (project.sourceName === "AltEnergy – Watts News") wattsPersistenceDiagnostics.duplicateMatches++;
+            if (eventType === "updated") {
+              await tx.update(scanProjectsTable).set(relationValues).where(and(
+                eq(scanProjectsTable.scanId, scanId),
+                eq(scanProjectsTable.projectId, persistedProjectId),
+              ));
+            }
+          } else {
+            await tx.insert(scanProjectsTable).values({ scanId, projectId: persistedProjectId, ...relationValues });
+          }
 
           return persistedProjectId;
         });
 
         linkedProjectIds.add(projectId);
-        persistedLineage.push({ projectId, isNew });
+        persistedLineage.push({ projectId, isNew, eventType: isNew ? "new" : project.eventType });
+        if (project.sourceName === "AltEnergy – Watts News" && isNew) wattsPersistenceDiagnostics.acceptedNew++;
+        if (project.inventoryObservation) wattsPersistenceDiagnostics.inventoryObservations++;
         if (isNew && project.sourceUrl) existingByUrl.set(project.sourceUrl, projectId);
       } catch (err) {
         logger.warn({ err, project: project.name }, "Failed to insert project or scan relationship");
@@ -3927,6 +4038,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       },
       "Scan completed",
     );
+    logger.info({ scanId, ...wattsPersistenceDiagnostics }, "AltEnergy Watts News persistence diagnostics");
   } catch (err) {
     errorMessage = err instanceof Error ? err.message : String(err);
     logger.error(

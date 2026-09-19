@@ -190,6 +190,18 @@ export const ScanProjectStatus = {
   under_development: 'under_development',
 } as const;
 
+/**
+ * How the canonical project relates to this scan; this does not redefine isNew.
+ */
+export type ScanProjectEventType = typeof ScanProjectEventType[keyof typeof ScanProjectEventType];
+
+
+export const ScanProjectEventType = {
+  new: 'new',
+  updated: 'updated',
+  inventory_observed: 'inventory_observed',
+} as const;
+
 export interface ScanProject {
   id: number;
   name: string;
@@ -227,6 +239,22 @@ export interface ScanProject {
   scanId?: number | null;
   /** True if this project was newly inserted during this scan */
   isNew: boolean;
+  /** How the canonical project relates to this scan; this does not redefine isNew. */
+  eventType: ScanProjectEventType;
+  /**
+     * Date of the source event, or null for an undated inventory observation.
+     * @nullable
+     */
+  effectiveDate: string | null;
+  /** Provenance classification supporting the effective date. */
+  dateEvidence: string;
+  /**
+     * Source URL for this scan event, which may differ from the canonical project's source URL.
+     * @nullable
+     */
+  eventSourceUrl: string | null;
+  /** @nullable */
+  eventSourceName: string | null;
 }
 
 export type ContactEnrichmentStatus = typeof ContactEnrichmentStatus[keyof typeof ContactEnrichmentStatus];
