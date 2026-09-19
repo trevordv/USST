@@ -79,8 +79,19 @@ Set only the credentials actually used by the existing USST configuration:
 - `APIFY_API_TOKEN`
 - `LUSHA_API_KEY`
 - `FIRECRAWL_API_KEY`
+- `BRIGHT_DATA_API_KEY` — optional server-side Bright Data Web Unlocker API key.
+- `BRIGHT_DATA_ZONE` — the matching Web Unlocker zone name; both variables are
+  required before this fallback is active. Find the zone name in the Bright
+  Data Web Unlocker zone Overview. Do not use a `VITE_` variable.
 
-Do not add new sources or source credentials without explicit approval.
+Bright Data is used only after an approved public URL has a technical network,
+timeout, unusable-content or JavaScript-rendering failure. It is **not** used
+for HTTP 403, CAPTCHA/challenge, authentication, rate-limit responses or
+sources designated access-controlled in the registry. It never expands the
+approved source list, replaces AltEnergy/LUVI authenticated access, or bypasses
+project eligibility and date gates. A successfully parsed zero result does not
+trigger it. A provider failure retains the existing bounded AI fallback.
+Per-source diagnostics distinguish direct, Bright Data and AI paths.
 
 ## 4. First Railway deployment
 

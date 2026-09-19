@@ -58,6 +58,7 @@ import {
 import { readAemoGenerationWorkbookRows } from "./aemo-workbook";
 import { parseSourceFallbackArray, sourceAcquisitionOutcome } from "./source-access-outcome";
 import { browseAiConfigurationProblem, runBrowseAiTask, type BrowseAiResult } from "./browse-ai-task";
+import { brightDataConfigured, fetchApprovedBrightData, planBrightDataTargets } from "./bright-data";
 import { cachedSourceFallback, hashMeaningfulSourceContent, hashSourceContent } from "./ai-source-cache";
 import { recordOpenAiCacheHit } from "./openai-usage";
 import { OpenAiQualityError, runOpenAiEscalation } from "./openai-escalation";
@@ -318,6 +319,16 @@ type ScanSourceOutcome =
   | "skipped-missing-credentials"
   | "error";
 
+function diagnosticUrl(url?: string): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return undefined;
+  }
+}
+
 function logScanSourceOutcome(
   source: string,
   outcome: ScanSourceOutcome,
@@ -329,6 +340,8 @@ function logScanSourceOutcome(
     reason?: string;
     missing?: string[];
     directSucceeded?: boolean;
+    brightSucceeded?: boolean;
+    brightDataCalls?: number;
     fallbackSucceeded?: boolean;
     fallbackUsed?: boolean;
     extractionOutcomes?: ExtractionAttempt[];
@@ -337,7 +350,15 @@ function logScanSourceOutcome(
     err?: unknown;
   } = {},
 ): void {
-  const context = { source, outcome, ...details };
+  const { err, ...safeDetails } = details;
+  const context = {
+    source, outcome, ...safeDetails,
+    url: diagnosticUrl(details.url),
+    extractionOutcomes: details.extractionOutcomes?.map(({ method, url, outcome, reason, failureCategory }) => ({
+      method, url: diagnosticUrl(url), outcome, reason, failureCategory,
+    })),
+    failureCategory: err instanceof SourceRequestError ? err.problem : err ? "unclassified" : undefined,
+  };
   if (["error", "blocked", "timeout", "extraction-failed", "skipped-missing-credentials"].includes(outcome)) {
     logger.warn(context, "Scan source outcome");
   } else {
@@ -3407,12 +3428,14 @@ function sourceRepairCandidatesToProjects(
   source: ScrapeSource,
   startDate?: string,
   endDate?: string,
+  preserveMissingDate = false,
 ): ScrapedProject[] {
   const today = new Date().toISOString().slice(0, 10);
   return candidates.flatMap((candidate) => {
-    const announcedDate = candidate.announcedDate ?? today;
-    if (startDate && announcedDate < startDate) return [];
-    if (endDate && announcedDate > endDate) return [];
+    if (preserveMissingDate && !candidate.announcedDate && (startDate || endDate)) return [];
+    const announcedDate = candidate.announcedDate ?? (preserveMissingDate ? null : today);
+    if (startDate && announcedDate && announcedDate < startDate) return [];
+    if (endDate && announcedDate && announcedDate > endDate) return [];
     const project: ScrapedProject = {
       ...candidate,
       country: source.country,
@@ -3520,8 +3543,11 @@ async function scrapeSource(
   const failures: unknown[] = [];
   const attempts: ExtractionAttempt[] = [];
   const contentFingerprints = new Map<string, string>();
+  const brightRepairedUrls = new Set<string>();
   const strategy = getSourceRepairStrategy(source.name);
   let directSucceeded = false;
+  let brightSucceeded = false;
+  let brightDataCalls = 0;
   let fallbackUsed = false;
   let fallbackSucceeded = false;
 
@@ -3540,36 +3566,63 @@ async function scrapeSource(
 
   function recordAttempt(attempt: ExtractionAttempt): void {
     attempts.push(attempt);
-    logger.info({ source: source.name, ...attempt }, "Source extraction attempt");
+    logger.info({
+      source: source.name, method: attempt.method, outcome: attempt.outcome,
+      url: diagnosticUrl(attempt.url), reason: attempt.reason,
+      failureCategory: attempt.failureCategory,
+    }, "Source extraction attempt");
   }
 
   async function extract<T>(
     method: string,
     url: string,
     fetchInput: () => Promise<T>,
-    parse: (input: T) => ScrapedProject[],
-  ): Promise<void> {
+    parse: (input: T) => ScrapedProject[] | Promise<ScrapedProject[]>,
+  ): Promise<number | null> {
     let phase: "fetch" | "parse" = "fetch";
     try {
       const input = await fetchInput();
       if (typeof input === "string") contentFingerprints.set(url, hashMeaningfulSourceContent(input));
+      if (method.startsWith("bright-data-") && Buffer.isBuffer(input)) {
+        contentFingerprints.set(url, hashMeaningfulSourceContent(input.toString("utf8")));
+      }
       phase = "parse";
-      const items = parse(input);
+      const items = await parse(input);
       addUnique(items);
-      directSucceeded = true; // A fetch alone is not successful extraction.
+      if (method.startsWith("bright-data-")) brightSucceeded = true;
+      else directSucceeded = true; // A fetch alone is not successful extraction.
       recordAttempt({ method, url, outcome: successfulExtractionOutcome(items.length) });
+      return items.length;
     } catch (err) {
       failures.push(err);
-      logDirectSourceFailure(source.name, err);
+      if (method.startsWith("bright-data-")) {
+        logger.warn({ source: source.name, method, failureCategory: phase === "fetch" ? "provider-fetch" : "parser" }, "Bright Data fallback failed");
+      } else {
+        logDirectSourceFailure(source.name, err);
+      }
       if (err instanceof SourceRequestError && err.contentHash) contentFingerprints.set(url, err.contentHash);
+      const failureCategory = err instanceof SourceRequestError
+        ? err.problem
+        : phase === "fetch" ? "network" : "parser";
       recordAttempt({
         method, url, outcome: failedExtractionOutcome(err, phase),
-        reason: err instanceof Error ? err.message : "source extraction failed",
+        reason: failureCategory,
+        failureCategory,
       });
+      return null;
     }
   }
 
   if (strategy.mode === "openai-first") {
+    if (brightDataConfigured() && strategy.auditGroup === "extraction-problematic") {
+      // Observe the actual public response before permitting an alternate
+      // route. A 403/challenge/rate limit must not be retried through Bright.
+      await extract("direct-structured-html", source.searchUrl,
+        () => fetchForSource(source, source.searchUrl), html => {
+          assertSourceDocument(html, "structured-html");
+          return sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, source.searchUrl), source, startDate, endDate, true);
+        });
+    }
     recordAttempt({
       method: strategy.mode, url: source.searchUrl,
       outcome: "requires-js-or-ai-repair",
@@ -3622,7 +3675,55 @@ async function scrapeSource(
     }
   }
 
-  const fallbackReason = paidSourceFallbackReason(attempts, strategy.fallback !== "none");
+  // Re-fetch only a failed, pre-approved public URL. A successful direct parse
+  // (including an eligible zero) never spends on Bright Data. Authenticated
+  // AltEnergy/LUVI and the specialized EPBC ArcGIS path are not proxied.
+  const brightTargets = planBrightDataTargets(strategy, attempts);
+  if (brightTargets.length && !brightDataConfigured()) {
+    logger.info({ source: source.name, targetCount: brightTargets.length }, "Bright Data fallback unavailable: key or zone not configured");
+  }
+  for (const target of brightDataConfigured() ? brightTargets : []) {
+    brightDataCalls++;
+    const startedAt = new Date();
+    const acceptedBefore = projects.length;
+    const recordsReceived = await extract(`bright-data-${target.format}`, target.url,
+      () => fetchApprovedBrightData(source.name, target),
+      async body => {
+        const text = body.toString("utf8");
+        assertSourceDocument(text, target.format);
+        return target.format === "rss"
+          ? parseRssFeed(text, source, startDate, endDate)
+          : target.format === "structured-html"
+            ? sourceRepairCandidatesToProjects(parseOfficialProjectHtml(text, target.url), source, startDate, endDate, true)
+            : parseHtmlPage(text, source, startDate, endDate);
+      });
+    const brightAttempt = attempts.at(-1);
+    logger.info({
+      source: source.name,
+      method: "bright-data",
+      targetPath: diagnosticUrl(target.url),
+      startedAt: startedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: Date.now() - startedAt.getTime(),
+      recordsReceived: recordsReceived ?? 0,
+      recordsAccepted: projects.length - acceptedBefore,
+      fallbackUsed: true,
+      outcome: recordsReceived == null ? "FALLBACK_FAILED" : "FALLBACK_SUCCESS",
+      failureCategory: recordsReceived == null ? brightAttempt?.failureCategory ?? "unclassified" : undefined,
+    }, "Bright Data source fallback outcome");
+    if (attempts.at(-1)?.outcome === "success-with-results" || attempts.at(-1)?.outcome === "success-zero-results") {
+      brightRepairedUrls.add(target.url);
+    }
+  }
+
+  // A provider fetch that parsed successfully, including a valid zero, repairs
+  // the earlier access failure for that same URL. Other failed URLs remain
+  // eligible for the existing bounded AI fallback.
+  const unresolvedAttempts = attempts.filter((attempt) =>
+    !attempt.url || !brightRepairedUrls.has(attempt.url) ||
+    attempt.outcome === "success-with-results" || attempt.outcome === "success-zero-results",
+  );
+  const fallbackReason = paidSourceFallbackReason(unresolvedAttempts, strategy.fallback !== "none");
   if (fallbackReason) {
     fallbackUsed = true;
     logScanSourceOutcome(source.name, "fallback-used", {
@@ -3644,15 +3745,17 @@ async function scrapeSource(
 
   const outcome = sourceAcquisitionOutcome({
     projectCount: projects.length,
-    directSucceeded,
+    directSucceeded: directSucceeded || brightSucceeded,
     fallbackSucceeded,
     failureOutcome: finalFailureOutcome(failures),
   });
   logScanSourceOutcome(source.name, outcome, {
     projectCount: projects.length,
     durationMs: Math.round(performance.now() - startedAt),
-    method: fallbackUsed ? `${strategy.mode}+openai-web-search` : strategy.mode,
+    method: [strategy.mode, brightDataCalls ? "bright-data" : null, fallbackUsed ? "openai-web-search" : null].filter(Boolean).join("+"),
     directSucceeded,
+    brightSucceeded,
+    brightDataCalls,
     fallbackSucceeded,
     fallbackUsed,
     extractionOutcomes: attempts,

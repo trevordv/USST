@@ -11,6 +11,7 @@ export interface ExtractionAttempt {
   url?: string;
   outcome: ExtractionOutcome;
   reason?: string;
+  failureCategory?: "blocked" | "timeout" | "http-error" | "invalid-content" | "network" | "parser";
 }
 
 export class SourceExtractionError extends Error {
