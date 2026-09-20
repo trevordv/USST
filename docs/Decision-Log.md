@@ -82,6 +82,48 @@ This log records material USST deviations from the generic Agentic App Template 
   A full scan's source lineage and provider charges should be reviewed before
   permanent deployment.
 
+### 2026-09-20 — Deterministic extraction depth and per-project source identity
+
+- Observed problem: Scans returned little detail per source. Code review of
+  `scraper.ts` found (1) projects that share a listing/article URL collapsed to
+  one row because `source_url` was the identity, and a rejected project poisoned
+  that URL for the rest of the scan; (2) feed excerpts rarely contain the MW
+  figure, so most solar articles failed the shared gate as `missing-capacity`;
+  (3) RSS read only page one and only the excerpt; (4) HTML cards were cut at the
+  first nested `</div>`; (5) capacity parsing read "1,200 MW" as 200 MW and
+  "400 MWh" or a national statistic as project MW; (6) developer extraction
+  returned project names and regulators; (7) undated items were stamped with the
+  scan day, contrary to `Scan-Date-Window-Policy.md`.
+- Evidence / metric: Reproduced with fixture regression tests
+  (`source-text`, `news-parsers`, `project-identity`, `article-enrichment`,
+  `source-heuristics`). Not measured against live sources: the authoring
+  environment could not reach the approved hosts (egress policy 403).
+- Simplest attempted fix: Shared pure helpers and balanced-tag parsing; bounded
+  same-site article reads for candidates without a capacity; feed paging;
+  stable `#<project-slug>` identity for shared URLs with a same-source name
+  fallback for records stored before this change.
+- Decision: Deterministic code only. No new sources, no new AI calls, no change
+  to the OpenAI fallback prompt/model/token cap, eligibility rules, schema or
+  API contract. Undated feed/card/Browse.AI/AI-fallback items are now stored with
+  a null announcement date (unbounded scans) or excluded (bounded scans), matching
+  the documented policy and LUVI/AltEnergy behaviour. The earlier supplied
+  article/listing patch overlaps the bundle; its distinct AU numeric-date and
+  next-listing-page behaviours were retained without installing duplicate parsers.
+- Security / privacy impact: Article reads are restricted to the source's own
+  approved HTTPS hosts, use the existing response classifier (blocks/challenges
+  are respected, never bypassed), and are capped at 30 pages per source with 4
+  concurrent requests. Newly discovered article/listing requests reject redirects
+  rather than following one to a different host.
+- Token / cost impact: No paid AI added. Deterministic recovery may reduce
+  fallback attempts because fewer valid sources look empty. HTML listing depth
+  adds at most two direct requests per successfully fetched configured listing URL;
+  feed depth is bounded separately as documented in the scraper.
+- Deployment impact: Draft PR against `migration/railway-supabase`. Verify with a
+  bounded authenticated scan and compare per-source counts and
+  `Article enrichment complete` log lines after deployment.
+- Rollback / exit path: Revert the PR; no data migration. Rows stored with the
+  new `#slug` URLs remain valid and are still name-matched by source.
+
 ### YYYY-MM-DD — Decision title
 
 - Observed problem:

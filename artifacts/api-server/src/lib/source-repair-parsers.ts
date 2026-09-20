@@ -9,27 +9,14 @@ export interface SourceRepairCandidate {
   announcedDate: string | null;
 }
 
-const CAPACITY_RE = /(\d+(?:\.\d+)?)\s*(mw|gw|megawatt|gigawatt)/i;
+import { extractCapacityMw, fragmentToText } from "./source-text.ts";
 
-function stripMarkup(value: string): string {
-  return value
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&quot;/gi, '"')
-    .replace(/\s+/g, " ")
-    .trim();
-}
+const stripMarkup = (value: string): string =>
+  fragmentToText(value.replace(/<(?:script|style)\b[\s\S]*?<\/(?:script|style)>/gi, " "));
 
-function extractCapacity(value: string): number | null {
-  const match = value.match(CAPACITY_RE);
-  if (!match) return null;
-  const capacity = Number(match[1]);
-  return match[2].toLowerCase().startsWith("g") ? capacity * 1_000 : capacity;
-}
+// Shared implementation: handles "1,200 MW", rejects MWh/GWh, statistics and
+// battery-only ratings (see source-text.ts).
+const extractCapacity = (value: string): number | null => extractCapacityMw(value);
 
 function determineStatus(value: string): "announced" | "under_development" {
   return /approved|committed|assessment|construction|development|planning|consent/i.test(

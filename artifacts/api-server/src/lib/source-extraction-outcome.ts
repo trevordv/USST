@@ -63,7 +63,8 @@ export function assertSourceDocument(text: string, format: "rss" | "html" | "str
   // or eligibility. Non-solar, out-of-window and sub-threshold entries are valid.
   const hasStructure = format === "structured-html"
     ? /<(?:tr|article|h[2-4])\b/i.test(text)
-    : /<(?:article|div|section)[^>]*class="[^"]*(?:post|article|entry|item|result)[^"]*"/i.test(text);
+    : /<article\b/i.test(text) ||
+      /<(?:div|section|li)\b[^>]*\bclass=["'][^"']*(?:post|article|entry|item|result|card|teaser|story|listing|news|views-row)/i.test(text);
   const explicitEmpty = /\bno (?:matching |current |eligible )?(?:results|projects|items|posts|articles)\b|nothing found/i.test(visible);
   if (!hasStructure && !explicitEmpty) {
     throw new SourceExtractionError("parse-failed", "source document does not contain the configured parser structure or an explicit empty state");
