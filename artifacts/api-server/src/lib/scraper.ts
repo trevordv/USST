@@ -56,6 +56,25 @@ import {
   validateSourceRepairStrategies,
 } from "./source-repair-strategies";
 import { readAemoGenerationWorkbookRows } from "./aemo-workbook";
+import {
+  deriveProjectName,
+  extractMainText,
+  normalizeProjectName,
+  parseTextDate,
+  siteHost,
+} from "./source-text.ts";
+import { feedPageUrl } from "./feed-items.ts";
+import {
+  EXCLUDE_KEYWORDS,
+  determineStatus,
+  extractCapacity,
+  extractDeveloper,
+  extractLocation,
+  isEarlyStage,
+} from "./source-heuristics.ts";
+import { parseHtmlPage, parseRssFeed, parseRssFeedPage, type FeedPageResult } from "./news-parsers.ts";
+import { assignProjectIdentityUrls } from "./project-identity.ts";
+import { enrichProjectsFromArticles as enrichFromArticles } from "./article-enrichment.ts";
 import { parseSourceFallbackArray, sourceAcquisitionOutcome } from "./source-access-outcome";
 import { browseAiConfigurationProblem, runBrowseAiTask, type BrowseAiResult } from "./browse-ai-task";
 import { brightDataConfigured, fetchApprovedBrightData, planBrightDataTargets } from "./bright-data";
@@ -269,6 +288,8 @@ interface ScrapedProject {
   rawStructuredCapacityMw?: number | null;
   capacityEvidence?: "structured_capacity" | "explicit_ac_capacity" | "explicit_project_capacity" | "none";
   capacityEvidenceText?: string | null;
+  /** Internal: capacity unknown after the excerpt; read the same-site article (see enrichProjectsFromArticles). */
+  needsArticleEnrichment?: boolean;
   contactName: string | null;
   contactEmail: string | null;
   contactPhone: string | null;
@@ -582,116 +603,6 @@ export const CONFIGURED_SCAN_SOURCE_NAMES = [
   LUVI_SOURCE_NAME,
 ] as const;
 
-// Keywords that indicate a project is in early stage (not yet generating)
-const EARLY_STAGE_KEYWORDS = [
-  // Announcement / proposal
-  "announced", "proposed", "proposes", "proposal", "plans to build",
-  "new project", "new solar", "new bess", "new battery",
-  // Approval / consent
-  "planning approval", "resource consent", "development approval", "da approved",
-  "approved", "approval", "receives approval", "gets approval", "granted",
-  "permit", "permits", "consent", "consented",
-  "planning permit", "planning consent",
-  // Application / referral
-  "application", "applies", "applied", "lodged", "lodges",
-  "referral", "referred", "da lodged", "eis lodged",
-  "environmental impact", "eis", "epbc referral",
-  // Development stages
-  "under development", "under construction", "in development",
-  "planning", "feasibility", "pre-development", "early stage",
-  "to build", "will build", "breaking ground", "scoping",
-  // Investment / commitment signals
-  "commits", "committed", "invest", "investment", "selected",
-  "awarded", "awarded contract", "reaches financial close",
-  "financial close", "reaches fc",
-  // Construction commencement
-  "commences", "commence", "begins construction", "begin construction",
-  "construction begins", "construction commences", "starts construction",
-  "breaks ground", "groundbreaking",
-];
-
-// Keywords that indicate a project is generating (exclude these)
-const EXCLUDE_KEYWORDS = [
-  "fully operational", "now generating", "commissioned",
-  "now online", "now operating", "energised", "energized",
-  "connected to grid", "switched on", "now generating power",
-];
-
-// Capacity extraction regex: matches "200 MW", "1.2GW", "500MW", "50 megawatt"
-const CAPACITY_RE = /(\d+(?:\.\d+)?)\s*(mw|gw|megawatt|gigawatt)/gi;
-
-// Common AU/NZ solar states and regions for location inference
-const AU_LOCATIONS = [
-  "NSW", "VIC", "QLD", "SA", "WA", "TAS", "NT", "ACT",
-  "New South Wales", "Victoria", "Queensland", "South Australia",
-  "Western Australia", "Tasmania", "Northern Territory",
-];
-const NZ_LOCATIONS = [
-  "Auckland", "Wellington", "Canterbury", "Otago", "Waikato",
-  "Bay of Plenty", "Manawatu", "Hawke's Bay", "Marlborough",
-  "Northland", "Southland",
-];
-
-function extractCapacity(text: string): number | null {
-  const matches = [...text.matchAll(CAPACITY_RE)];
-  if (!matches.length) return null;
-
-  const match = matches[0];
-  let value = parseFloat(match[1]);
-  const unit = match[2].toLowerCase();
-  if (unit.startsWith("g")) value *= 1000; // GW → MW
-
-  return value;
-}
-
-function extractLocation(text: string, country: "AU" | "NZ"): string | null {
-  const candidates = country === "AU" ? AU_LOCATIONS : NZ_LOCATIONS;
-  for (const loc of candidates) {
-    if (text.includes(loc)) return loc;
-  }
-  return null;
-}
-
-function isEarlyStage(text: string): boolean {
-  const lower = text.toLowerCase();
-  const hasExclude = EXCLUDE_KEYWORDS.some((kw) => lower.includes(kw));
-  if (hasExclude) return false;
-  return EARLY_STAGE_KEYWORDS.some((kw) => lower.includes(kw));
-}
-
-function determineStatus(text: string): "announced" | "under_development" {
-  const lower = text.toLowerCase();
-  if (
-    lower.includes("under development") ||
-    lower.includes("under construction") ||
-    lower.includes("development approval") ||
-    lower.includes("planning approval") ||
-    lower.includes("resource consent")
-  ) {
-    return "under_development";
-  }
-  return "announced";
-}
-
-function extractDeveloper(text: string): string | null {
-  // Look for common company patterns near solar keywords
-  const patterns = [
-    /(?:by|developer?|developed by|from)\s+([A-Z][A-Za-z\s&]+(?:Energy|Solar|Power|Renewables|Green|Clean|Capital|Group|Ltd|Pty|Inc|Corp|Co\.|Company)?)/,
-    /([A-Z][A-Za-z\s&]+(?:Energy|Solar|Power|Renewables|Green|Clean|Capital|Group|Ltd|Pty))/,
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      const candidate = match[1].trim();
-      if (candidate.length > 3 && candidate.length < 60) {
-        return candidate;
-      }
-    }
-  }
-  return null;
-}
-
 class SourceRequestError extends Error {
   constructor(
     message: string,
@@ -741,88 +652,28 @@ async function fetchWithTimeout(url: string, timeoutMs = 15000): Promise<string>
   }
 }
 
-function parseRssFeed(xml: string, source: ScrapeSource, startDate?: string, endDate?: string): ScrapedProject[] {
-  const projects: ScrapedProject[] = [];
+// Older feed pages (`?paged=N`) recover items that scrolled out of page one.
+// Bounded scans keep paging until the page is older than the requested window.
+const FEED_MAX_PAGES_BOUNDED = 10;
+const FEED_MAX_PAGES_UNBOUNDED = 4;
 
-  // Extract items from RSS
-  const itemMatches = xml.matchAll(/<item>([\s\S]*?)<\/item>/gi);
-
-  for (const itemMatch of itemMatches) {
-    const item = itemMatch[1];
-
-    const titleMatch = item.match(/<title[^>]*><!\[CDATA\[(.*?)\]\]><\/title>|<title[^>]*>(.*?)<\/title>/i);
-    const linkMatch = item.match(/<link[^>]*>(.*?)<\/link>|<link[^>]*\/>/i);
-    const descMatch = item.match(/<description[^>]*><!\[CDATA\[([\s\S]*?)\]\]><\/description>|<description[^>]*>([\s\S]*?)<\/description>/i);
-    const pubDateMatch = item.match(/<pubDate[^>]*>(.*?)<\/pubDate>/i);
-
-    const title = (titleMatch?.[1] ?? titleMatch?.[2] ?? "").trim();
-    const link = (linkMatch?.[1] ?? "").trim();
-    const rawDesc = (descMatch?.[1] ?? descMatch?.[2] ?? "").trim();
-    const pubDate = pubDateMatch?.[1]?.trim();
-
-    // Strip HTML tags from description
-    const desc = rawDesc.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 800);
-
-    if (!title || !link) continue;
-
-    // Check if it's solar-related
-    const fullText = `${title} ${desc}`;
-    const lower = fullText.toLowerCase();
-    if (!lower.includes("solar") && !lower.includes("photovoltaic") && !lower.includes(" pv ")) continue;
-
-    // Exclude clearly operational articles (commissioned, now generating, etc.)
-    // Don't require positive early-stage keywords — news articles from trusted
-    // solar publications are implicitly project-relevant if they mention solar.
-    if (EXCLUDE_KEYWORDS.some((kw) => lower.includes(kw))) continue;
-
-    // Parse date
-    let announcedDate: string;
-    let dateParsed = false;
-    try {
-      if (pubDate) {
-        const d = new Date(pubDate);
-        if (!isNaN(d.getTime())) {
-          announcedDate = d.toISOString().slice(0, 10);
-          dateParsed = true;
-        } else {
-          announcedDate = new Date().toISOString().slice(0, 10);
-        }
-      } else {
-        announcedDate = new Date().toISOString().slice(0, 10);
-      }
-    } catch {
-      announcedDate = new Date().toISOString().slice(0, 10);
-    }
-
-    // When a date-range filter is active, skip items with no parseable publication date.
-    // Without this, the new Date() fallback always passes the startDate check.
-    if (!dateParsed && (startDate || endDate)) continue;
-    if (startDate && announcedDate < startDate) continue;
-    if (endDate && announcedDate > endDate) continue;
-
-    const capacityMw = extractCapacity(fullText);
-    const location = extractLocation(fullText, source.country);
-    const developer = extractDeveloper(fullText);
-    const status = determineStatus(fullText);
-
-    projects.push({
-      name: title,
-      description: desc,
-      capacityMw,
-      developer,
-      location,
-      country: source.country,
-      status,
-      sourceUrl: link,
-      sourceName: source.name,
-      announcedDate,
-      contactName: null,
-      contactEmail: null,
-      contactPhone: null,
-    });
+function approvedHosts(source: ScrapeSource): Set<string> {
+  const hosts = new Set<string>();
+  for (const url of [source.searchUrl, source.feedUrl, ...(source.extraUrls ?? [])]) {
+    const host = url ? siteHost(url) : null;
+    if (host) hosts.add(host);
   }
+  return hosts;
+}
 
-  return projects;
+/** Same-site article reads for candidates without a capacity (see article-enrichment.ts). */
+function enrichProjectsFromArticles(source: ScrapeSource, projects: readonly ScrapedProject[]) {
+  return enrichFromArticles(projects, {
+    country: source.country,
+    approvedHosts: approvedHosts(source),
+    fetchHtml: (url) => fetchWithTimeout(url, 12_000),
+    isNoisyName: isNoisyProjectName,
+  });
 }
 
 /** Pick the right fetch function based on whether the source needs auth */
@@ -902,16 +753,11 @@ function parseAltEnergyListing(html: string): Array<{ title: string; url: string
  */
 async function fetchAltEnergyArticleBody(url: string): Promise<string> {
   const html = await fetchAltEnergy(url);
-  // The article body is in <div class="lower-box"> or <div class="post-details">
-  const bodyMatch = html.match(
-    /<div[^>]*class="[^"]*(?:lower-box|post-details|blog-content)[^"]*"[^>]*>([\s\S]*?)<\/div>/i
-  );
-  if (!bodyMatch) return "";
-  return bodyMatch[1]
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 1000);
+  // Balanced-tag extraction of the article container. The previous non-greedy
+  // `<div class="lower-box">…</div>` regex stopped at the first nested `</div>`
+  // and the result was cut to 1,000 characters, hiding the MW figure that
+  // normally sits in the second or third paragraph.
+  return extractMainText(html, 8_000);
 }
 
 /** Solar-related keywords to check in AltEnergy article titles */
@@ -1062,30 +908,34 @@ export async function scrapeAltEnergy(
     const cards = parseAltEnergyListing(html);
     logger.info({ cards: cards.length }, "AltEnergy newsandviews listing parsed");
 
-    for (const card of cards) {
-      if (seenUrls.has(card.url)) continue;
-      if (startDate && card.date < startDate) continue;
-      if (endDate && card.date > endDate) continue;
-
+    const eligibleCards = cards.filter((card) => {
+      if (seenUrls.has(card.url)) return false;
+      if (startDate && card.date < startDate) return false;
+      if (endDate && card.date > endDate) return false;
       const titleLower = card.title.toLowerCase();
-      if (!SOLAR_TITLE_KEYWORDS.some((kw) => titleLower.includes(kw))) continue;
-
+      if (!SOLAR_TITLE_KEYWORDS.some((kw) => titleLower.includes(kw))) return false;
       // Newsandviews titles are article headlines — only keep ones that look like project names
-      if (isNoisyProjectName(card.title, /* requireProjectShape */ true)) continue;
-
-      let body = "";
+      return !isNoisyProjectName(card.title, /* requireProjectShape */ true);
+    });
+    // Article bodies are independent reads: fetch them with bounded concurrency
+    // instead of one at a time.
+    const bodies = await mapWithConcurrency(eligibleCards, 4, async (card) => {
       try {
-        body = await fetchAltEnergyArticleBody(card.url);
+        return await fetchAltEnergyArticleBody(card.url);
       } catch (err) {
         logger.warn({ err, url: card.url }, "AltEnergy article fetch failed");
+        return "";
       }
+    });
 
+    eligibleCards.forEach((card, index) => {
+      const body = bodies[index];
       const fullText = `${card.title} ${body}`;
-      if (!isEarlyStage(fullText)) continue;
+      if (!isEarlyStage(fullText)) return;
 
       seenUrls.add(card.url);
       projects.push({
-        name: card.title,
+        name: deriveProjectName(card.title) ?? card.title,
         description: body.slice(0, 600) || card.title,
         capacityMw: extractCapacity(fullText),
         developer: extractDeveloper(fullText),
@@ -1099,7 +949,7 @@ export async function scrapeAltEnergy(
         contactEmail: null,
         contactPhone: null,
       });
-    }
+    });
   } catch (err) {
     logger.warn({ err }, "AltEnergy newsandviews scrape failed");
   }
@@ -1396,78 +1246,6 @@ export async function scrapeLuvi(
     logger.warn({ err }, "LUVI pipeline scrape failed — password may be invalid or the payload changed");
     throw err;
   }
-}
-
-/** Extract project entries from an HTML page */
-function parseHtmlPage(
-  html: string,
-  source: ScrapeSource,
-  startDate?: string,
-  endDate?: string
-): ScrapedProject[] {
-  const projects: ScrapedProject[] = [];
-
-  const articleMatches = html.matchAll(
-    /<(?:article|div|section)[^>]*class="[^"]*(?:post|article|entry|item|result)[^"]*"[^>]*>([\s\S]*?)<\/(?:article|div|section)>/gi
-  );
-
-  for (const match of articleMatches) {
-    const snippet = match[1];
-    const lower = snippet.toLowerCase();
-
-    if (!lower.includes("solar") && !lower.includes("photovoltaic") && !lower.includes(" pv ")) continue;
-    if (!isEarlyStage(snippet)) continue;
-
-    const titleMatch = snippet.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i);
-    const linkMatch = snippet.match(/href="(https?:\/\/[^"]+)"/i);
-    const dateMatch = snippet.match(/(\d{4}-\d{2}-\d{2})|(\w+ \d{1,2},? \d{4})/i);
-
-    const rawTitle = (titleMatch?.[1] ?? "").replace(/<[^>]+>/g, "").trim();
-    const link = linkMatch?.[1] ?? source.searchUrl;
-    const descText = snippet.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 600);
-
-    if (!rawTitle || rawTitle.length < 10) continue;
-
-    let announcedDate: string;
-    let dateParsed = false;
-    try {
-      if (dateMatch) {
-        const d = new Date(dateMatch[0]);
-        if (!isNaN(d.getTime())) {
-          announcedDate = d.toISOString().slice(0, 10);
-          dateParsed = true;
-        } else {
-          announcedDate = new Date().toISOString().slice(0, 10);
-        }
-      } else {
-        announcedDate = new Date().toISOString().slice(0, 10);
-      }
-    } catch {
-      announcedDate = new Date().toISOString().slice(0, 10);
-    }
-
-    if (!dateParsed && (startDate || endDate)) continue;
-    if (startDate && announcedDate < startDate) continue;
-    if (endDate && announcedDate > endDate) continue;
-
-    projects.push({
-      name: rawTitle,
-      description: descText.slice(0, 500),
-      capacityMw: extractCapacity(snippet),
-      developer: extractDeveloper(snippet),
-      location: extractLocation(snippet, source.country),
-      country: source.country,
-      status: determineStatus(snippet),
-      sourceUrl: link,
-      sourceName: source.name,
-      announcedDate,
-      contactName: null,
-      contactEmail: null,
-      contactPhone: null,
-    });
-  }
-
-  return projects;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -1840,8 +1618,14 @@ function parseBrowseAiResult(
       // Skip exclusion keywords (operational, commissioned, etc.)
       if (EXCLUDE_KEYWORDS.some((kw) => allLower.includes(kw))) continue;
 
-      // Must have an extractable MW capacity
-      const capacityMw = extractCapacity(allValues);
+      // Must have an extractable MW capacity. Robots usually expose capacity as
+      // its own column, often as a bare number ("150") with the unit only in the
+      // header, so read that column first and only then fall back to row text.
+      const capacityCell = browseAiMatchCol(row, BA_CAP_COLS);
+      const bareCapacity = capacityCell && /^\s*\d[\d,]*(?:\.\d+)?\s*$/.test(capacityCell)
+        ? Number.parseFloat(capacityCell.replace(/,/g, ""))
+        : null;
+      const capacityMw = bareCapacity ?? (capacityCell ? extractCapacity(capacityCell) : null) ?? extractCapacity(allValues);
       if (capacityMw === null) continue;
 
       // --- Project name ---
@@ -1862,15 +1646,21 @@ function parseBrowseAiResult(
         Object.values(row).find((v) => typeof v === "string" && v.startsWith("http")) ??
         pageUrl;
 
-      // --- Date (government listing pages rarely include one — fall back to today) ---
-      let announcedDate = new Date().toISOString().slice(0, 10);
-      const dateMatch = allValues.match(/(\d{4}-\d{2}-\d{2})|(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/);
-      if (dateMatch) {
-        const d = new Date(dateMatch[0].replace(/\//g, "-"));
-        if (!isNaN(d.getTime())) announcedDate = d.toISOString().slice(0, 10);
+      // --- Date --- Government listing pages often carry none; an undated row
+      // stays unknown instead of being stamped with today (Scan-Date-Window-Policy).
+      // Day-first NZ/AU dates such as 12/06/2026 are read as D/M/Y.
+      let announcedDate = parseTextDate(allValues);
+      if (!announcedDate) {
+        const dmy = allValues.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\b/);
+        if (dmy) {
+          const iso = `${dmy[3]}-${dmy[2].padStart(2, "0")}-${dmy[1].padStart(2, "0")}`;
+          const parsed = new Date(`${iso}T00:00:00Z`);
+          if (!Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === iso) announcedDate = iso;
+        }
       }
-      if (startDate && announcedDate < startDate) continue;
-      if (endDate && announcedDate > endDate) continue;
+      if ((startDate || endDate) && !announcedDate) continue;
+      if (startDate && announcedDate && announcedDate < startDate) continue;
+      if (endDate && announcedDate && announcedDate > endDate) continue;
 
       projects.push({
         name,
@@ -3383,7 +3173,8 @@ Rules:
     for (const r of parsed) {
       if (!r.name) continue;
       if (r.country !== "AU" && r.country !== "NZ") continue;
-      const cap = typeof r.capacity_mw === "number" ? r.capacity_mw : null;
+      const parsedCapacity = typeof r.capacity_mw === "string" ? Number.parseFloat(String(r.capacity_mw).replace(/,/g, "")) : r.capacity_mw;
+      const cap = typeof parsedCapacity === "number" && Number.isFinite(parsedCapacity) ? parsedCapacity : null;
       let sourceUrl = source.searchUrl;
       if (r.source_url) {
         try {
@@ -3392,9 +3183,16 @@ Rules:
         } catch { /* retain the configured official URL */ }
       }
       if (cap !== null && cap < 5) continue; // respect ≥5 MW gate
-      const announcedDate = r.announced_date ?? today;
-      if (startDate && announcedDate < startDate) continue;
-      if (endDate && announcedDate > endDate) continue;
+      // A model-supplied date is used only when it is a real calendar date. A
+      // missing date stays unknown rather than becoming today's date
+      // (docs/Scan-Date-Window-Policy.md); bounded scans then exclude it.
+      const reportedDate = typeof r.announced_date === "string" ? r.announced_date.trim() : "";
+      const announcedDate = /^\d{4}-\d{2}-\d{2}$/.test(reportedDate) && !Number.isNaN(Date.parse(`${reportedDate}T00:00:00Z`))
+        ? reportedDate
+        : null;
+      if ((startDate || endDate) && !announcedDate) continue;
+      if (startDate && announcedDate && announcedDate < startDate) continue;
+      if (endDate && announcedDate && announcedDate > endDate) continue;
       results.push({
         name: r.name,
         description: r.description ?? r.name,
@@ -3556,10 +3354,14 @@ async function scrapeSource(
     url: source.searchUrl,
   });
 
+  // Distinct projects may legitimately share one URL (a listing page, or an
+  // article covering several farms). Keying on URL alone silently kept only the
+  // first of them; the identity is URL + normalised project name.
   function addUnique(items: readonly ScrapedProject[]): void {
     for (const project of items) {
-      if (seenUrls.has(project.sourceUrl)) continue;
-      seenUrls.add(project.sourceUrl);
+      const key = `${project.sourceUrl}|${normalizeProjectName(project.name)}`;
+      if (seenUrls.has(key)) continue;
+      seenUrls.add(key);
       projects.push(project);
     }
   }
@@ -3650,10 +3452,32 @@ async function scrapeSource(
     }
   } else {
     if (strategy.mode !== "structured-html" && source.feedUrl) {
+      let firstFeedPage: FeedPageResult | null = null;
       await extract("rss", source.feedUrl, () => fetchForSource(source, source.feedUrl!), xml => {
         assertSourceDocument(xml, "rss");
-        return parseRssFeed(xml, source, startDate, endDate);
+        firstFeedPage = parseRssFeedPage(xml, source, startDate, endDate);
+        return firstFeedPage.projects;
       });
+      // Older pages are best-effort backfill: they are not recorded as
+      // extraction attempts, so a missing page can never trigger paid fallback.
+      let previousPage = firstFeedPage as FeedPageResult | null;
+      const maxPages = startDate ? FEED_MAX_PAGES_BOUNDED : FEED_MAX_PAGES_UNBOUNDED;
+      for (let page = 2; previousPage && page <= maxPages; page++) {
+        if (previousPage.itemCount === 0) break;
+        if (startDate && previousPage.oldestDate && previousPage.oldestDate < startDate) break;
+        const pageUrl = feedPageUrl(source.feedUrl, page);
+        if (!pageUrl) break;
+        try {
+          const xml = await fetchForSource(source, pageUrl);
+          assertSourceDocument(xml, "rss");
+          const parsed = parseRssFeedPage(xml, source, startDate, endDate);
+          if (parsed.firstLink && parsed.firstLink === previousPage.firstLink) break;
+          addUnique(parsed.projects);
+          previousPage = parsed;
+        } catch {
+          break; // end of feed, or the publisher does not paginate
+        }
+      }
     }
     const format = strategy.mode === "structured-html" ? "structured-html" : "html";
     // Preserve every configured HTML path even after successful RSS extraction.
@@ -3670,8 +3494,13 @@ async function scrapeSource(
         assertSourceDocument(html, format);
         return format === "structured-html"
           ? sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, url), source, startDate, endDate)
-          : parseHtmlPage(html, source, startDate, endDate);
+          : parseHtmlPage(html, source, startDate, endDate, url);
       });
+    }
+    const enrichment = await enrichProjectsFromArticles(source, projects);
+    if (enrichment.attempted > 0) {
+      projects.splice(0, projects.length, ...enrichment.kept);
+      logger.info({ source: source.name, ...enrichment, kept: undefined }, "Article enrichment complete");
     }
   }
 
@@ -3695,7 +3524,7 @@ async function scrapeSource(
           ? parseRssFeed(text, source, startDate, endDate)
           : target.format === "structured-html"
             ? sourceRepairCandidatesToProjects(parseOfficialProjectHtml(text, target.url), source, startDate, endDate, true)
-            : parseHtmlPage(text, source, startDate, endDate);
+            : parseHtmlPage(text, source, startDate, endDate, target.url);
       });
     const brightAttempt = attempts.at(-1);
     logger.info({
@@ -3767,7 +3596,7 @@ async function scrapeSource(
       : outcome === "empty" ? "AI repair completed with no qualifying projects" : undefined,
     err: outcome === "extraction-failed" ? failures.at(-1) : undefined,
   });
-  return projects;
+  return assignProjectIdentityUrls([source.searchUrl, source.feedUrl, ...(source.extraUrls ?? [])], projects);
 }
 
 export async function runScan(scanId: number, startDate?: string, endDate?: string): Promise<void> {
@@ -3888,6 +3717,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
 
     // Build a lookup of existing sourceUrl -> { id, announcedDate } for quick checking
     const existingByUrl = new Map<string, number>();
+    const existingByNameKey = new Map<string, number>();
     const existingDateByUrl = new Map<string, string | null>(); // sourceUrl -> DB-stored announcedDate
     const existingDateById = new Map<number, string | null>();
     const eligibleExistingProjectIds = new Set<number>();
@@ -3910,6 +3740,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         existingByUrl.set(r.sourceUrl, r.id);
         existingDateByUrl.set(r.sourceUrl, r.announcedDate);
       }
+      if (r.sourceName && r.name) existingByNameKey.set(`${r.sourceName}|${normalizeProjectName(r.name)}`, r.id);
       if (isEligibleScanProject(r)) eligibleExistingProjectIds.add(r.id);
     }
 
@@ -3934,7 +3765,14 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         ? findCanonicalWattsNewsMatch(project.wattsNewsEvidence, existingRows)
         : null;
       const urlMatchedProjectId = project.sourceUrl ? existingByUrl.get(project.sourceUrl) : undefined;
-      let existingProjectId = wattsMatch?.project.id ?? (urlMatchedProjectId != null && urlMatchedProjectId !== -1 ? urlMatchedProjectId : null);
+      // Fragment URLs (`page#project-slug`) identify one project on a shared
+      // page. Records stored before those fragments existed carry the bare page
+      // URL, so fall back to a same-source, same-name match rather than
+      // re-inserting duplicates.
+      const nameMatchedProjectId = urlMatchedProjectId == null && !project.wattsNewsEvidence && project.sourceUrl?.includes("#")
+        ? existingByNameKey.get(`${project.sourceName}|${normalizeProjectName(project.name)}`)
+        : undefined;
+      let existingProjectId = wattsMatch?.project.id ?? urlMatchedProjectId ?? nameMatchedProjectId ?? null;
       if (wattsMatch) {
         wattsPersistenceDiagnostics.canonicalUpdatesMatched++;
         if (project.capacityMw == null) project.capacityMw = Number(wattsMatch.project.capacityMw);
@@ -3946,7 +3784,6 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
 
       // Pre-insert quality gate — skip noise
       if (isNoisyProjectName(project.name)) {
-        if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1); // sentinel
         continue;
       }
       const ineligibilityReason = getProjectIneligibilityReason(project);
@@ -3967,7 +3804,6 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
           },
           "Quality gate: ineligible scan project dropped",
         );
-        if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
         continue;
       }
       if (project.capacityEvidence && project.capacityEvidence !== "structured_capacity") {
@@ -4011,9 +3847,6 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       const isNew = !isExisting;
 
       try {
-        if (urlMatchedProjectId === -1) {
-          continue;
-        }
         if (existingProjectId != null && !eligibleExistingProjectIds.has(existingProjectId) && !wattsMatch) {
           logger.info(
             { project: project.name, projectId: existingProjectId },
@@ -4113,6 +3946,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         if (project.sourceName === "AltEnergy – Watts News" && isNew) wattsPersistenceDiagnostics.acceptedNew++;
         if (project.inventoryObservation) wattsPersistenceDiagnostics.inventoryObservations++;
         if (isNew && project.sourceUrl) existingByUrl.set(project.sourceUrl, projectId);
+        if (isNew) existingByNameKey.set(`${project.sourceName}|${normalizeProjectName(project.name)}`, projectId);
       } catch (err) {
         logger.warn({ err, project: project.name }, "Failed to insert project or scan relationship");
       }

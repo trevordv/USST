@@ -9,6 +9,9 @@ import { browseAiConfigurationProblem } from "./browse-ai-task.ts";
 import { filterEligibleScanProjects } from "./project-eligibility.ts";
 import { hashMeaningfulSourceContent, hashSourceContent } from "./ai-source-cache.ts";
 import { planBrightDataTargets, brightDataConfigured } from "./bright-data.ts";
+import { feedPageUrl } from "./feed-items.ts";
+import { assignProjectIdentityUrls } from "./project-identity.ts";
+import { normalizeProjectName } from "./source-text.ts";
 
 const scraper = await readFile(new URL("./scraper.ts", import.meta.url), "utf8");
 const start = scraper.indexOf("async function scrapeSource(");
@@ -49,6 +52,10 @@ async function run(options = {}) {
     },
     parseHtmlPage: () => { if (options.parseError) throw options.parseError; return options.projects ?? []; },
     parseRssFeed: () => options.projects ?? [],
+    parseRssFeedPage: () => ({ projects: options.projects ?? [], itemCount: 0, oldestDate: null, firstLink: null }),
+    feedPageUrl, assignProjectIdentityUrls, normalizeProjectName,
+    FEED_MAX_PAGES_BOUNDED: 10, FEED_MAX_PAGES_UNBOUNDED: 4,
+    enrichProjectsFromArticles: async (_source, items) => ({ kept: [...items], attempted: 0, enriched: 0, dropped: 0 }),
     parseOfficialProjectHtml: () => options.projects ?? [],
     sourceRepairCandidatesToProjects: items => filterEligibleScanProjects(items),
     scrapeWithChatGpt: async (_source, _start, _end, contentHash) => { calls.ai++; calls.aiHashes.push(contentHash); return filterEligibleScanProjects(options.aiProjects ?? []); },
