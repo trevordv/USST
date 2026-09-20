@@ -1,6 +1,6 @@
 import { mapWithConcurrency } from "./concurrency.ts";
 import { EXCLUDE_KEYWORDS, determineStatus, extractCapacity, extractDeveloper, extractLocation } from "./source-heuristics.ts";
-import { extractMainText, siteHost } from "./source-text.ts";
+import { extractMainText, isApprovedDiscoveredUrl } from "./source-text.ts";
 
 export const ARTICLE_ENRICH_LIMIT = 30;
 export const ARTICLE_ENRICH_CONCURRENCY = 4;
@@ -51,10 +51,7 @@ export async function enrichProjectsFromArticles<T extends EnrichableProject>(
 ): Promise<EnrichmentResult<T>> {
   const targets = projects
     .filter((project) => project.needsArticleEnrichment && project.capacityMw == null && !options.isNoisyName(project.name))
-    .filter((project) => {
-      const host = siteHost(project.sourceUrl);
-      return host != null && options.approvedHosts.has(host);
-    })
+    .filter((project) => isApprovedDiscoveredUrl(project.sourceUrl, options.approvedHosts))
     .slice(0, options.limit ?? ARTICLE_ENRICH_LIMIT);
   if (!targets.length) return { kept: [...projects], attempted: 0, enriched: 0, dropped: 0 };
 

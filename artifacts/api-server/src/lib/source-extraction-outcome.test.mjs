@@ -11,7 +11,7 @@ import { hashMeaningfulSourceContent, hashSourceContent } from "./ai-source-cach
 import { planBrightDataTargets, brightDataConfigured } from "./bright-data.ts";
 import { feedPageUrl } from "./feed-items.ts";
 import { assignProjectIdentityUrls } from "./project-identity.ts";
-import { normalizeProjectName } from "./source-text.ts";
+import { isApprovedDiscoveredUrl, nextListingPageUrl, normalizeProjectName } from "./source-text.ts";
 
 const scraper = await readFile(new URL("./scraper.ts", import.meta.url), "utf8");
 const start = scraper.indexOf("async function scrapeSource(");
@@ -28,8 +28,30 @@ class MockSourceRequestError extends Error {
   constructor(message, problem) { super(message); this.problem = problem; }
 }
 
+test("discovered-page fetch refuses outside hosts and never follows redirects", async () => {
+  const begin = scraper.indexOf("function fetchApprovedDiscoveredPage(");
+  const end = scraper.indexOf("/** Same-site article reads", begin);
+  assert.ok(begin >= 0 && end > begin);
+  const requests = [];
+  const fetchApproved = new Function(
+    "isApprovedDiscoveredUrl", "approvedHosts", "SourceRequestError", "fetchWithTimeout",
+    `${stripTypeScriptTypes(scraper.slice(begin, end))}\nreturn fetchApprovedDiscoveredPage;`,
+  )(
+    isApprovedDiscoveredUrl,
+    () => new Set(["reneweconomy.com.au"]),
+    MockSourceRequestError,
+    async (...args) => { requests.push(args); return "article"; },
+  );
+  const source = { name: "Renew Economy" };
+  assert.equal(await fetchApproved(source, "https://reneweconomy.com.au/article"), "article");
+  assert.deepEqual(requests, [["https://reneweconomy.com.au/article", 12_000, "error"]]);
+  assert.throws(() => fetchApproved(source, "https://evil.test/article"), /approved HTTPS/);
+  assert.throws(() => fetchApproved(source, "https://reneweconomy.com.au:8443/article"), /approved HTTPS/);
+  assert.equal(requests.length, 1);
+});
+
 async function run(options = {}) {
-  const logs = [], calls = { ai: 0, aiHashes: [], fetch: [], browse: 0, bright: [], special: 0 };
+  const logs = [], calls = { ai: 0, aiHashes: [], fetch: [], discovered: [], browse: 0, bright: [], special: 0 };
   const deps = {
     ...outcomes, sourceAcquisitionOutcome, getSourceRepairStrategy, browseAiConfigurationProblem,
     planBrightDataTargets, brightDataConfigured: () => brightDataConfigured(options.env ?? {}),
@@ -50,11 +72,19 @@ async function run(options = {}) {
       if (options.fetchError) throw options.fetchError;
       return url.endsWith("/feed/") ? '<rss><channel></channel></rss>' : options.html ?? html;
     },
-    parseHtmlPage: () => { if (options.parseError) throw options.parseError; return options.projects ?? []; },
+    parseHtmlPage: (_html, _source, _start, _end, url) => {
+      if (options.parseError) throw options.parseError;
+      return options.projectsByUrl?.[url] ?? options.projects ?? [];
+    },
     parseRssFeed: () => options.projects ?? [],
     parseRssFeedPage: () => ({ projects: options.projects ?? [], itemCount: 0, oldestDate: null, firstLink: null }),
-    feedPageUrl, assignProjectIdentityUrls, normalizeProjectName,
-    FEED_MAX_PAGES_BOUNDED: 10, FEED_MAX_PAGES_UNBOUNDED: 4,
+    feedPageUrl, assignProjectIdentityUrls, normalizeProjectName, nextListingPageUrl,
+    FEED_MAX_PAGES_BOUNDED: 10, FEED_MAX_PAGES_UNBOUNDED: 4, EXTRA_LISTING_PAGES: 2,
+    fetchApprovedDiscoveredPage: async (_source, url) => {
+      calls.discovered.push(url);
+      if (options.discoveredErrors?.[url]) throw options.discoveredErrors[url];
+      return options.discoveredDocuments?.[url] ?? "<html></html>";
+    },
     enrichProjectsFromArticles: async (_source, items) => ({ kept: [...items], attempted: 0, enriched: 0, dropped: 0 }),
     parseOfficialProjectHtml: () => options.projects ?? [],
     sourceRepairCandidatesToProjects: items => filterEligibleScanProjects(items),
@@ -84,6 +114,27 @@ test("valid results perform no AI call and keep duplicate URL handling", async (
   assert.equal(calls.fetch.length, 2);
   assert.deepEqual(results, [project]);
   assert.equal(logs.at(-1).resultOutcome, "success-with-results");
+});
+
+test("approved listing next pages add distinct projects without paid AI", async () => {
+  const first = "https://reneweconomy.com.au/";
+  const second = "https://reneweconomy.com.au/page/2/";
+  const third = "https://reneweconomy.com.au/page/3/";
+  const { calls, results } = await run({
+    html: '<article>Solar project listing</article><a rel="next" href="/page/2/">Next</a>',
+    discoveredDocuments: {
+      [second]: '<article>Solar project listing</article><a rel="next" href="/page/3/">Next</a>',
+      [third]: '<article>Solar project listing</article><a rel="next" href="/page/4/">Next</a>',
+    },
+    projectsByUrl: {
+      [first]: [project],
+      [second]: [{ ...project, name: "Second Solar Farm", sourceUrl: second }],
+      [third]: [{ ...project, name: "Third Solar Farm", sourceUrl: third }],
+    },
+  });
+  assert.deepEqual(calls.discovered, [second, third]);
+  assert.deepEqual(results.map(item => item.name), ["River Solar Farm", "Second Solar Farm", "Third Solar Farm"]);
+  assert.equal(calls.ai, 0);
 });
 
 test("fetch failures allow one configured AI repair and log the evidence", async () => {

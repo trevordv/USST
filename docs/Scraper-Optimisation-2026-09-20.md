@@ -30,7 +30,8 @@ Scope: `artifacts/api-server/src/lib` deterministic extraction only.
 - `source-heuristics.ts` — cue-based developer extraction, whole-word/earliest
   location matching.
 - `scraper.ts` — feed paging (10 pages bounded / 4 unbounded, stops once older than
-  the window), enrichment step, identity assignment, sentinel removal, same-source
+  the window), up to two same-host next-link HTML listing pages, enrichment step,
+  identity assignment, sentinel removal, same-source
   name fallback for pre-existing bare-URL rows, AltEnergy body fix + parallel reads,
   Browse.AI capacity/date fixes, AI-fallback undated handling.
 - `source-repair-parsers.ts`, `source-extraction-outcome.ts` — shared capacity/text
@@ -42,13 +43,20 @@ Approved source list, eligibility rules (AU/NZ, solar or solar+BESS, ≥5 MW),
 OpenAI fallback prompt/model/2,500-token cap (pinned by tests and AI-Cost-Control),
 API contract, schema, authentication, contact enrichment.
 
+Discovered article and next-listing URLs must use the exact approved HTTPS host,
+have no embedded credentials or non-default port, and are fetched without
+following redirects. Australian numeric day-first dates are parsed as dates,
+not replaced by the scan day.
+
 ## Validation
 
-`pnpm run typecheck`, `pnpm run build` and `pnpm -r --if-present test` pass
-(231 API tests including 43 new). **Not validated against live sources**: the
-authoring environment's egress policy blocked the approved hosts. Verify with a
-bounded authenticated scan and compare per-source counts and the
-`Article enrichment complete` log line.
+Local validation: `pnpm run typecheck`, `pnpm -r --if-present test` (235 API
+and 5 frontend tests), and the API-server production build pass. The full
+Windows workspace build is blocked by the repository lockfile's excluded
+optional native Rollup binary; confirm the full Linux build in Railway before
+deployment. **Not yet validated against live sources**: run a bounded
+authenticated scan and compare per-source counts plus the `Article enrichment
+complete` and `Additional listing pages read` logs.
 
 ## Remaining external blockers (not code)
 

@@ -59,6 +59,8 @@ import { readAemoGenerationWorkbookRows } from "./aemo-workbook";
 import {
   deriveProjectName,
   extractMainText,
+  isApprovedDiscoveredUrl,
+  nextListingPageUrl,
   normalizeProjectName,
   parseTextDate,
   siteHost,
@@ -616,12 +618,13 @@ class SourceRequestError extends Error {
   }
 }
 
-async function fetchWithTimeout(url: string, timeoutMs = 15000): Promise<string> {
+async function fetchWithTimeout(url: string, timeoutMs = 15000, redirect: "follow" | "error" = "follow"): Promise<string> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
       signal: controller.signal,
+      redirect,
       headers: {
         "User-Agent":
           "Mozilla/5.0 (compatible; SolarTrackerBot/1.0; +https://solar-tracker.replit.app)",
@@ -656,6 +659,7 @@ async function fetchWithTimeout(url: string, timeoutMs = 15000): Promise<string>
 // Bounded scans keep paging until the page is older than the requested window.
 const FEED_MAX_PAGES_BOUNDED = 10;
 const FEED_MAX_PAGES_UNBOUNDED = 4;
+const EXTRA_LISTING_PAGES = 2;
 
 function approvedHosts(source: ScrapeSource): Set<string> {
   const hosts = new Set<string>();
@@ -666,12 +670,20 @@ function approvedHosts(source: ScrapeSource): Set<string> {
   return hosts;
 }
 
+/** Discovered article/pagination URLs are not source configuration. Never follow redirects. */
+function fetchApprovedDiscoveredPage(source: ScrapeSource, url: string): Promise<string> {
+  if (!isApprovedDiscoveredUrl(url, approvedHosts(source))) {
+    throw new SourceRequestError("Discovered URL is not an approved HTTPS source host", "invalid-content", url);
+  }
+  return fetchWithTimeout(url, 12_000, "error");
+}
+
 /** Same-site article reads for candidates without a capacity (see article-enrichment.ts). */
 function enrichProjectsFromArticles(source: ScrapeSource, projects: readonly ScrapedProject[]) {
   return enrichFromArticles(projects, {
     country: source.country,
     approvedHosts: approvedHosts(source),
-    fetchHtml: (url) => fetchWithTimeout(url, 12_000),
+    fetchHtml: (url) => fetchApprovedDiscoveredPage(source, url),
     isNoisyName: isNoisyProjectName,
   });
 }
@@ -3337,6 +3349,7 @@ async function scrapeSource(
 ): Promise<ScrapedProject[]> {
   const startedAt = performance.now();
   const projects: ScrapedProject[] = [];
+  let extraListingPagesFetched = 0;
   const seenUrls = new Set<string>();
   const failures: unknown[] = [];
   const attempts: ExtractionAttempt[] = [];
@@ -3486,7 +3499,7 @@ async function scrapeSource(
     // Parse in configuration order to preserve first-URL-wins deduplication.
     for (let index = 0; index < urls.length; index++) {
       const url = urls[index];
-      await extract(format, url, async () => {
+      const firstPageCount = await extract(format, url, async () => {
         const result = fetched[index];
         if (result.status === "rejected") throw result.reason;
         return result.value;
@@ -3496,6 +3509,28 @@ async function scrapeSource(
           ? sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, url), source, startDate, endDate)
           : parseHtmlPage(html, source, startDate, endDate, url);
       });
+      const firstPage = fetched[index];
+      if (format !== "html" || firstPageCount === null || firstPage.status !== "fulfilled") continue;
+      let pageUrl = url;
+      let pageHtml = firstPage.value;
+      const seenPages = new Set([url]);
+      for (let page = 0; page < EXTRA_LISTING_PAGES; page++) {
+        const nextUrl = nextListingPageUrl(pageHtml, pageUrl);
+        if (!nextUrl || seenPages.has(nextUrl)) break;
+        seenPages.add(nextUrl);
+        try {
+          pageHtml = await fetchApprovedDiscoveredPage(source, nextUrl);
+          assertSourceDocument(pageHtml, "html");
+          addUnique(parseHtmlPage(pageHtml, source, startDate, endDate, nextUrl));
+          extraListingPagesFetched++;
+          pageUrl = nextUrl;
+        } catch {
+          break; // Best-effort depth never changes source outcome or triggers paid AI.
+        }
+      }
+    }
+    if (extraListingPagesFetched) {
+      logger.info({ source: source.name, extraListingPagesFetched }, "Additional listing pages read");
     }
     const enrichment = await enrichProjectsFromArticles(source, projects);
     if (enrichment.attempted > 0) {

@@ -83,13 +83,15 @@ test("name identity helpers", () => {
   assert.equal(projectSlug("Boree Solar Farm"), "boree-solar-farm");
 });
 
-import { parseTextDate, resolveHttpUrl, siteHost } from "./source-text.ts";
+import { isApprovedDiscoveredUrl, nextListingPageUrl, parseTextDate, resolveHttpUrl, siteHost } from "./source-text.ts";
 
 test("text dates: ISO, day-first and month-first; never today", () => {
   assert.equal(parseTextDate("Published 2026-06-12"), "2026-06-12");
   assert.equal(parseTextDate("Posted 5 June 2026 by staff"), "2026-06-05");
   assert.equal(parseTextDate("June 12th, 2026"), "2026-06-12");
   assert.equal(parseTextDate("Sept 3, 2026"), "2026-09-03");
+  assert.equal(parseTextDate("Posted 12/09/2026"), "2026-09-12");
+  assert.equal(parseTextDate("32/13/2026"), null);
   assert.equal(parseTextDate("31 February 2026"), null);
   assert.equal(parseTextDate("no date here"), null);
 });
@@ -99,4 +101,20 @@ test("url helpers", () => {
   assert.equal(resolveHttpUrl("#top", "https://example.com/"), null);
   assert.equal(resolveHttpUrl("mailto:a@b.c", "https://example.com/"), null);
   assert.equal(siteHost("https://www.Example.com/x"), "example.com");
+});
+
+test("discovered pages stay on exact approved HTTPS hosts without credentials", () => {
+  const hosts = new Set(["example.com"]);
+  assert.equal(isApprovedDiscoveredUrl("https://www.example.com/news/a", hosts), true);
+  assert.equal(isApprovedDiscoveredUrl("https://example.com.evil.test/a", hosts), false);
+  assert.equal(isApprovedDiscoveredUrl("https://evil.test@www.example.com/a", hosts), false);
+  assert.equal(isApprovedDiscoveredUrl("http://www.example.com/a", hosts), false);
+  assert.equal(isApprovedDiscoveredUrl("https://www.example.com:8443/a", hosts), false);
+});
+
+test("next listing page is same-host and explicitly marked", () => {
+  const base = "https://www.example.com/news/";
+  assert.equal(nextListingPageUrl('<a class="next page-numbers" href="/news/page/2/">Next</a>', base), "https://www.example.com/news/page/2/");
+  assert.equal(nextListingPageUrl('<link rel="next" href="/news/?page=2">', base), "https://www.example.com/news/?page=2");
+  assert.equal(nextListingPageUrl('<a rel="next" href="https://evil.test/x">Next</a>', base), null);
 });

@@ -304,6 +304,7 @@ const MONTHS: Record<string, string> = {
 };
 const MONTH_ALT = Object.keys(MONTHS).sort((a, b) => b.length - a.length).join("|");
 const DATE_ISO_RE = /\b(\d{4})-(\d{2})-(\d{2})\b/;
+const DATE_DMY_NUM_RE = /\b(\d{1,2})[\/-](\d{1,2})[\/-](20\d{2})\b/;
 const DATE_DMY_RE = new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALT})\\.?,?\\s+(\\d{4})\\b`, "i");
 const DATE_MDY_RE = new RegExp(`\\b(${MONTH_ALT})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})\\b`, "i");
 
@@ -315,7 +316,8 @@ function validIsoDate(year: string, month: string, day: string): string | null {
 
 /**
  * First explicit calendar date in a text fragment, as YYYY-MM-DD, or null.
- * Understands ISO dates, "12 June 2026" and "June 12, 2026". Never falls back
+ * Understands ISO dates, Australian numeric day-first dates, "12 June 2026"
+ * and "June 12, 2026". Never falls back
  * to today's date: an undated item is unknown, not new (see
  * docs/Scan-Date-Window-Policy.md).
  */
@@ -323,6 +325,11 @@ export function parseTextDate(text: string): string | null {
   const iso = text.match(DATE_ISO_RE);
   if (iso) {
     const valid = validIsoDate(iso[1], iso[2], iso[3]);
+    if (valid) return valid;
+  }
+  const numericDmy = text.match(DATE_DMY_NUM_RE);
+  if (numericDmy) {
+    const valid = validIsoDate(numericDmy[3], numericDmy[2], numericDmy[1]);
     if (valid) return valid;
   }
   const dmy = text.match(DATE_DMY_RE);
@@ -345,6 +352,33 @@ export function siteHost(url: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** Discovered pages may be fetched only from an exact approved HTTPS host. */
+export function isApprovedDiscoveredUrl(url: string, approvedHosts: ReadonlySet<string>): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:"
+      && !parsed.username && !parsed.password && !parsed.port
+      && approvedHosts.has(siteHost(parsed.href) ?? "");
+  } catch {
+    return false;
+  }
+}
+
+/** Find an explicitly marked next listing page, without leaving the current host. */
+export function nextListingPageUrl(html: string, pageUrl: string): string | null {
+  const host = siteHost(pageUrl);
+  if (!host) return null;
+  for (const tag of html.match(/<(?:a|link)\b[^>]*>/gi) ?? []) {
+    const rel = tag.match(/\brel=["']([^"']+)["']/i)?.[1] ?? "";
+    const classes = tag.match(/\bclass=["']([^"']+)["']/i)?.[1] ?? "";
+    if (!/(?:^|\s)next(?:\s|$)/i.test(rel) && !/(?:^|\s)next(?:\s|$)/i.test(classes)) continue;
+    const href = tag.match(/\bhref=["']([^"']+)["']/i)?.[1];
+    const resolved = href ? resolveHttpUrl(href, pageUrl) : null;
+    if (resolved && resolved !== pageUrl && isApprovedDiscoveredUrl(resolved, new Set([host]))) return resolved;
+  }
+  return null;
 }
 
 /** Resolve an href against a page URL; null for non-http(s), anchors and mailto. */

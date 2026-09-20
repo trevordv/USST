@@ -106,16 +106,21 @@ This log records material USST deviations from the generic Agentic App Template 
   to the OpenAI fallback prompt/model/token cap, eligibility rules, schema or
   API contract. Undated feed/card/Browse.AI/AI-fallback items are now stored with
   a null announcement date (unbounded scans) or excluded (bounded scans), matching
-  the documented policy and LUVI/AltEnergy behaviour.
+  the documented policy and LUVI/AltEnergy behaviour. The earlier supplied
+  article/listing patch overlaps the bundle; its distinct AU numeric-date and
+  next-listing-page behaviours were retained without installing duplicate parsers.
 - Security / privacy impact: Article reads are restricted to the source's own
-  approved hosts, use the existing response classifier (blocks/challenges are
-  respected, never bypassed), and are capped at 30 pages per source with 4
-  concurrent requests.
+  approved HTTPS hosts, use the existing response classifier (blocks/challenges
+  are respected, never bypassed), and are capped at 30 pages per source with 4
+  concurrent requests. Newly discovered article/listing requests reject redirects
+  rather than following one to a different host.
 - Token / cost impact: No paid AI added. Deterministic recovery may reduce
-  fallback attempts because fewer valid sources look empty.
+  fallback attempts because fewer valid sources look empty. HTML listing depth
+  adds at most two direct requests per successfully fetched configured listing URL;
+  feed depth is bounded separately as documented in the scraper.
 - Deployment impact: Draft PR against `migration/railway-supabase`. Verify with a
   bounded authenticated scan and compare per-source counts and
-  `Article enrichment complete` log lines before merging.
+  `Article enrichment complete` log lines after deployment.
 - Rollback / exit path: Revert the PR; no data migration. Rows stored with the
   new `#slug` URLs remain valid and are still name-matched by source.
 
