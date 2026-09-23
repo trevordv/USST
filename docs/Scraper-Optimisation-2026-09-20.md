@@ -60,9 +60,8 @@ complete` and `Additional listing pages read` logs.
 
 ## Remaining external blockers (not code)
 
-- Browse.AI key and four NZ robot IDs are not configured in Railway.
 - Publisher 403s (AEMO workbook, Energy Magazine direct path) need publisher-approved
   access; no challenge circumvention was added.
-- Sources in `openai-first` mode only attempt a direct fetch when Bright Data is
-  configured. Enabling a free direct-first attempt would cut AI spend but can reduce
-  unbounded-scan coverage; needs a measured decision.
+- Issue #41 supersedes the old `openai-first` behaviour: every generic source
+  now attempts its deterministic official path before any bounded managed
+  acquisition or OpenAI normalisation.

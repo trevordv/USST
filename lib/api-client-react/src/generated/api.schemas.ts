@@ -257,6 +257,49 @@ export interface ScanProject {
   eventSourceName: string | null;
 }
 
+export type ScanSourceHealthOutcome = typeof ScanSourceHealthOutcome[keyof typeof ScanSourceHealthOutcome];
+
+
+export const ScanSourceHealthOutcome = {
+  'success-with-results': 'success-with-results',
+  'success-zero-results': 'success-zero-results',
+  blocked: 'blocked',
+  timeout: 'timeout',
+  'extraction-failed': 'extraction-failed',
+  'missing-credentials': 'missing-credentials',
+  'rate-limited': 'rate-limited',
+  'provider-error': 'provider-error',
+} as const;
+
+export interface ScanSourceHealth {
+  id: number;
+  scanId: number;
+  sourceName: string;
+  acquisitionMethod: string;
+  directAttempted: boolean;
+  firecrawlAttempted: boolean;
+  firecrawlSucceeded: boolean;
+  apifyAttempted: boolean;
+  brightDataAttempted: boolean;
+  openaiNormalisationAttempted: boolean;
+  openaiNormalisationSucceeded: boolean;
+  fallbackUsed: boolean;
+  outcome: ScanSourceHealthOutcome;
+  candidateCount: number;
+  qualifyingProjectCount: number;
+  durationMs: number;
+  /** @nullable */
+  failureCategory?: string | null;
+  /** @nullable */
+  failureReason?: string | null;
+  /** @nullable */
+  contentFingerprint?: string | null;
+  firecrawlCalls: number;
+  firecrawlPages: number;
+  firecrawlCacheReused: boolean;
+  createdAt: string;
+}
+
 export type ContactEnrichmentStatus = typeof ContactEnrichmentStatus[keyof typeof ContactEnrichmentStatus];
 
 

@@ -11,7 +11,8 @@ export interface ExtractionAttempt {
   url?: string;
   outcome: ExtractionOutcome;
   reason?: string;
-  failureCategory?: "blocked" | "public-access-block" | "timeout" | "http-error" | "invalid-content" | "network" | "parser";
+  failureCategory?: "blocked" | "public-access-block" | "timeout" | "http-error" | "invalid-content" | "network" | "parser" |
+    "missing-credentials" | "auth-failed" | "rate-limited" | "provider-error" | "malformed-response" | "empty-content" | "unsafe-final-url";
 }
 
 export class SourceExtractionError extends Error {

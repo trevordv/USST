@@ -78,22 +78,21 @@ Set only the credentials actually used by the existing USST configuration:
 - `LUVI_PASSWORD`
 - `APIFY_API_TOKEN`
 - `LUSHA_API_KEY`
-- `FIRECRAWL_API_KEY`
+- `FIRECRAWL_API_KEY` — optional server-only key for bounded acquisition of
+  reviewed weak sources. Never expose it through a `VITE_` variable.
 - `BRIGHT_DATA_API_KEY` — optional server-side Bright Data Web Unlocker API key.
 - `BRIGHT_DATA_ZONE` — the matching Web Unlocker zone name; both variables are
   required before this fallback is active. Find the zone name in the Bright
   Data Web Unlocker zone Overview. Do not use a `VITE_` variable.
 
-Bright Data is used only after an approved public URL has a technical network,
-timeout, unusable-content, parser or JavaScript-rendering failure. A plain HTTP
-403 may also qualify, but only for a registry-reviewed `extraction-problematic`
-public source with no login, paywall, rate-limit or challenge evidence. It is
-**not** used for those protected responses or sources designated inaccessible
-in the registry. It never expands the
-approved source list, replaces AltEnergy/LUVI authenticated access, or bypasses
-project eligibility and date gates. A successfully parsed zero result does not
-trigger it. A provider failure retains the existing bounded AI fallback.
-Per-source diagnostics distinguish direct, Bright Data and AI paths.
+For reviewed weak sources the scan hierarchy is deterministic official access,
+direct HTML, bounded Firecrawl, Apify, then Bright Data. Bright Data is considered
+only after the earlier approved transports record a failure. No managed provider
+expands the source list, replaces AltEnergy/LUVI authenticated access, or bypasses
+project eligibility and date gates. A successfully parsed zero result stops the
+hierarchy. OpenAI may normalise bounded content already acquired from an approved
+source, but does not perform source-level web search. Per-source diagnostics
+distinguish direct, Firecrawl, Apify, Bright Data and OpenAI-normalisation paths.
 
 ## 4. First Railway deployment
 

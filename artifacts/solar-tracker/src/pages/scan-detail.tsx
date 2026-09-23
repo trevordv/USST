@@ -1,5 +1,8 @@
 import { useParams, Link } from "wouter";
-import { useGetScan, getGetScanQueryKey, useGetScanProjects, getGetScanProjectsQueryKey } from "@workspace/api-client-react";
+import {
+  useGetScan, getGetScanQueryKey, useGetScanProjects, getGetScanProjectsQueryKey,
+  useGetScanSources, getGetScanSourcesQueryKey,
+} from "@workspace/api-client-react";
 import { Layout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -24,7 +27,11 @@ export default function ScanDetail() {
     query: { enabled: !!scanId, queryKey: getGetScanProjectsQueryKey(scanId) },
   });
 
-  const isLoading = scanLoading || projectsLoading;
+  const { data: sourceHealth, isLoading: sourceHealthLoading } = useGetScanSources(scanId, {
+    query: { enabled: !!scanId, queryKey: getGetScanSourcesQueryKey(scanId) },
+  });
+
+  const isLoading = scanLoading || projectsLoading || sourceHealthLoading;
 
   if (isLoading) {
     return (
@@ -54,6 +61,21 @@ export default function ScanDetail() {
   const newCount = projects?.filter((p) => p.isNew).length ?? 0;
   const updatedCount = projects?.filter((p) => p.eventType === "updated").length ?? 0;
   const observedCount = projects?.filter((p) => p.eventType === "inventory_observed").length ?? 0;
+  const successfulSources = sourceHealth?.filter((item) =>
+    item.outcome === "success-with-results" || item.outcome === "success-zero-results"
+  ).length ?? 0;
+  const healthCategory = (item: NonNullable<typeof sourceHealth>[number]) => {
+    if (item.outcome === "success-zero-results") return "Valid zero";
+    if (item.outcome === "success-with-results") {
+      if (item.acquisitionMethod === "firecrawl") return "Healthy Firecrawl";
+      if (item.acquisitionMethod === "apify") return "Healthy Apify";
+      if (item.acquisitionMethod === "brightdata") return "Healthy Bright Data";
+      return "Healthy direct";
+    }
+    if (item.outcome === "blocked") return "Blocked";
+    if (item.outcome === "timeout" || item.outcome === "rate-limited") return "Degraded";
+    return "Failed";
+  };
 
   const visibleProjects = projects?.filter((project) => resultFilter === "all" || project.eventType === resultFilter) ?? [];
   // Sort: new projects, dated updates, then inventory observations.
@@ -124,6 +146,67 @@ export default function ScanDetail() {
               </div>
             </div>
           </div>
+        </div>
+
+        {/* Durable source acquisition health */}
+        <div className="border rounded-lg bg-card overflow-hidden shadow-sm">
+          <div className="px-4 py-3 border-b bg-muted/50 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="font-semibold text-sm">Source acquisition health</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {sourceHealth?.length ?? 0} sources attempted · {successfulSources} successfully acquired
+              </p>
+            </div>
+          </div>
+          {sourceHealth && sourceHealth.length > 0 ? (
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-muted/30 hover:bg-muted/30">
+                  <TableHead>Source</TableHead>
+                  <TableHead>Health</TableHead>
+                  <TableHead>Method</TableHead>
+                  <TableHead className="text-right">Candidates</TableHead>
+                  <TableHead className="text-right">Qualifying</TableHead>
+                  <TableHead className="text-right">Duration</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sourceHealth.map((item) => {
+                  const category = healthCategory(item);
+                  const healthy = category.startsWith("Healthy") || category === "Valid zero";
+                  return (
+                    <TableRow key={item.id}>
+                      <TableCell className="font-medium">{item.sourceName}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={healthy
+                          ? "border-green-200 text-green-700 bg-green-50"
+                          : category === "Degraded" ? "border-amber-200 text-amber-700 bg-amber-50"
+                          : "border-red-200 text-red-700 bg-red-50"}>
+                          {category}
+                        </Badge>
+                        {item.failureReason && <div className="text-xs text-muted-foreground mt-1">{item.failureReason}</div>}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        <div>{item.acquisitionMethod}</div>
+                        {item.openaiNormalisationAttempted && (
+                          <div className="mt-1 font-sans text-muted-foreground">
+                            OpenAI normalisation {item.openaiNormalisationSucceeded ? "completed" : "failed"}
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">{item.candidateCount}</TableCell>
+                      <TableCell className="text-right font-mono">{item.qualifyingProjectCount}</TableCell>
+                      <TableCell className="text-right font-mono text-xs">{(item.durationMs / 1000).toFixed(1)}s</TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          ) : (
+            <div className="px-4 py-6 text-sm text-muted-foreground">
+              Source health is unavailable for scans created before Issue #41.
+            </div>
+          )}
         </div>
 
         {/* Projects table */}

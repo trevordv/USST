@@ -45,22 +45,23 @@ async function extract(rows, selectedSource = source, outputText = JSON.stringif
     class OpenAiQualityError extends Error { constructor(reason, message) { super(message); this.reason = reason; } },
     async () => {},
   );
-  const results = await fallback(selectedSource, "2026-08-01", "2026-08-31");
+  const results = await fallback(selectedSource, "2026-08-01", "2026-08-31", hashSourceContent("captured source"), true, "Captured approved-source project content");
   return { results, requests, gated };
 }
 
-test("source fallback requests Luna with unchanged web-search and JSON contract", async () => {
+test("source normalisation requests Luna with no web search and the compact JSON contract", async () => {
   const { requests, results } = await extract([project]);
   assert.equal(requests.length, 1);
   assert.equal(requests[0].model, "gpt-5.6-luna");
-  assert.deepEqual(requests[0].tools, [{ type: "web_search_preview" }]);
+  assert.deepEqual(requests[0].tools, []);
   assert.equal(requests[0].max_output_tokens, 2500);
   assert.match(requests[0].input, /Return ONLY a valid compact JSON array/);
   assert.match(requests[0].input, /No prose, no markdown fences, no chain-of-thought or reasoning/);
   assert.match(requests[0].input, /Include only these parser fields: name, description, capacity_mw, developer, location, country, status, source_url, announced_date\./);
   assert.match(requests[0].input, /avoid repeating source text/);
   assert.match(requests[0].input, /Return \[\] when no valid projects are found/);
-  assert.match(requests[0].input, /Search and cite ONLY these approved official hostnames: www\.planningportal\.nsw\.gov\.au/);
+  assert.match(requests[0].input, /Use ONLY the acquired content below and cite only these approved official hostnames: www\.planningportal\.nsw\.gov\.au/);
+  assert.match(requests[0].input, /Do not search the web/);
   assert.deepEqual(Object.keys(results[0]).sort(), ["name", "description", "capacityMw", "developer", "location", "country", "status", "sourceUrl", "sourceName", "announcedDate", "contactName", "contactEmail", "contactPhone"].sort());
   // Other model callers (including contact work) must not be switched.
   assert.doesNotMatch(scraper.slice(0, start) + scraper.slice(end), /gpt-5\.6-luna/);

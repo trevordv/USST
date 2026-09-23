@@ -16,8 +16,8 @@
  *  - NZ: Electricity Authority, Transpower, NZ Fast-track, NZ EPA
  *  - AltEnergy and LUVI are authenticated and handled separately
  *
- * Apify Google Search is used ONLY for the explicit contact-enrichment feature
- * (POST /projects/enrich-contacts), never during scanning.
+ * Managed acquisition is bounded to the approved registry: direct structured
+ * paths first, then Firecrawl, Apify and Bright Data where explicitly allowed.
  */
 
 import { db, pool, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable, pvhContactsTable, type PvhContact } from "@workspace/db";
@@ -52,6 +52,7 @@ import {
 } from "./source-repair-parsers";
 import {
   AEMO_GENERATION_WORKBOOK_URL,
+  getSourceAcquisitionPlan,
   getSourceRepairStrategy,
   validateSourceRepairStrategies,
 } from "./source-repair-strategies";
@@ -80,6 +81,19 @@ import { enrichProjectsFromArticles as enrichFromArticles } from "./article-enri
 import { parseSourceFallbackArray, sourceAcquisitionOutcome } from "./source-access-outcome";
 import { browseAiConfigurationProblem, runBrowseAiTask, type BrowseAiResult } from "./browse-ai-task";
 import { brightDataConfigured, fetchApprovedBrightData, planBrightDataTargets } from "./bright-data";
+import {
+  acquireApprovedSourceWithFirecrawl,
+  firecrawlConfigured,
+  FirecrawlAcquisitionError,
+} from "./firecrawl";
+import { apifySourceConfigured, fetchApprovedSourceWithApify } from "./apify-source";
+import {
+  combineContentFingerprints,
+  persistScanSourceHealth,
+  safeSourceFailureReason,
+  type DurableSourceOutcome,
+  type ScanSourceHealthInput,
+} from "./scan-source-health";
 import { cachedSourceFallback, hashMeaningfulSourceContent, hashSourceContent } from "./ai-source-cache";
 import { recordOpenAiCacheHit } from "./openai-usage";
 import { OpenAiQualityError, runOpenAiEscalation } from "./openai-escalation";
@@ -307,12 +321,6 @@ interface ScrapeSource {
   /** Extra URLs to scrape in addition to searchUrl (e.g. category pages) */
   extraUrls?: string[];
   /**
-   * If true, use the Firecrawl API (FIRECRAWL_API_KEY) instead of raw fetch+Cheerio.
-   * Firecrawl renders JavaScript and returns clean markdown — ideal for government
-   * portals and industry sites that don't expose a usable RSS feed or HTML article list.
-   */
-  firecrawl?: boolean;
-  /**
    * Browse.AI robot ID to use for this source.
    * The robot must be pre-configured in the Browse.AI dashboard
    * (https://browse.ai) with an `originUrl` input parameter.
@@ -455,7 +463,7 @@ const SOURCES: ScrapeSource[] = [
     searchUrl: "https://www.aemo.com.au/energy-systems/electricity/national-electricity-market-nem/nem-forecasting-and-planning/forecasting-and-planning-data/generation-information",
   },
   {
-    // DCCEEW pages are government portals — Firecrawl consistently times out on these URLs.
+    // DCCEEW retains its reviewed direct official-page path.
     name: "Capacity Investment Scheme",
     country: "AU",
     searchUrl: "https://www.dcceew.gov.au/energy/renewable/capacity-investment-scheme/closed-cis-tenders",
@@ -487,7 +495,7 @@ const SOURCES: ScrapeSource[] = [
     searchUrl: "https://www.planning.nsw.gov.au/the-planning-system/renewable-energy",
   },
   {
-    // JS-rendered planning portal — Firecrawl consistently times out.
+    // Direct official HTML first; bounded Firecrawl is available only on failure.
     name: "Planning Victoria",
     country: "AU",
     searchUrl: "https://www.planning.vic.gov.au/guides-and-resources/guides/all-guides/renewable-energy-facilities/solar-energy-facilities",
@@ -519,20 +527,20 @@ const SOURCES: ScrapeSource[] = [
   },
   // ── Industry / Data Platforms ─────────────────────────────────────────────
   {
-    // JS-rendered app — Firecrawl times out; plain HTML also returns nothing useful.
+    // Direct official HTML first; bounded managed acquisition is failure-only.
     name: "Planning Alerts Australia",
     country: "AU",
     searchUrl: "https://www.planningalerts.org.au/",
   },
   {
-    // CEC pages are JS-rendered membership portals / PDF downloads — Firecrawl consistently
-    // times out (30 s) and returns 0 projects even when it does respond. Use plain HTML.
+    // CEC pages may be JS-rendered or PDF-backed; retain direct first and use
+    // the reviewed bounded managed-acquisition hierarchy on a real failure.
     name: "Clean Energy Council",
     country: "AU",
     searchUrl: "https://cleanenergycouncil.org.au/advocacy/large-scale-solar",
   },
   {
-    // QLD Planning is a JS-rendered gov portal — Firecrawl times out consistently.
+    // JS-rendered government portal; direct remains first, Firecrawl is bounded fallback.
     name: "QLD Planning – Renewable Energy",
     country: "AU",
     searchUrl: "https://www.planning.qld.gov.au/planning-framework/state-assessment-and-referral-agency/sara-submissions-portal",
@@ -560,25 +568,24 @@ const SOURCES: ScrapeSource[] = [
     searchUrl: "https://www.transpower.co.nz/connections/whats-latest-grid-connections",
   },
   {
-    // Cloudflare-protected — requires Browse.AI robot.
-    // Set browseAiRobotId once the robot is created at https://app.browse.ai
-    // Robot columns: Project Name | Capacity | Status | Region | Developer | URL
+    // Protected/JS-rendered portal; direct then bounded Firecrawl, with later
+    // providers used only after a recorded acquisition failure.
     name: "NZ Fast-track",
     country: "NZ",
     searchUrl: "https://www.fasttrack.govt.nz/projects/",
     // browseAiRobotId: "TODO",
   },
   {
-    // Legacy COVID-era / NBEA fast-track consenting referrals.
-    // Cloudflare-protected — requires Browse.AI robot.
+    // Legacy COVID-era / NBEA fast-track consenting referrals. Direct first,
+    // then the reviewed bounded managed-acquisition hierarchy.
     name: "NZ EPA – Fast-track Projects",
     country: "NZ",
     searchUrl: "https://www.epa.govt.nz/fast-track-consenting/fast-track-projects/",
     // browseAiRobotId: "TODO",
   },
   {
-    // Pre-2024 pathway: RMA Proposals of National Significance.
-    // Cloudflare-protected — requires Browse.AI robot.
+    // Pre-2024 pathway: RMA Proposals of National Significance. Direct first,
+    // then the reviewed bounded managed-acquisition hierarchy.
     name: "NZ EPA – RMA Proposals",
     country: "NZ",
     searchUrl: "https://www.epa.govt.nz/industry-areas/rma-proposals/",
@@ -586,7 +593,7 @@ const SOURCES: ScrapeSource[] = [
   },
   {
     // Broader EPA consultations aggregator — catches projects not listed elsewhere.
-    // Cloudflare-protected — requires Browse.AI robot.
+    // Direct first, then the reviewed bounded managed-acquisition hierarchy.
     name: "NZ EPA – Public Consultations",
     country: "NZ",
     searchUrl: "https://www.epa.govt.nz/public-consultations/",
@@ -1264,15 +1271,6 @@ export async function scrapeLuvi(
 // Firecrawl helpers
 // ──────────────────────────────────────────────────────────────
 
-interface FirecrawlScrapeResponse {
-  success: boolean;
-  data?: {
-    markdown?: string;
-    metadata?: { sourceURL?: string; title?: string };
-  };
-  error?: string;
-}
-
 /**
  * Parse Firecrawl markdown output into ScrapedProject records.
  *
@@ -1288,6 +1286,17 @@ function parseFirecrawlMarkdown(
   endDate?: string,
 ): ScrapedProject[] {
   const projects: ScrapedProject[] = [];
+  const approvedPage = new URL(pageUrl);
+  const approvedLink = (value?: string): string => {
+    if (!value) return pageUrl;
+    try {
+      const parsed = new URL(value, pageUrl);
+      return parsed.protocol === "https:" && !parsed.username && !parsed.password && !parsed.port &&
+        parsed.hostname === approvedPage.hostname ? parsed.href : pageUrl;
+    } catch {
+      return pageUrl;
+    }
+  };
 
   // Split at every heading line (H1–H3) to get one section per potential project
   const sections = markdown.split(/\n(?=#{1,3} )/);
@@ -1334,30 +1343,22 @@ function parseFirecrawlMarkdown(
 
     // Prefer an in-text hyperlink, otherwise fall back to the page URL
     const linkMatch = section.match(/\[.*?\]\((https?:\/\/[^)]+)\)/);
-    const sourceUrl = linkMatch?.[1] ?? pageUrl;
+    const sourceUrl = approvedLink(linkMatch?.[1]);
 
     // Date extraction
     const dateMatch = section.match(/(\d{4}-\d{2}-\d{2})|(\w+ \d{1,2},? \d{4})/);
-    let announcedDate: string;
-    let dateParsed = false;
+    let announcedDate: string | null = null;
     try {
       if (dateMatch) {
         const d = new Date(dateMatch[0]);
         if (!isNaN(d.getTime())) {
           announcedDate = d.toISOString().slice(0, 10);
-          dateParsed = true;
-        } else {
-          announcedDate = new Date().toISOString().slice(0, 10);
         }
-      } else {
-        announcedDate = new Date().toISOString().slice(0, 10);
       }
-    } catch {
-      announcedDate = new Date().toISOString().slice(0, 10);
-    }
-    if (!dateParsed && (startDate || endDate)) continue;
-    if (startDate && announcedDate < startDate) continue;
-    if (endDate && announcedDate > endDate) continue;
+    } catch { /* unknown remains unknown */ }
+    if (!announcedDate && (startDate || endDate)) continue;
+    if (startDate && announcedDate && announcedDate < startDate) continue;
+    if (endDate && announcedDate && announcedDate > endDate) continue;
 
     projects.push({
       name,
@@ -1426,21 +1427,19 @@ function parseFirecrawlMarkdown(
 
       // Date: scan whole row for a date pattern
       const dateMatch = rowText.match(/(\d{4}-\d{2}-\d{2})|(\w+ \d{1,2},? \d{4})/);
-      let announcedDate = new Date().toISOString().slice(0, 10);
-      let dateParsed = false;
+      let announcedDate: string | null = null;
       if (dateMatch) {
         const d = new Date(dateMatch[0]);
         if (!isNaN(d.getTime())) {
           announcedDate = d.toISOString().slice(0, 10);
-          dateParsed = true;
         }
       }
-      if (!dateParsed && (startDate || endDate)) continue;
-      if (startDate && announcedDate < startDate) continue;
-      if (endDate && announcedDate > endDate) continue;
+      if (!announcedDate && (startDate || endDate)) continue;
+      if (startDate && announcedDate && announcedDate < startDate) continue;
+      if (endDate && announcedDate && announcedDate > endDate) continue;
 
       const linkMatch = rowText.match(/\[.*?\]\((https?:\/\/[^)]+)\)/);
-      const sourceUrl = linkMatch?.[1] ?? pageUrl;
+      const sourceUrl = approvedLink(linkMatch?.[1]);
 
       projects.push({
         name,
@@ -1491,21 +1490,19 @@ function parseFirecrawlMarkdown(
     if (projects.some((p) => p.name.toLowerCase() === name.toLowerCase())) continue;
 
     const linkMatch = line.match(/\[.*?\]\((https?:\/\/[^)]+)\)/);
-    const sourceUrl = linkMatch?.[1] ?? pageUrl;
+    const sourceUrl = approvedLink(linkMatch?.[1]);
 
     const dateMatch = line.match(/(\d{4}-\d{2}-\d{2})|(\w+ \d{1,2},? \d{4})/);
-    let announcedDate = new Date().toISOString().slice(0, 10);
-    let dateParsed = false;
+    let announcedDate: string | null = null;
     if (dateMatch) {
       const d = new Date(dateMatch[0]);
       if (!isNaN(d.getTime())) {
         announcedDate = d.toISOString().slice(0, 10);
-        dateParsed = true;
       }
     }
-    if (!dateParsed && (startDate || endDate)) continue;
-    if (startDate && announcedDate < startDate) continue;
-    if (endDate && announcedDate > endDate) continue;
+    if (!announcedDate && (startDate || endDate)) continue;
+    if (startDate && announcedDate && announcedDate < startDate) continue;
+    if (endDate && announcedDate && announcedDate > endDate) continue;
 
     projects.push({
       name,
@@ -1525,59 +1522,6 @@ function parseFirecrawlMarkdown(
   }
 
   return projects;
-}
-
-/**
- * Fetch a single URL via the Firecrawl API and return parsed projects.
- * Requires FIRECRAWL_API_KEY environment variable.
- * Returns [] and logs a warning if the key is absent or the request fails.
- */
-async function scrapeWithFirecrawl(
-  url: string,
-  source: ScrapeSource,
-  startDate?: string,
-  endDate?: string,
-): Promise<ScrapedProject[]> {
-  const apiKey = process.env.FIRECRAWL_API_KEY;
-  if (!apiKey) {
-    logger.warn({ source: source.name, url }, "FIRECRAWL_API_KEY not set — skipping Firecrawl source");
-    return [];
-  }
-
-  try {
-    const resp = await fetch("https://api.firecrawl.dev/v1/scrape", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        url,
-        formats: ["markdown"],
-        onlyMainContent: true,
-      }),
-      signal: AbortSignal.timeout(30_000), // 30 s hard cap per Firecrawl request
-    });
-
-    if (!resp.ok) {
-      logger.warn({ status: resp.status, url, source: source.name }, "Firecrawl API request failed");
-      return [];
-    }
-
-    const data = (await resp.json()) as FirecrawlScrapeResponse;
-    if (!data.success || !data.data?.markdown) {
-      logger.warn({ url, error: data.error, source: source.name }, "Firecrawl returned no markdown");
-      return [];
-    }
-
-    const pageUrl = data.data.metadata?.sourceURL ?? url;
-    const results = parseFirecrawlMarkdown(data.data.markdown, source, pageUrl, startDate, endDate);
-    logger.info({ source: source.name, url, found: results.length }, "Firecrawl scrape complete");
-    return results;
-  } catch (err) {
-    logger.warn({ err, url, source: source.name }, "Firecrawl scrape threw");
-    return [];
-  }
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -3063,7 +3007,7 @@ function extractSourceName(url: string): string {
   }
 }
 
-// ── ChatGPT web-search fallback ───────────────────────────────────────────────
+// ── Bounded OpenAI normalisation of already-acquired source content ──────────
 
 type GptScraperOpenAI = {
   responses: {
@@ -3089,8 +3033,8 @@ interface GptSourceProject {
 }
 
 /**
- * ChatGPT web-search fallback for a single source.
- * Admitted only for configured extraction failures or explicit AI-repair paths.
+ * OpenAI normalisation for a single source's bounded acquired content.
+ * It never searches the web and is not an acquisition/completeness layer.
  * Cached raw responses still pass the same current eligibility gates below.
  */
 async function scrapeWithChatGpt(
@@ -3099,10 +3043,14 @@ async function scrapeWithChatGpt(
   endDate?: string,
   contentHash = hashSourceContent("no captured source content"),
   contentObserved = false,
+  acquiredContent = "",
 ): Promise<ScrapedProject[]> {
   try {
-    const today = new Date().toISOString().slice(0, 10);
     const strategy = getSourceRepairStrategy(source.name);
+    if (!contentObserved || !acquiredContent.trim()) {
+      throw new Error("Source normalisation requires acquired source content");
+    }
+    const today = new Date().toISOString().slice(0, 10);
     const officialHosts = [...new Set(strategy.officialUrls.map((url) => new URL(url).hostname))];
 
     const dateClause = startDate || endDate
@@ -3110,7 +3058,7 @@ async function scrapeWithChatGpt(
       : "";
 
     const todayContext = startDate && endDate ? "" : `Today is ${today}. `;
-    const prompt = `${todayContext}Search "${source.name}" (${source.searchUrl}) for utility-scale solar energy or solar+BESS hybrid projects in Australia or New Zealand${dateClause}.
+    const prompt = `${todayContext}Extract utility-scale solar energy or solar+BESS hybrid projects in Australia or New Zealand${dateClause} from the bounded content acquired from the approved source "${source.name}" (${source.searchUrl}).
 
 Find all solar/PV projects ≥5 MW that have been announced, approved, or are under assessment. Include the project's MW capacity if stated.
 
@@ -3121,7 +3069,8 @@ Example shape:
 [{"name":"Example Solar Farm","description":"150 MW solar farm in regional NSW","capacity_mw":150,"developer":"Acme Energy Pty Ltd","location":"Regional NSW","country":"AU","status":"announced","source_url":"https://example.com/project/example-solar-farm","announced_date":"2024-03-15"}]
 
 Rules:
-- Search and cite ONLY these approved official hostnames: ${officialHosts.join(", ")}
+- Use ONLY the acquired content below and cite only these approved official hostnames: ${officialHosts.join(", ")}
+- Do not search the web, infer missing records, or treat this content as complete
 - Do not use news aggregators, developer sites, social media, cached copies, or unofficial mirrors
 - country: "AU" or "NZ" only
 - status: "announced" or "under_development"
@@ -3129,7 +3078,10 @@ Rules:
 - source_url: direct URL to the specific project page/article if known, otherwise use ${source.searchUrl}
 - announced_date: YYYY-MM-DD format, null if unknown
 - Exclude wind-only projects, mining, roads, housing
-- Return [] when no valid projects are found`;
+- Return [] when no valid projects are found
+
+ACQUIRED SOURCE CONTENT (bounded):
+${acquiredContent.slice(0, 60_000)}`;
 
     const model = "gpt-5.6-luna";
     let cacheHit = false;
@@ -3138,7 +3090,7 @@ Rules:
       {
         sourceName: source.name, sourceUrl: source.searchUrl, contentHash,
         startDate, endDate, model, contentObserved,
-        promptHash: hashSourceContent(JSON.stringify({ prompt, maxOutputTokens: 2500, tool: "web_search_preview", escalation: "luna-terra-sol-v1" })),
+        promptHash: hashSourceContent(JSON.stringify({ prompt, maxOutputTokens: 2500, tool: "none", escalation: "luna-terra-sol-v1" })),
       },
       async () => {
         if (!process.env.OPENAI_API_KEY?.trim()) {
@@ -3154,7 +3106,7 @@ Rules:
           sourceUrl: source.searchUrl,
           metadata: { contentHash, startDate, endDate },
         }, request: attemptModel => gpt.responses.create({
-          model: attemptModel, tools: [{ type: "web_search_preview" }], input: prompt, max_output_tokens: 2500,
+          model: attemptModel, tools: [], input: prompt, max_output_tokens: 2500,
         }), validate: response => {
           let text = response.output_text ?? "";
           if (!text && Array.isArray(response.output)) {
@@ -3346,7 +3298,7 @@ async function scrapeSource(
   source: ScrapeSource,
   startDate?: string,
   endDate?: string,
-): Promise<ScrapedProject[]> {
+): Promise<{ projects: ScrapedProject[]; health: ScanSourceHealthInput }> {
   const startedAt = performance.now();
   const projects: ScrapedProject[] = [];
   let extraListingPagesFetched = 0;
@@ -3354,10 +3306,25 @@ async function scrapeSource(
   const failures: unknown[] = [];
   const attempts: ExtractionAttempt[] = [];
   const contentFingerprints = new Map<string, string>();
-  const brightRepairedUrls = new Set<string>();
+  const acquiredContents = new Map<string, string>();
+  const repairedUrls = new Set<string>();
+  const normalisationNeededUrls = new Set<string>();
   const strategy = getSourceRepairStrategy(source.name);
+  const acquisitionPlan = getSourceAcquisitionPlan(source.name);
   let directSucceeded = false;
+  let directAcquired = false;
+  let directAttempted = false;
+  let firecrawlAttempted = false;
+  let firecrawlSucceeded = false;
+  let firecrawlParsed = false;
+  let firecrawlCalls = 0;
+  let firecrawlPages = 0;
+  let firecrawlCacheReused = false;
+  let apifyAttempted = false;
+  let apifySucceeded = false;
+  let apifyParsed = false;
   let brightSucceeded = false;
+  let brightParsed = false;
   let brightDataCalls = 0;
   let fallbackUsed = false;
   let fallbackSucceeded = false;
@@ -3397,15 +3364,25 @@ async function scrapeSource(
     let phase: "fetch" | "parse" = "fetch";
     try {
       const input = await fetchInput();
-      if (typeof input === "string") contentFingerprints.set(url, hashMeaningfulSourceContent(input));
+      if (method.startsWith("bright-data-")) brightSucceeded = true;
+      else directAcquired = true;
+      if (typeof input === "string") {
+        contentFingerprints.set(url, hashMeaningfulSourceContent(input));
+        acquiredContents.set(url, input.slice(0, 100_000));
+      }
       if (method.startsWith("bright-data-") && Buffer.isBuffer(input)) {
-        contentFingerprints.set(url, hashMeaningfulSourceContent(input.toString("utf8")));
+        const text = input.toString("utf8");
+        contentFingerprints.set(url, hashMeaningfulSourceContent(text));
+        acquiredContents.set(url, text.slice(0, 100_000));
       }
       phase = "parse";
       const items = await parse(input);
       addUnique(items);
-      if (method.startsWith("bright-data-")) brightSucceeded = true;
-      else directSucceeded = true; // A fetch alone is not successful extraction.
+      if (method.startsWith("bright-data-")) brightParsed = true;
+      else {
+        directSucceeded = true; // A fetch alone is not successful extraction.
+        directAttempted = true;
+      }
       recordAttempt({ method, url, outcome: successfulExtractionOutcome(items.length) });
       return items.length;
     } catch (err) {
@@ -3413,6 +3390,7 @@ async function scrapeSource(
       if (method.startsWith("bright-data-")) {
         logger.warn({ source: source.name, method, failureCategory: phase === "fetch" ? "provider-fetch" : "parser" }, "Bright Data fallback failed");
       } else {
+        directAttempted = true;
         logDirectSourceFailure(source.name, err);
       }
       if (err instanceof SourceRequestError && err.contentHash) contentFingerprints.set(url, err.contentHash);
@@ -3429,20 +3407,14 @@ async function scrapeSource(
   }
 
   if (strategy.mode === "openai-first") {
-    if (brightDataConfigured() && strategy.auditGroup === "extraction-problematic") {
-      // Observe the actual public response before permitting an alternate
-      // route. A 403/challenge/rate limit must not be retried through Bright.
-      await extract("direct-structured-html", source.searchUrl,
-        () => fetchForSource(source, source.searchUrl), html => {
-          assertSourceDocument(html, "structured-html");
-          return sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, source.searchUrl), source, startDate, endDate, true);
-        });
-    }
-    recordAttempt({
-      method: strategy.mode, url: source.searchUrl,
-      outcome: "requires-js-or-ai-repair",
-      reason: "approved source strategy: direct access is unreliable or lacks deterministically extractable rows",
-    });
+    // Formerly these sources skipped directly to AI. They now always prove the
+    // deterministic official path first, then use managed acquisition only on
+    // a real access/parser failure.
+    await extract("direct-structured-html", source.searchUrl,
+      () => fetchForSource(source, source.searchUrl), html => {
+        assertSourceDocument(html, "structured-html");
+        return sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, source.searchUrl), source, startDate, endDate, true);
+      });
   } else if (strategy.mode === "aemo-workbook") {
     await extract("aemo-workbook", AEMO_GENERATION_WORKBOOK_URL,
       () => scrapeAemoGenerationWorkbook(source, startDate, endDate), items => items);
@@ -3450,19 +3422,11 @@ async function scrapeSource(
     await extract("epbc-arcgis", source.searchUrl,
       () => scrapeEpbcOfficialLayer(source, startDate, endDate), items => items);
   } else if (strategy.mode === "browse-ai-or-openai") {
-    const robotId = strategy.browseRobotIdEnvironmentKey
-      ? process.env[strategy.browseRobotIdEnvironmentKey]?.trim() : undefined;
-    const problem = browseAiConfigurationProblem(robotId, process.env.BROWSE_AI_API_KEY);
-    if (!problem && robotId) {
-      await extract("browse-ai", source.searchUrl,
-        () => scrapeWithBrowseAi(robotId, source.searchUrl, source, startDate, endDate), items => items);
-    } else {
-      failures.push(new Error(problem));
-      recordAttempt({
-        method: "browse-ai", url: source.searchUrl,
-        outcome: "requires-js-or-ai-repair", reason: problem,
+    await extract("direct-structured-html", source.searchUrl,
+      () => fetchForSource(source, source.searchUrl), html => {
+        assertSourceDocument(html, "structured-html");
+        return sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, source.searchUrl), source, startDate, endDate, true);
       });
-    }
   } else {
     if (strategy.mode !== "structured-html" && source.feedUrl) {
       let firstFeedPage: FeedPageResult | null = null;
@@ -3539,6 +3503,101 @@ async function scrapeSource(
     }
   }
 
+  function managedTargets(limit: number): string[] {
+    const successful = new Set(attempts.filter((attempt) =>
+      attempt.outcome === "success-with-results" || attempt.outcome === "success-zero-results",
+    ).map((attempt) => attempt.url));
+    return [...new Set(attempts.filter((attempt) =>
+      attempt.url && !successful.has(attempt.url) &&
+      ["fetch-failed", "parse-failed", "content-unusable", "requires-js-or-ai-repair"].includes(attempt.outcome),
+    ).map((attempt) => attempt.url!))]
+      .filter((url) => strategy.officialUrls.includes(url) && !/\/feed\/?(?:\?|$)/i.test(new URL(url).pathname))
+      .slice(0, limit);
+  }
+
+  // Firecrawl v2 is the first managed transport after deterministic acquisition.
+  // A valid zero is successful acquisition and never triggers the next provider.
+  if (acquisitionPlan.methods.includes("firecrawl")) {
+    const targets = managedTargets(acquisitionPlan.firecrawlMode === "crawl" ? 1 : 2);
+    if (targets.length && !firecrawlConfigured()) {
+      recordAttempt({ method: "firecrawl", url: targets[0], outcome: "fetch-failed", reason: "missing-credentials", failureCategory: "missing-credentials" });
+    }
+    for (const target of firecrawlConfigured() ? targets : []) {
+      firecrawlAttempted = true;
+      firecrawlCalls++;
+      try {
+        const result = await acquireApprovedSourceWithFirecrawl(source.name, target);
+        firecrawlSucceeded = true;
+        repairedUrls.add(target);
+        firecrawlPages += result.pagesFetched;
+        firecrawlCacheReused ||= result.cacheReuse;
+        for (const page of result.pages) {
+          contentFingerprints.set(page.finalUrl, page.contentHash);
+          acquiredContents.set(page.finalUrl, page.content.slice(0, 100_000));
+        }
+        try {
+          const items = result.pages.flatMap((page) =>
+            parseFirecrawlMarkdown(page.content, source, page.finalUrl, startDate, endDate));
+          addUnique(items);
+          firecrawlParsed = true;
+          recordAttempt({ method: `firecrawl-${result.mode}`, url: target, outcome: successfulExtractionOutcome(items.length) });
+          logger.info({
+            source: source.name, method: `firecrawl-${result.mode}`, pagesFetched: result.pagesFetched,
+            durationMs: result.durationMs, cacheReuse: result.cacheReuse, outcome: successfulExtractionOutcome(items.length),
+          }, "Firecrawl source acquisition");
+        } catch (error) {
+          failures.push(error);
+          normalisationNeededUrls.add(target);
+          recordAttempt({ method: `firecrawl-${result.mode}`, url: target, outcome: "parse-failed", reason: "parser", failureCategory: "parser" });
+          logger.warn({ source: source.name, method: `firecrawl-${result.mode}`, failureCategory: "parser" }, "Firecrawl content parsing failed");
+        }
+      } catch (error) {
+        const category = error instanceof FirecrawlAcquisitionError ? error.category : "provider-error";
+        failures.push(error);
+        recordAttempt({ method: "firecrawl", url: target, outcome: "fetch-failed", reason: category, failureCategory: category });
+        logger.warn({ source: source.name, method: "firecrawl", failureCategory: category }, "Firecrawl source acquisition failed");
+      }
+    }
+  }
+
+  // Apify is the bounded secondary managed transport. It is never called after
+  // Firecrawl (including a valid zero) has repaired the same approved URL.
+  if (acquisitionPlan.methods.includes("apify")) {
+    const targets = managedTargets(acquisitionPlan.firecrawlMode === "crawl" ? 1 : 2)
+      .filter((url) => !repairedUrls.has(url));
+    if (targets.length && !apifySourceConfigured()) {
+      recordAttempt({ method: "apify", url: targets[0], outcome: "fetch-failed", reason: "missing-credentials", failureCategory: "missing-credentials" });
+    }
+    for (const target of apifySourceConfigured() ? targets : []) {
+      apifyAttempted = true;
+      try {
+        const pages = await fetchApprovedSourceWithApify(source.name, target);
+        apifySucceeded = true;
+        repairedUrls.add(target);
+        for (const page of pages) {
+          contentFingerprints.set(page.finalUrl, page.contentHash);
+          acquiredContents.set(page.finalUrl, page.content.slice(0, 100_000));
+        }
+        try {
+          const items = pages.flatMap((page) =>
+            parseFirecrawlMarkdown(page.content, source, page.finalUrl, startDate, endDate));
+          addUnique(items);
+          apifyParsed = true;
+          recordAttempt({ method: "apify", url: target, outcome: successfulExtractionOutcome(items.length) });
+        } catch (error) {
+          failures.push(error);
+          normalisationNeededUrls.add(target);
+          recordAttempt({ method: "apify", url: target, outcome: "parse-failed", reason: "parser", failureCategory: "parser" });
+          logger.warn({ source: source.name, method: "apify", failureCategory: "parser" }, "Apify content parsing failed");
+        }
+      } catch (error) {
+        failures.push(error);
+        recordAttempt({ method: "apify", url: target, outcome: "fetch-failed", reason: "provider-error", failureCategory: "provider-error" });
+        logger.warn({ source: source.name, method: "apify", failureCategory: "provider-error" }, "Apify source acquisition failed");
+      }
+    }
+  }
+
   // Re-fetch only a failed, pre-approved public URL. A successful direct parse
   // (including an eligible zero) never spends on Bright Data. Authenticated
   // AltEnergy/LUVI and the specialized EPBC ArcGIS path are not proxied.
@@ -3576,7 +3635,7 @@ async function scrapeSource(
       failureCategory: recordsReceived == null ? brightAttempt?.failureCategory ?? "unclassified" : undefined,
     }, "Bright Data source fallback outcome");
     if (attempts.at(-1)?.outcome === "success-with-results" || attempts.at(-1)?.outcome === "success-zero-results") {
-      brightRepairedUrls.add(target.url);
+      repairedUrls.add(target.url);
     }
   }
 
@@ -3584,14 +3643,18 @@ async function scrapeSource(
   // the earlier access failure for that same URL. Other failed URLs remain
   // eligible for the existing bounded AI fallback.
   const unresolvedAttempts = attempts.filter((attempt) =>
-    !attempt.url || !brightRepairedUrls.has(attempt.url) ||
+    !attempt.url || !repairedUrls.has(attempt.url) ||
+    normalisationNeededUrls.has(attempt.url) ||
     attempt.outcome === "success-with-results" || attempt.outcome === "success-zero-results",
   );
-  const fallbackReason = paidSourceFallbackReason(unresolvedAttempts, strategy.fallback !== "none");
+  const fallbackReason = paidSourceFallbackReason(
+    unresolvedAttempts,
+    acquisitionPlan.methods.includes("openai-normalisation") && acquiredContents.size > 0,
+  );
   if (fallbackReason) {
     fallbackUsed = true;
     logScanSourceOutcome(source.name, "fallback-used", {
-      method: "openai-web-search", reason: fallbackReason,
+      method: "openai-normalisation", reason: fallbackReason,
       extractionOutcomes: attempts,
     });
     try {
@@ -3599,7 +3662,13 @@ async function scrapeSource(
         method: attempt.method, url: attempt.url, outcome: attempt.outcome,
         contentHash: contentFingerprints.get(attempt.url ?? "") ?? null,
       }))));
-      addUnique(await scrapeWithChatGpt(source, startDate, endDate, contentHash, contentFingerprints.size > 0));
+      const boundedContent = [...acquiredContents.entries()]
+        .map(([url, content]) => `SOURCE URL: ${url}\n${content}`)
+        .join("\n\n---\n\n")
+        .slice(0, 60_000);
+      addUnique(await scrapeWithChatGpt(
+        source, startDate, endDate, contentHash, contentFingerprints.size > 0, boundedContent,
+      ));
       fallbackSucceeded = true;
     } catch (err) {
       failures.push(err);
@@ -3609,14 +3678,15 @@ async function scrapeSource(
 
   const outcome = sourceAcquisitionOutcome({
     projectCount: projects.length,
-    directSucceeded: directSucceeded || brightSucceeded,
+    directSucceeded: directSucceeded || firecrawlParsed || apifyParsed || brightParsed,
     fallbackSucceeded,
     failureOutcome: finalFailureOutcome(failures),
   });
   logScanSourceOutcome(source.name, outcome, {
     projectCount: projects.length,
     durationMs: Math.round(performance.now() - startedAt),
-    method: [strategy.mode, brightDataCalls ? "bright-data" : null, fallbackUsed ? "openai-web-search" : null].filter(Boolean).join("+"),
+    method: [strategy.mode, firecrawlSucceeded ? "firecrawl" : null, apifySucceeded ? "apify" : null,
+      brightDataCalls ? "bright-data" : null, fallbackUsed ? "openai-normalisation" : null].filter(Boolean).join("+"),
     directSucceeded,
     brightSucceeded,
     brightDataCalls,
@@ -3631,7 +3701,58 @@ async function scrapeSource(
       : outcome === "empty" ? "AI repair completed with no qualifying projects" : undefined,
     err: outcome === "extraction-failed" ? failures.at(-1) : undefined,
   });
-  return assignProjectIdentityUrls([source.searchUrl, source.feedUrl, ...(source.extraUrls ?? [])], projects);
+  const assignedProjects = assignProjectIdentityUrls(
+    [source.searchUrl, source.feedUrl, ...(source.extraUrls ?? [])], projects,
+  );
+  const lastFailureCategory = [...attempts].reverse().find((attempt) => attempt.failureCategory)?.failureCategory ?? null;
+  const durableOutcome: DurableSourceOutcome = outcome === "success"
+    ? "success-with-results"
+    : outcome === "empty"
+      ? "success-zero-results"
+      : outcome === "blocked"
+        ? "blocked"
+        : outcome === "timeout"
+          ? "timeout"
+          : lastFailureCategory === "rate-limited"
+            ? "rate-limited"
+            : lastFailureCategory === "missing-credentials"
+              ? "missing-credentials"
+              : lastFailureCategory === "provider-error" || lastFailureCategory === "auth-failed"
+                ? "provider-error"
+                : "extraction-failed";
+  const acquisitionMethod = brightSucceeded ? "brightdata"
+    : apifySucceeded ? "apify"
+      : firecrawlSucceeded ? "firecrawl"
+        : directAcquired
+          ? attempts.find((attempt) => !attempt.method.startsWith("firecrawl") && attempt.method !== "apify" && !attempt.method.startsWith("bright-data-"))?.method
+            ?? acquisitionPlan.methods[0]
+          : acquisitionPlan.methods[0];
+  return {
+    projects: assignedProjects,
+    health: {
+      sourceName: source.name,
+      acquisitionMethod,
+      directAttempted,
+      firecrawlAttempted,
+      firecrawlSucceeded,
+      apifyAttempted,
+      brightDataAttempted: brightDataCalls > 0,
+      openaiNormalisationAttempted: fallbackUsed,
+      openaiNormalisationSucceeded: fallbackSucceeded,
+      fallbackUsed: firecrawlAttempted || apifyAttempted || brightDataCalls > 0 || fallbackUsed,
+      outcome: durableOutcome,
+      candidateCount: assignedProjects.length,
+      qualifyingProjectCount: assignedProjects.filter(isEligibleScanProject).length,
+      durationMs: Math.round(performance.now() - startedAt),
+      failureCategory: durableOutcome === "success-with-results" || durableOutcome === "success-zero-results" ? null : lastFailureCategory,
+      failureReason: durableOutcome === "success-with-results" || durableOutcome === "success-zero-results"
+        ? null : safeSourceFailureReason(lastFailureCategory),
+      contentFingerprint: combineContentFingerprints(contentFingerprints.values()),
+      firecrawlCalls,
+      firecrawlPages,
+      firecrawlCacheReused,
+    },
+  };
 }
 
 export async function runScan(scanId: number, startDate?: string, endDate?: string): Promise<void> {
@@ -3670,14 +3791,33 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       await progressUpdate;
     }
 
+    async function persistHealth(input: ScanSourceHealthInput): Promise<void> {
+      try {
+        await persistScanSourceHealth(scanId, input);
+      } catch (error) {
+        logger.error({ scanId, source: input.sourceName, failureCategory: "source-health-write" }, "Scan source health persistence failed");
+      }
+    }
+
     const genericResults = await mapWithConcurrency(
       SOURCES,
       GENERIC_SCAN_WORKERS,
       async (source) => {
         try {
-          return await scrapeSource(source, startDate, endDate);
+          const result = await scrapeSource(source, startDate, endDate);
+          await persistHealth(result.health);
+          return result.projects;
         } catch (err) {
           logger.warn({ err, source: source.name }, "Source scrape error");
+          await persistHealth({
+            sourceName: source.name,
+            acquisitionMethod: getSourceAcquisitionPlan(source.name).methods[0],
+            directAttempted: false, firecrawlAttempted: false, firecrawlSucceeded: false,
+            apifyAttempted: false, brightDataAttempted: false,
+            openaiNormalisationAttempted: false, openaiNormalisationSucceeded: false, fallbackUsed: false,
+            outcome: "extraction-failed", candidateCount: 0, qualifyingProjectCount: 0,
+            durationMs: 0, failureCategory: "unclassified", failureReason: "Source acquisition failed",
+          });
           return [];
         } finally {
           await recordSourceComplete();
@@ -3688,11 +3828,27 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
 
     // Dedicated AltEnergy authenticated scrape (separate from generic SOURCES)
     const altEnergyStartedAt = performance.now();
+    let altEnergyHealth: ScanSourceHealthInput = {
+      sourceName: "AltEnergy Australia", acquisitionMethod: "authenticated",
+      directAttempted: true, firecrawlAttempted: false, firecrawlSucceeded: false,
+      apifyAttempted: false, brightDataAttempted: false,
+      openaiNormalisationAttempted: false, openaiNormalisationSucceeded: false, fallbackUsed: false,
+      outcome: "missing-credentials", candidateCount: 0, qualifyingProjectCount: 0, durationMs: 0,
+      failureCategory: "missing-credentials",
+    };
     try {
       logScanSourceOutcome("AltEnergy Australia", "attempted", { method: "authenticated" });
       const altEnergyProjects = await scrapeAltEnergy(startDate, endDate);
       allScraped.push(...altEnergyProjects);
       if (process.env.ALTENERGY_USERNAME?.trim() && process.env.ALTENERGY_PASSWORD?.trim()) {
+        altEnergyHealth = {
+          ...altEnergyHealth,
+          outcome: altEnergyProjects.length ? "success-with-results" : "success-zero-results",
+          candidateCount: altEnergyProjects.length,
+          qualifyingProjectCount: altEnergyProjects.filter(isEligibleScanProject).length,
+          durationMs: Math.round(performance.now() - altEnergyStartedAt),
+          failureCategory: null,
+        };
         logScanSourceOutcome(
           "AltEnergy Australia",
           altEnergyProjects.length > 0 ? "success" : "empty",
@@ -3710,12 +3866,27 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         durationMs: Math.round(performance.now() - altEnergyStartedAt),
         method: "authenticated",
       });
+      altEnergyHealth = {
+        ...altEnergyHealth, outcome: "extraction-failed",
+        durationMs: Math.round(performance.now() - altEnergyStartedAt),
+        failureCategory: "unclassified", failureReason: "Authenticated source acquisition failed",
+      };
     } finally {
+      altEnergyHealth.durationMs = Math.round(performance.now() - altEnergyStartedAt);
+      await persistHealth(altEnergyHealth);
       await recordSourceComplete();
     }
 
     // Dedicated LUVI authenticated development-pipeline scrape.
     const luviStartedAt = performance.now();
+    let luviHealth: ScanSourceHealthInput = {
+      sourceName: LUVI_SOURCE_NAME, acquisitionMethod: "authenticated",
+      directAttempted: true, firecrawlAttempted: false, firecrawlSucceeded: false,
+      apifyAttempted: false, brightDataAttempted: false,
+      openaiNormalisationAttempted: false, openaiNormalisationSucceeded: false, fallbackUsed: false,
+      outcome: "missing-credentials", candidateCount: 0, qualifyingProjectCount: 0, durationMs: 0,
+      failureCategory: "missing-credentials",
+    };
     try {
       const luviMissing = process.env.LUVI_PASSWORD?.trim() ? [] : ["LUVI_PASSWORD"];
       let luviProjects: ScrapedProject[] = [];
@@ -3729,6 +3900,14 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         logScanSourceOutcome(LUVI_SOURCE_NAME, "attempted", { method: "authenticated" });
         luviProjects = await scrapeLuvi(startDate, endDate);
         allScraped.push(...luviProjects);
+        luviHealth = {
+          ...luviHealth,
+          outcome: luviProjects.length ? "success-with-results" : "success-zero-results",
+          candidateCount: luviProjects.length,
+          qualifyingProjectCount: luviProjects.filter(isEligibleScanProject).length,
+          durationMs: Math.round(performance.now() - luviStartedAt),
+          failureCategory: null,
+        };
         logScanSourceOutcome(
           LUVI_SOURCE_NAME,
           luviProjects.length > 0 ? "success" : "empty",
@@ -3746,7 +3925,14 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         durationMs: Math.round(performance.now() - luviStartedAt),
         method: "authenticated",
       });
+      luviHealth = {
+        ...luviHealth, outcome: "extraction-failed",
+        durationMs: Math.round(performance.now() - luviStartedAt),
+        failureCategory: "unclassified", failureReason: "Authenticated source acquisition failed",
+      };
     } finally {
+      luviHealth.durationMs = Math.round(performance.now() - luviStartedAt);
+      await persistHealth(luviHealth);
       await recordSourceComplete();
     }
 

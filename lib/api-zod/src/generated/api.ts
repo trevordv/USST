@@ -280,6 +280,41 @@ export const GetScanProjectsResponse = zod.array(GetScanProjectsResponseItem)
 
 
 /**
+ * @summary List durable source-acquisition health for a scan
+ */
+export const GetScanSourcesParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const GetScanSourcesResponseItem = zod.object({
+  "id": zod.number(),
+  "scanId": zod.number(),
+  "sourceName": zod.string(),
+  "acquisitionMethod": zod.string(),
+  "directAttempted": zod.boolean(),
+  "firecrawlAttempted": zod.boolean(),
+  "firecrawlSucceeded": zod.boolean(),
+  "apifyAttempted": zod.boolean(),
+  "brightDataAttempted": zod.boolean(),
+  "openaiNormalisationAttempted": zod.boolean(),
+  "openaiNormalisationSucceeded": zod.boolean(),
+  "fallbackUsed": zod.boolean(),
+  "outcome": zod.enum(['success-with-results', 'success-zero-results', 'blocked', 'timeout', 'extraction-failed', 'missing-credentials', 'rate-limited', 'provider-error']),
+  "candidateCount": zod.number(),
+  "qualifyingProjectCount": zod.number(),
+  "durationMs": zod.number(),
+  "failureCategory": zod.string().nullish(),
+  "failureReason": zod.string().nullish(),
+  "contentFingerprint": zod.string().nullish(),
+  "firecrawlCalls": zod.number(),
+  "firecrawlPages": zod.number(),
+  "firecrawlCacheReused": zod.boolean(),
+  "createdAt": zod.string()
+})
+export const GetScanSourcesResponse = zod.array(GetScanSourcesResponseItem)
+
+
+/**
  * @summary Get contact enrichment run status
  */
 export const GetContactEnrichmentParams = zod.object({

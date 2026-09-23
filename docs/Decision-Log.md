@@ -2,6 +2,16 @@
 
 This log records material USST deviations from the generic Agentic App Template baseline.
 
+## 2026-09-23 — Firecrawl as bounded approved-source acquisition
+
+**Decision:** Use Firecrawl v2 only after deterministic acquisition fails for a reviewed subset of the existing 34 approved sources. Bound scrape/crawl depth, pages, concurrency, time, content size, redirects and exact hosts.
+
+**Fallback order:** Official/RSS/API/authenticated path, direct HTML, Firecrawl, Apify, Bright Data, then OpenAI normalisation of already acquired content. A valid empty result stops escalation.
+
+**Safety:** Firecrawl cannot add sources or bypass runtime project eligibility. Durable backend-only source-health rows expose outcomes and cost signals without storing source bodies or credentials.
+
+**Evidence:** Bounded live checks succeeded for NSW Planning, Planning Victoria, NZ Fast-track and Energy Magazine. WA EPA returned a target-side 403/WAF response and remains visible as degraded rather than a false success. See `docs/Firecrawl-Scan-Acquisition.md`.
+
 ## 2026-09-19 — Adopt Agentic App Template v1.1
 
 **Decision:** Adopt `trevordv/Agentic-App-Template` v1.1 at commit `6bc4275ce99d9444ea383f8d48f47b6adce7e149` as the governing engineering baseline.
