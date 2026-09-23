@@ -13,6 +13,24 @@ export type SourceAuditGroup =
   | "extraction-problematic"
   | "authenticated";
 
+export type SourceAcquisitionMethod =
+  | "rss"
+  | "structured-api"
+  | "xlsx"
+  | "html"
+  | "firecrawl"
+  | "apify"
+  | "brightdata"
+  | "openai-normalisation"
+  | "authenticated";
+
+export interface SourceAcquisitionPlan {
+  methods: readonly SourceAcquisitionMethod[];
+  firecrawlMode?: "scrape" | "crawl";
+  maxFirecrawlPages?: number;
+  maxFirecrawlDepth?: number;
+}
+
 export interface SourceRepairStrategy {
   name: string;
   auditGroup: SourceAuditGroup;
@@ -22,6 +40,39 @@ export interface SourceRepairStrategy {
   browseRobotIdEnvironmentKey?: string;
   parserTest: string;
 }
+
+/**
+ * Registry-reviewed sources whose deterministic public acquisition has been
+ * unreliable. Firecrawl is transport for these existing sources only; this
+ * list never expands the approved 34-source registry.
+ */
+const FIRECRAWL_TARGET_SOURCES = new Set([
+  "NSW Planning Portal",
+  "NSW Planning Renewable Energy",
+  "Planning Victoria",
+  "QLD Coordinator-General",
+  "QLD Planning – Renewable Energy",
+  "SA Energy & Mining",
+  "WA EPA",
+  "NT Development Applications",
+  "Planning Alerts Australia",
+  "Clean Energy Council",
+  "NZ Electricity Authority",
+  "NZ Fast-track",
+  "NZ EPA – Fast-track Projects",
+  "NZ EPA – RMA Proposals",
+  "NZ EPA – Public Consultations",
+  "NZ Ministry for the Environment",
+  "Energy Magazine",
+]);
+
+const FIRECRAWL_CRAWL_SOURCES = new Set([
+  "NSW Planning Portal",
+  "NZ Fast-track",
+  "NZ EPA – Fast-track Projects",
+  "NZ EPA – RMA Proposals",
+  "NZ EPA – Public Consultations",
+]);
 
 const AEMO_GENERATION_INFORMATION_PAGE =
   "https://www.aemo.com.au/energy-systems/electricity/national-electricity-market-nem/nem-forecasting-and-planning/forecasting-and-planning-data/generation-information";
@@ -388,6 +439,33 @@ export function getSourceRepairStrategy(name: string): SourceRepairStrategy {
   if (!strategy)
     throw new Error(`No source repair strategy configured for ${name}`);
   return strategy;
+}
+
+/**
+ * Derive the bounded acquisition order from the audited source contract.
+ * Working structured integrations stay first and paid transports are exposed
+ * only for the reviewed weak-source set above.
+ */
+export function getSourceAcquisitionPlan(name: string): SourceAcquisitionPlan {
+  const strategy = getSourceRepairStrategy(name);
+  if (strategy.mode === "authenticated") return { methods: ["authenticated"] };
+  if (strategy.mode === "aemo-workbook") return { methods: ["xlsx", "openai-normalisation"] };
+  if (strategy.mode === "epbc-arcgis") return { methods: ["structured-api", "openai-normalisation"] };
+
+  const direct: SourceAcquisitionMethod[] = strategy.parserTest === "rss" ||
+    strategy.parserTest === "rss-and-current-search"
+    ? ["rss", "html"]
+    : ["html"];
+  if (!FIRECRAWL_TARGET_SOURCES.has(name)) {
+    return { methods: [...direct, "openai-normalisation"] };
+  }
+  const firecrawlMode = FIRECRAWL_CRAWL_SOURCES.has(name) ? "crawl" : "scrape";
+  return {
+    methods: [...direct, "firecrawl", "apify", "brightdata", "openai-normalisation"],
+    firecrawlMode,
+    maxFirecrawlPages: firecrawlMode === "crawl" ? 3 : 1,
+    maxFirecrawlDepth: firecrawlMode === "crawl" ? 1 : 0,
+  };
 }
 
 export function validateSourceRepairStrategies(

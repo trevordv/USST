@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
-import { desc, eq, inArray } from "drizzle-orm";
-import { db, scansTable, projectsTable, scanProjectsTable } from "@workspace/db";
+import { asc, desc, eq, inArray } from "drizzle-orm";
+import { db, scansTable, projectsTable, scanProjectsTable, scanSourceHealthTable } from "@workspace/db";
 import { TriggerScanBody, GetScanParams } from "@workspace/api-zod";
 import { classifyScanProjectEvent, filterEligibleScanProjects } from "../lib/project-eligibility";
 import { filterRelationsForScanWindow } from "../lib/scan-date-window";
@@ -92,6 +92,28 @@ router.get("/scans/:id", async (req, res): Promise<void> => {
     startedAt: scan.startedAt.toISOString(),
     completedAt: scan.completedAt ? scan.completedAt.toISOString() : null,
   });
+});
+
+// GET /scans/:id/sources — durable acquisition health for all attempted sources
+router.get("/scans/:id/sources", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const id = Number.parseInt(raw, 10);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: "Invalid scan id" });
+    return;
+  }
+  const [scan] = await db.select({ id: scansTable.id }).from(scansTable).where(eq(scansTable.id, id)).limit(1);
+  if (!scan) {
+    res.status(404).json({ error: "Scan not found" });
+    return;
+  }
+  const rows = await db.select().from(scanSourceHealthTable)
+    .where(eq(scanSourceHealthTable.scanId, id))
+    .orderBy(asc(scanSourceHealthTable.sourceName));
+  res.json(rows.map((row) => ({
+    ...row,
+    createdAt: row.createdAt.toISOString(),
+  })));
 });
 
 // GET /scans/:id/projects — all projects discovered by this scan

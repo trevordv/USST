@@ -1,4 +1,4 @@
-import { SOURCE_REPAIR_STRATEGIES, type SourceRepairStrategy } from "./source-repair-strategies.ts";
+import { SOURCE_REPAIR_STRATEGIES, getSourceAcquisitionPlan, type SourceRepairStrategy } from "./source-repair-strategies.ts";
 import type { ExtractionAttempt } from "./source-extraction-outcome.ts";
 import { classifySourceResponse } from "./source-repair-parsers.ts";
 
@@ -20,13 +20,21 @@ export function planBrightDataTargets(
   strategy: SourceRepairStrategy,
   attempts: readonly ExtractionAttempt[],
 ): BrightDataTarget[] {
-  if (strategy.auditGroup === "inaccessible" || strategy.mode === "authenticated" ||
+  if (!getSourceAcquisitionPlan(strategy.name).methods.includes("brightdata") || strategy.mode === "authenticated" ||
       strategy.mode === "epbc-arcgis" || strategy.mode === "aemo-workbook") return [];
+  const plan = getSourceAcquisitionPlan(strategy.name);
+  if (plan.methods.includes("firecrawl") && !attempts.some((attempt) =>
+    attempt.method.startsWith("firecrawl-") && attempt.outcome !== "success-with-results" && attempt.outcome !== "success-zero-results",
+  )) return [];
+  if (plan.methods.includes("apify") && !attempts.some((attempt) =>
+    (attempt.method === "apify" || attempt.method.startsWith("apify-")) &&
+      attempt.outcome !== "success-with-results" && attempt.outcome !== "success-zero-results",
+  )) return [];
   const successfullyParsedUrls = new Set(attempts.filter((attempt) =>
     attempt.outcome === "success-with-results" || attempt.outcome === "success-zero-results",
   ).map((attempt) => attempt.url));
   const failed = attempts.filter((attempt) =>
-    (attempt.outcome === "fetch-failed" && (attempt.failureCategory === "network" || attempt.failureCategory === "timeout")) ||
+    (attempt.outcome === "fetch-failed" && ["network", "timeout", "provider-error", "missing-credentials", "malformed-response", "empty-content"].includes(attempt.failureCategory ?? "")) ||
     (attempt.outcome === "fetch-failed" && attempt.failureCategory === "public-access-block" && strategy.auditGroup === "extraction-problematic") ||
     (attempt.outcome === "content-unusable" && (attempt.failureCategory === "invalid-content" || attempt.failureCategory === "parser")) ||
     (attempt.outcome === "parse-failed" && attempt.failureCategory === "parser") ||
@@ -70,7 +78,7 @@ export async function fetchApprovedBrightData(
 ): Promise<Buffer> {
   const strategy = SOURCE_REPAIR_STRATEGIES.find((item) => item.name === sourceName);
   const parsed = new URL(target.url);
-  if (!strategy || strategy.auditGroup === "inaccessible" || strategy.mode === "authenticated" ||
+  if (!strategy || !getSourceAcquisitionPlan(sourceName).methods.includes("brightdata") || strategy.mode === "authenticated" ||
       strategy.mode === "epbc-arcgis" || strategy.mode === "aemo-workbook" ||
       parsed.protocol !== "https:" || parsed.username || parsed.password ||
       !strategy.officialUrls.includes(target.url)) {

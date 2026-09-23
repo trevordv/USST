@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   AEMO_GENERATION_WORKBOOK_URL,
   SOURCE_REPAIR_STRATEGIES,
+  getSourceAcquisitionPlan,
   validateSourceRepairStrategies,
 } from "./source-repair-strategies.ts";
 
@@ -85,22 +86,32 @@ test("AEMO uses the current official Generator Information workbook", () => {
   assert.match(url.pathname, /nem-generation-information-july-2026\.xlsx$/);
 });
 
-test("blocked NZ sources prefer separately configured approved Browse.AI robots", () => {
+test("blocked NZ sources use bounded Firecrawl before Apify and Bright Data", () => {
   const browseStrategies = SOURCE_REPAIR_STRATEGIES.filter(
     ({ mode }) => mode === "browse-ai-or-openai",
   );
   assert.equal(browseStrategies.length, 4);
-  assert.equal(
-    new Set(
-      browseStrategies.map(
-        ({ browseRobotIdEnvironmentKey }) => browseRobotIdEnvironmentKey,
-      ),
-    ).size,
-    4,
-  );
   for (const strategy of browseStrategies) {
-    assert.match(strategy.browseRobotIdEnvironmentKey, /^BROWSE_AI_NZ_/);
-    assert.equal(strategy.fallback, "browse-ai-then-openai");
+    const plan = getSourceAcquisitionPlan(strategy.name);
+    assert.deepEqual(plan.methods, ["html", "firecrawl", "apify", "brightdata", "openai-normalisation"]);
+    assert.equal(plan.firecrawlMode, "crawl");
+    assert.equal(plan.maxFirecrawlPages, 3);
+    assert.equal(plan.maxFirecrawlDepth, 1);
+  }
+});
+
+test("every registry slot derives an explicit bounded acquisition plan", () => {
+  for (const strategy of SOURCE_REPAIR_STRATEGIES) {
+    const plan = getSourceAcquisitionPlan(strategy.name);
+    assert.ok(plan.methods.length > 0, `${strategy.name} has no acquisition methods`);
+    assert.equal(new Set(plan.methods).size, plan.methods.length);
+    if (plan.methods.includes("firecrawl")) {
+      assert.ok(plan.methods.indexOf("html") < plan.methods.indexOf("firecrawl"));
+      assert.ok(plan.methods.indexOf("firecrawl") < plan.methods.indexOf("apify"));
+      assert.ok(plan.methods.indexOf("apify") < plan.methods.indexOf("brightdata"));
+      assert.ok((plan.maxFirecrawlPages ?? 0) <= 3);
+      assert.ok((plan.maxFirecrawlDepth ?? 0) <= 1);
+    }
   }
 });
 

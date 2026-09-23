@@ -42,6 +42,7 @@ import type {
   ScanInput,
   ScanProject,
   ScanRun,
+  ScanSourceHealth,
   ValidateAccessTokenBody
 } from './api.schemas';
 
@@ -1038,6 +1039,83 @@ export function useGetScanProjects<TData = Awaited<ReturnType<typeof getScanProj
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getGetScanProjectsQueryOptions(id,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getGetScanSourcesUrl = (id: number,) => {
+
+
+
+
+  return `/api/scans/${id}/sources`
+}
+
+/**
+ * @summary List durable source-acquisition health for a scan
+ */
+export const getScanSources = async (id: number, options?: RequestInit): Promise<ScanSourceHealth[]> => {
+
+  return customFetch<ScanSourceHealth[]>(getGetScanSourcesUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetScanSourcesQueryKey = (id: number,) => {
+    return [
+    `/api/scans/${id}/sources`
+    ] as const;
+    }
+
+
+export const getGetScanSourcesQueryOptions = <TData = Awaited<ReturnType<typeof getScanSources>>, TError = ErrorType<void>>(id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getScanSources>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetScanSourcesQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getScanSources>>> = ({ signal }) => getScanSources(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: !!(id), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getScanSources>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetScanSourcesQueryResult = NonNullable<Awaited<ReturnType<typeof getScanSources>>>
+export type GetScanSourcesQueryError = ErrorType<void>
+
+
+/**
+ * @summary List durable source-acquisition health for a scan
+ */
+
+export function useGetScanSources<TData = Awaited<ReturnType<typeof getScanSources>>, TError = ErrorType<void>>(
+ id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getScanSources>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetScanSourcesQueryOptions(id,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

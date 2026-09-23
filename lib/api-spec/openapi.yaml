@@ -323,6 +323,29 @@ paths:
         "404":
           description: Scan not found
 
+  /scans/{id}/sources:
+    get:
+      operationId: getScanSources
+      tags: [scans]
+      summary: List durable source-acquisition health for a scan
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: One safe acquisition outcome per attempted approved source
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScanSourceHealth"
+        "404":
+          description: Scan not found
+
   /contact-enrichments/{id}:
     get:
       operationId: getContactEnrichment
@@ -777,6 +800,56 @@ components:
           description: Source URL for this scan event, which may differ from the canonical project's source URL.
         eventSourceName:
           type: ["string", "null"]
+
+    ScanSourceHealth:
+      type: object
+      required:
+        - id
+        - scanId
+        - sourceName
+        - acquisitionMethod
+        - directAttempted
+        - firecrawlAttempted
+        - firecrawlSucceeded
+        - apifyAttempted
+        - brightDataAttempted
+        - fallbackUsed
+        - outcome
+        - candidateCount
+        - qualifyingProjectCount
+        - durationMs
+        - firecrawlCalls
+        - firecrawlPages
+        - firecrawlCacheReused
+        - createdAt
+      properties:
+        id: { type: integer }
+        scanId: { type: integer }
+        sourceName: { type: string }
+        acquisitionMethod:
+          type: string
+        directAttempted: { type: boolean }
+        firecrawlAttempted: { type: boolean }
+        firecrawlSucceeded: { type: boolean }
+        apifyAttempted: { type: boolean }
+        brightDataAttempted: { type: boolean }
+        fallbackUsed: { type: boolean }
+        outcome:
+          type: string
+          enum: [success-with-results, success-zero-results, blocked, timeout, extraction-failed, missing-credentials, rate-limited, provider-error]
+        candidateCount: { type: integer }
+        qualifyingProjectCount: { type: integer }
+        durationMs: { type: integer }
+        failureCategory:
+          type: ["string", "null"]
+        failureReason:
+          type: ["string", "null"]
+        contentFingerprint:
+          type: ["string", "null"]
+        firecrawlCalls: { type: integer }
+        firecrawlPages: { type: integer }
+        firecrawlCacheReused: { type: boolean }
+        createdAt: { type: string }
 
     ContactEnrichment:
       type: object

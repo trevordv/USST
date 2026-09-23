@@ -27,11 +27,11 @@ test("reports configuration presence without exposing secret values", () => {
   assert.doesNotMatch(JSON.stringify(result), /super-secret|user@example|apify-secret|lusha-secret/);
 });
 
-test("Bright Data readiness reports only presence of the key and zone", () => {
+test("optional acquisition readiness reports only secret presence", () => {
   const result = getOptionalScanIntegrationConfiguration({
     BRIGHT_DATA_API_KEY: "never-log-this-value",
     BRIGHT_DATA_ZONE: "",
   });
-  assert.deepEqual(result, { BRIGHT_DATA_API_KEY: "configured", BRIGHT_DATA_ZONE: "missing" });
+  assert.deepEqual(result, { FIRECRAWL_API_KEY: "missing", BRIGHT_DATA_API_KEY: "configured", BRIGHT_DATA_ZONE: "missing" });
   assert.doesNotMatch(JSON.stringify(result), /never-log-this-value/);
 });
