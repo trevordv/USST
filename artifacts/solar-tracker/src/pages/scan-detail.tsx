@@ -12,10 +12,10 @@ import { format } from "date-fns";
 import { ArrowLeft, CheckCircle2 } from "lucide-react";
 import { useState } from "react";
 
-type ScanResultFilter = "all" | "new" | "updated" | "inventory_observed";
+type ScanResultFilter = "scan_period" | "all" | "new" | "updated" | "inventory_observed";
 
 export default function ScanDetail() {
-  const [resultFilter, setResultFilter] = useState<ScanResultFilter>("all");
+  const [resultFilter, setResultFilter] = useState<ScanResultFilter>("scan_period");
   const params = useParams();
   const scanId = parseInt(params.id || "0", 10);
 
@@ -58,9 +58,10 @@ export default function ScanDetail() {
     );
   }
 
-  const newCount = projects?.filter((p) => p.isNew).length ?? 0;
-  const updatedCount = projects?.filter((p) => p.eventType === "updated").length ?? 0;
-  const observedCount = projects?.filter((p) => p.eventType === "inventory_observed").length ?? 0;
+  const newCount = projects?.filter((p) => p.eventType === "new" && p.effectiveDate).length ?? 0;
+  const updatedCount = projects?.filter((p) => p.eventType === "updated" && p.effectiveDate).length ?? 0;
+  const observedCount = projects?.filter((p) => p.dateEvidence === "altenergy_inventory_observation").length ?? 0;
+  const scanPeriodCount = newCount + updatedCount;
   const successfulSources = sourceHealth?.filter((item) =>
     item.outcome === "success-with-results" || item.outcome === "success-zero-results"
   ).length ?? 0;
@@ -77,7 +78,14 @@ export default function ScanDetail() {
     return "Failed";
   };
 
-  const visibleProjects = projects?.filter((project) => resultFilter === "all" || project.eventType === resultFilter) ?? [];
+  const visibleProjects = projects?.filter((project) =>
+    resultFilter === "all" ||
+    (resultFilter === "scan_period"
+      ? (project.eventType === "new" || project.eventType === "updated") && project.effectiveDate != null
+      : resultFilter === "inventory_observed"
+        ? project.dateEvidence === "altenergy_inventory_observation"
+        : project.eventType === resultFilter && project.effectiveDate != null)
+  ) ?? [];
   // Sort: new projects, dated updates, then inventory observations.
   const eventOrder = { new: 0, updated: 1, inventory_observed: 2 } as const;
   const sortedProjects = projects
@@ -86,7 +94,7 @@ export default function ScanDetail() {
 
   return (
     <Layout>
-      <div className="max-w-6xl mx-auto space-y-6">
+      <div className="max-w-6xl mx-auto flex flex-col gap-6">
         {/* Header */}
         <div>
           <Button asChild variant="ghost" size="sm" className="mb-4 -ml-3 text-muted-foreground">
@@ -133,7 +141,7 @@ export default function ScanDetail() {
                 <div className="text-xl font-mono font-bold">{scan.sourcesScanned}</div>
               </div>
               <div className="text-right">
-                <div className="text-sm text-muted-foreground">Encountered</div>
+                <div className="text-sm text-muted-foreground">Projects in period</div>
                 <div className="text-xl font-mono font-bold">{scan.projectsFound ?? 0}</div>
               </div>
               <div className="text-right">
@@ -149,7 +157,7 @@ export default function ScanDetail() {
         </div>
 
         {/* Durable source acquisition health */}
-        <div className="border rounded-lg bg-card overflow-hidden shadow-sm">
+        <div className="order-3 border rounded-lg bg-card overflow-hidden shadow-sm">
           <div className="px-4 py-3 border-b bg-muted/50 flex items-center justify-between gap-3">
             <div>
               <h2 className="font-semibold text-sm">Source acquisition health</h2>
@@ -210,10 +218,10 @@ export default function ScanDetail() {
         </div>
 
         {/* Projects table */}
-        <div className="border rounded-lg bg-card overflow-hidden shadow-sm">
+        <div className="order-2 border rounded-lg bg-card overflow-hidden shadow-sm">
           <div className="px-4 py-3 border-b bg-muted/50 flex flex-wrap items-center justify-between gap-3">
             <h2 className="font-semibold text-sm">
-              Qualifying scan results ({projects?.length ?? 0})
+              Project results ({scanPeriodCount} in scan period)
               {newCount > 0 && (
                 <span className="ml-2 text-xs font-normal text-emerald-600">
                   · {newCount} new
@@ -222,10 +230,11 @@ export default function ScanDetail() {
             </h2>
             <div className="flex flex-wrap gap-2" aria-label="Scan result categories">
               {([
-                ["all", "All", projects?.length ?? 0],
+                ["scan_period", "Scan Period", scanPeriodCount],
                 ["new", "New", newCount],
                 ["updated", "Updated", updatedCount],
                 ["inventory_observed", "Inventory Observed", observedCount],
+                ["all", "All", projects?.length ?? 0],
               ] as const).map(([value, label, count]) => (
                 <Button
                   key={value}
@@ -276,7 +285,7 @@ export default function ScanDetail() {
                               Updated
                             </Badge>
                           )}
-                          {project.eventType === "inventory_observed" && (
+                          {project.dateEvidence === "altenergy_inventory_observation" && (
                             <Badge variant="outline" className="text-[10px] font-bold tracking-wider uppercase px-1.5 py-0">
                               Observed
                             </Badge>

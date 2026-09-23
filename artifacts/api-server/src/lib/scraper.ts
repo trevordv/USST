@@ -76,6 +76,8 @@ import {
   isEarlyStage,
 } from "./source-heuristics.ts";
 import { parseHtmlPage, parseRssFeed, parseRssFeedPage, type FeedPageResult } from "./news-parsers.ts";
+import { extractNamedProjectEvidence } from "./news-project-evidence.ts";
+import { classifyManagedZeroResult } from "./managed-source-extraction.ts";
 import { assignProjectIdentityUrls } from "./project-identity.ts";
 import { enrichProjectsFromArticles as enrichFromArticles } from "./article-enrichment.ts";
 import { parseSourceFallbackArray, sourceAcquisitionOutcome } from "./source-access-outcome";
@@ -1521,7 +1523,26 @@ function parseFirecrawlMarkdown(
     });
   }
 
-  return projects;
+  const validated = projects.flatMap((project) => {
+    const evidence = extractNamedProjectEvidence({
+      title: project.name,
+      text: project.description,
+      fallbackCountry: source.country,
+      requireCountryEvidence: Boolean(source.feedUrl),
+    });
+    return evidence.map((candidate) => ({
+      ...project,
+      name: candidate.name,
+      capacityMw: candidate.capacityMw,
+      country: candidate.country,
+      location: candidate.location ?? project.location,
+      sourceUrl: evidence.length > 1
+        ? `${project.sourceUrl.split("#")[0]}#${normalizeProjectName(candidate.name).replace(/\s+/g, "-")}`
+        : project.sourceUrl,
+    }));
+  });
+  return validated.filter((project, index, all) => all.findIndex((other) =>
+    normalizeProjectName(other.name) === normalizeProjectName(project.name) && other.sourceUrl === project.sourceUrl) === index);
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -3137,8 +3158,15 @@ ${acquiredContent.slice(0, 60_000)}`;
     for (const r of parsed) {
       if (!r.name) continue;
       if (r.country !== "AU" && r.country !== "NZ") continue;
+      const evidence = extractNamedProjectEvidence({
+        title: r.name,
+        text: `${r.description ?? ""} ${r.location ?? ""}`,
+        fallbackCountry: r.country,
+        requireCountryEvidence: Boolean(source.feedUrl),
+      });
+      if (!evidence.length) continue;
       const parsedCapacity = typeof r.capacity_mw === "string" ? Number.parseFloat(String(r.capacity_mw).replace(/,/g, "")) : r.capacity_mw;
-      const cap = typeof parsedCapacity === "number" && Number.isFinite(parsedCapacity) ? parsedCapacity : null;
+      const structuredCapacity = typeof parsedCapacity === "number" && Number.isFinite(parsedCapacity) ? parsedCapacity : null;
       let sourceUrl = source.searchUrl;
       if (r.source_url) {
         try {
@@ -3146,7 +3174,6 @@ ${acquiredContent.slice(0, 60_000)}`;
           if (officialHosts.includes(candidateUrl.hostname)) sourceUrl = candidateUrl.href;
         } catch { /* retain the configured official URL */ }
       }
-      if (cap !== null && cap < 5) continue; // respect ≥5 MW gate
       // A model-supplied date is used only when it is a real calendar date. A
       // missing date stays unknown rather than becoming today's date
       // (docs/Scan-Date-Window-Policy.md); bounded scans then exclude it.
@@ -3157,21 +3184,23 @@ ${acquiredContent.slice(0, 60_000)}`;
       if ((startDate || endDate) && !announcedDate) continue;
       if (startDate && announcedDate && announcedDate < startDate) continue;
       if (endDate && announcedDate && announcedDate > endDate) continue;
-      results.push({
-        name: r.name,
-        description: r.description ?? r.name,
-        capacityMw: cap,
-        developer: r.developer ?? null,
-        location: r.location ?? null,
-        country: (r.country === "NZ" ? "NZ" : "AU") as "AU" | "NZ",
-        status: (r.status === "under_development" ? "under_development" : "announced") as "announced" | "under_development",
-        sourceUrl,
-        sourceName: source.name,
-        announcedDate,
-        contactName: null,
-        contactEmail: null,
-        contactPhone: null,
-      });
+      for (const candidate of evidence) {
+        results.push({
+          name: candidate.name,
+          description: r.description ?? r.name,
+          capacityMw: candidate.capacityMw ?? structuredCapacity,
+          developer: r.developer ?? null,
+          location: candidate.location ?? r.location ?? null,
+          country: candidate.country,
+          status: (r.status === "under_development" ? "under_development" : "announced") as "announced" | "under_development",
+          sourceUrl,
+          sourceName: source.name,
+          announcedDate,
+          contactName: null,
+          contactEmail: null,
+          contactPhone: null,
+        });
+      }
     }
 
     const eligibleResults = results.filter(isEligibleScanProject);
@@ -3538,6 +3567,9 @@ async function scrapeSource(
         try {
           const items = result.pages.flatMap((page) =>
             parseFirecrawlMarkdown(page.content, source, page.finalUrl, startDate, endDate));
+          if (!items.length && classifyManagedZeroResult(source.name, result.pages.map((page) => page.content).join("\n")) === "unresolved") {
+            throw new SourceExtractionError("requires-js-or-ai-repair", "managed transport returned portal content whose project records were not deterministically resolved");
+          }
           addUnique(items);
           firecrawlParsed = true;
           recordAttempt({ method: `firecrawl-${result.mode}`, url: target, outcome: successfulExtractionOutcome(items.length) });
@@ -3548,7 +3580,7 @@ async function scrapeSource(
         } catch (error) {
           failures.push(error);
           normalisationNeededUrls.add(target);
-          recordAttempt({ method: `firecrawl-${result.mode}`, url: target, outcome: "parse-failed", reason: "parser", failureCategory: "parser" });
+          recordAttempt({ method: `firecrawl-${result.mode}`, url: target, outcome: failedExtractionOutcome(error, "parse"), reason: "parser", failureCategory: "parser" });
           logger.warn({ source: source.name, method: `firecrawl-${result.mode}`, failureCategory: "parser" }, "Firecrawl content parsing failed");
         }
       } catch (error) {
@@ -3581,13 +3613,16 @@ async function scrapeSource(
         try {
           const items = pages.flatMap((page) =>
             parseFirecrawlMarkdown(page.content, source, page.finalUrl, startDate, endDate));
+          if (!items.length && classifyManagedZeroResult(source.name, pages.map((page) => page.content).join("\n")) === "unresolved") {
+            throw new SourceExtractionError("requires-js-or-ai-repair", "managed transport returned portal content whose project records were not deterministically resolved");
+          }
           addUnique(items);
           apifyParsed = true;
           recordAttempt({ method: "apify", url: target, outcome: successfulExtractionOutcome(items.length) });
         } catch (error) {
           failures.push(error);
           normalisationNeededUrls.add(target);
-          recordAttempt({ method: "apify", url: target, outcome: "parse-failed", reason: "parser", failureCategory: "parser" });
+          recordAttempt({ method: "apify", url: target, outcome: failedExtractionOutcome(error, "parse"), reason: "parser", failureCategory: "parser" });
           logger.warn({ source: source.name, method: "apify", failureCategory: "parser" }, "Apify content parsing failed");
         }
       } catch (error) {
@@ -4066,6 +4101,9 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       }
 
       const isNew = !isExisting;
+      const eventType = isNew
+        ? "new"
+        : project.eventType ?? (project.inventoryObservation ? "inventory_observed" : "updated");
 
       try {
         if (existingProjectId != null && !eligibleExistingProjectIds.has(existingProjectId) && !wattsMatch) {
@@ -4126,10 +4164,6 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
             throw new Error("Project insert did not return an id");
           }
 
-          const eventType = isNew
-            ? "new"
-            : project.eventType ?? (project.inventoryObservation ? "inventory_observed" : "updated");
-
           if (wattsMatch && project.wattsNewsEvidence) {
             const canonical = wattsMatch.project;
             const { updates: fieldUpdates, decisions } = planWattsNewsCanonicalUpdates(project.wattsNewsEvidence, canonical);
@@ -4163,7 +4197,13 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         });
 
         linkedProjectIds.add(projectId);
-        persistedLineage.push({ projectId, isNew, eventType: isNew ? "new" : project.eventType });
+        persistedLineage.push({
+          projectId,
+          isNew,
+          eventType,
+          effectiveDate: dateDecision.effectiveDate,
+          dateEvidence: dateDecision.evidence,
+        });
         if (project.sourceName === "AltEnergy – Watts News" && isNew) wattsPersistenceDiagnostics.acceptedNew++;
         if (project.inventoryObservation) wattsPersistenceDiagnostics.inventoryObservations++;
         if (isNew && project.sourceUrl) existingByUrl.set(project.sourceUrl, projectId);
@@ -4173,7 +4213,10 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       }
     }
 
-    const { projectsFound, newProjects } = summarizeScanLineage(persistedLineage);
+    const { projectsFound, newProjects, updatedProjects, inventoryObservedCount } = summarizeScanLineage(
+      persistedLineage,
+      { bounded: Boolean(startDate || endDate) },
+    );
 
     await db
       .update(scansTable)
@@ -4192,6 +4235,8 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         sourcesScanned,
         projectsFound,
         newProjects,
+        updatedProjects,
+        inventoryObservedCount,
         durationMs: Math.round(performance.now() - scanStartedAt),
       },
       "Scan completed",
@@ -4208,7 +4253,10 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       },
       "Scan failed",
     );
-    const { projectsFound, newProjects } = summarizeScanLineage(persistedLineage);
+    const { projectsFound, newProjects } = summarizeScanLineage(
+      persistedLineage,
+      { bounded: Boolean(startDate || endDate) },
+    );
 
     await db
       .update(scansTable)

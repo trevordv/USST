@@ -11,6 +11,7 @@ import { planBrightDataTargets } from "./bright-data.ts";
 import { feedPageUrl } from "./feed-items.ts";
 import { assignProjectIdentityUrls } from "./project-identity.ts";
 import { isApprovedDiscoveredUrl, normalizeProjectName, nextListingPageUrl } from "./source-text.ts";
+import { classifyManagedZeroResult } from "./managed-source-extraction.ts";
 
 const scraper = await readFile(new URL("./scraper.ts", import.meta.url), "utf8");
 const start = scraper.indexOf("async function scrapeSource(");
@@ -62,6 +63,7 @@ async function run(options = {}) {
     ...outcomes, sourceAcquisitionOutcome, getSourceRepairStrategy, getSourceAcquisitionPlan,
     planBrightDataTargets, hashMeaningfulSourceContent, hashSourceContent,
     combineContentFingerprints, safeSourceFailureReason, isEligibleScanProject,
+    classifyManagedZeroResult,
     firecrawlConfigured: () => Boolean(env.FIRECRAWL_API_KEY),
     apifySourceConfigured: () => Boolean(env.APIFY_API_TOKEN),
     brightDataConfigured: () => Boolean(env.BRIGHT_DATA_API_KEY && env.BRIGHT_DATA_ZONE),
@@ -224,7 +226,7 @@ test("blocked approved source uses Firecrawl first and records provenance", asyn
 });
 
 test("valid empty Firecrawl result terminates the fallback hierarchy", async () => {
-  const result = await run({ env: { FIRECRAWL_API_KEY: "x", APIFY_API_TOKEN: "x", BRIGHT_DATA_API_KEY: "x", BRIGHT_DATA_ZONE: "z" }, fetchError: new Error("network") });
+  const result = await run({ env: { FIRECRAWL_API_KEY: "x", APIFY_API_TOKEN: "x", BRIGHT_DATA_API_KEY: "x", BRIGHT_DATA_ZONE: "z" }, fetchError: new Error("network"), firecrawlContent: "No current projects" });
   assert.deepEqual({ firecrawl: result.calls.firecrawl, apify: result.calls.apify, bright: result.calls.bright, ai: result.calls.ai },
     { firecrawl: 1, apify: 0, bright: 0, ai: 0 });
   assert.equal(result.health.outcome, "success-zero-results");
