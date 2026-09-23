@@ -813,6 +813,8 @@ components:
         - firecrawlSucceeded
         - apifyAttempted
         - brightDataAttempted
+        - openaiNormalisationAttempted
+        - openaiNormalisationSucceeded
         - fallbackUsed
         - outcome
         - candidateCount
@@ -833,6 +835,8 @@ components:
         firecrawlSucceeded: { type: boolean }
         apifyAttempted: { type: boolean }
         brightDataAttempted: { type: boolean }
+        openaiNormalisationAttempted: { type: boolean }
+        openaiNormalisationSucceeded: { type: boolean }
         fallbackUsed: { type: boolean }
         outcome:
           type: string

@@ -9,6 +9,8 @@ create table public.scan_source_health (
   firecrawl_succeeded boolean not null default false,
   apify_attempted boolean not null default false,
   bright_data_attempted boolean not null default false,
+  openai_normalisation_attempted boolean not null default false,
+  openai_normalisation_succeeded boolean not null default false,
   fallback_used boolean not null default false,
   outcome text not null,
   candidate_count integer not null default 0,

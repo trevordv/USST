@@ -296,6 +296,8 @@ export const GetScanSourcesResponseItem = zod.object({
   "firecrawlSucceeded": zod.boolean(),
   "apifyAttempted": zod.boolean(),
   "brightDataAttempted": zod.boolean(),
+  "openaiNormalisationAttempted": zod.boolean(),
+  "openaiNormalisationSucceeded": zod.boolean(),
   "fallbackUsed": zod.boolean(),
   "outcome": zod.enum(['success-with-results', 'success-zero-results', 'blocked', 'timeout', 'extraction-failed', 'missing-credentials', 'rate-limited', 'provider-error']),
   "candidateCount": zod.number(),

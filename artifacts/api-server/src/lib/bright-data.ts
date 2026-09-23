@@ -24,7 +24,8 @@ export function planBrightDataTargets(
       strategy.mode === "epbc-arcgis" || strategy.mode === "aemo-workbook") return [];
   const plan = getSourceAcquisitionPlan(strategy.name);
   if (plan.methods.includes("firecrawl") && !attempts.some((attempt) =>
-    attempt.method.startsWith("firecrawl-") && attempt.outcome !== "success-with-results" && attempt.outcome !== "success-zero-results",
+    (attempt.method === "firecrawl" || attempt.method.startsWith("firecrawl-")) &&
+      attempt.outcome !== "success-with-results" && attempt.outcome !== "success-zero-results",
   )) return [];
   if (plan.methods.includes("apify") && !attempts.some((attempt) =>
     (attempt.method === "apify" || attempt.method.startsWith("apify-")) &&

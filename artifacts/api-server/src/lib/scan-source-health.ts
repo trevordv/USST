@@ -19,6 +19,8 @@ export interface ScanSourceHealthInput {
   firecrawlSucceeded: boolean;
   apifyAttempted: boolean;
   brightDataAttempted: boolean;
+  openaiNormalisationAttempted: boolean;
+  openaiNormalisationSucceeded: boolean;
   fallbackUsed: boolean;
   outcome: DurableSourceOutcome;
   candidateCount: number;

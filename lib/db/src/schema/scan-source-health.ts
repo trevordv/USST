@@ -12,6 +12,8 @@ export const scanSourceHealthTable = pgTable("scan_source_health", {
   firecrawlSucceeded: boolean("firecrawl_succeeded").notNull().default(false),
   apifyAttempted: boolean("apify_attempted").notNull().default(false),
   brightDataAttempted: boolean("bright_data_attempted").notNull().default(false),
+  openaiNormalisationAttempted: boolean("openai_normalisation_attempted").notNull().default(false),
+  openaiNormalisationSucceeded: boolean("openai_normalisation_succeeded").notNull().default(false),
   fallbackUsed: boolean("fallback_used").notNull().default(false),
   outcome: text("outcome").notNull(),
   candidateCount: integer("candidate_count").notNull().default(0),

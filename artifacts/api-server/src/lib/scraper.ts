@@ -3308,18 +3308,23 @@ async function scrapeSource(
   const contentFingerprints = new Map<string, string>();
   const acquiredContents = new Map<string, string>();
   const repairedUrls = new Set<string>();
+  const normalisationNeededUrls = new Set<string>();
   const strategy = getSourceRepairStrategy(source.name);
   const acquisitionPlan = getSourceAcquisitionPlan(source.name);
   let directSucceeded = false;
+  let directAcquired = false;
   let directAttempted = false;
   let firecrawlAttempted = false;
   let firecrawlSucceeded = false;
+  let firecrawlParsed = false;
   let firecrawlCalls = 0;
   let firecrawlPages = 0;
   let firecrawlCacheReused = false;
   let apifyAttempted = false;
   let apifySucceeded = false;
+  let apifyParsed = false;
   let brightSucceeded = false;
+  let brightParsed = false;
   let brightDataCalls = 0;
   let fallbackUsed = false;
   let fallbackSucceeded = false;
@@ -3359,6 +3364,8 @@ async function scrapeSource(
     let phase: "fetch" | "parse" = "fetch";
     try {
       const input = await fetchInput();
+      if (method.startsWith("bright-data-")) brightSucceeded = true;
+      else directAcquired = true;
       if (typeof input === "string") {
         contentFingerprints.set(url, hashMeaningfulSourceContent(input));
         acquiredContents.set(url, input.slice(0, 100_000));
@@ -3371,7 +3378,7 @@ async function scrapeSource(
       phase = "parse";
       const items = await parse(input);
       addUnique(items);
-      if (method.startsWith("bright-data-")) brightSucceeded = true;
+      if (method.startsWith("bright-data-")) brightParsed = true;
       else {
         directSucceeded = true; // A fetch alone is not successful extraction.
         directAttempted = true;
@@ -3520,21 +3527,30 @@ async function scrapeSource(
       firecrawlCalls++;
       try {
         const result = await acquireApprovedSourceWithFirecrawl(source.name, target);
-        firecrawlPages += result.pagesFetched;
-        firecrawlCacheReused ||= result.cacheReuse;
-        const items = result.pages.flatMap((page) => {
-          contentFingerprints.set(page.finalUrl, page.contentHash);
-          acquiredContents.set(page.finalUrl, page.content.slice(0, 100_000));
-          return parseFirecrawlMarkdown(page.content, source, page.finalUrl, startDate, endDate);
-        });
-        addUnique(items);
         firecrawlSucceeded = true;
         repairedUrls.add(target);
-        recordAttempt({ method: `firecrawl-${result.mode}`, url: target, outcome: successfulExtractionOutcome(items.length) });
-        logger.info({
-          source: source.name, method: `firecrawl-${result.mode}`, pagesFetched: result.pagesFetched,
-          durationMs: result.durationMs, cacheReuse: result.cacheReuse, outcome: successfulExtractionOutcome(items.length),
-        }, "Firecrawl source acquisition");
+        firecrawlPages += result.pagesFetched;
+        firecrawlCacheReused ||= result.cacheReuse;
+        for (const page of result.pages) {
+          contentFingerprints.set(page.finalUrl, page.contentHash);
+          acquiredContents.set(page.finalUrl, page.content.slice(0, 100_000));
+        }
+        try {
+          const items = result.pages.flatMap((page) =>
+            parseFirecrawlMarkdown(page.content, source, page.finalUrl, startDate, endDate));
+          addUnique(items);
+          firecrawlParsed = true;
+          recordAttempt({ method: `firecrawl-${result.mode}`, url: target, outcome: successfulExtractionOutcome(items.length) });
+          logger.info({
+            source: source.name, method: `firecrawl-${result.mode}`, pagesFetched: result.pagesFetched,
+            durationMs: result.durationMs, cacheReuse: result.cacheReuse, outcome: successfulExtractionOutcome(items.length),
+          }, "Firecrawl source acquisition");
+        } catch (error) {
+          failures.push(error);
+          normalisationNeededUrls.add(target);
+          recordAttempt({ method: `firecrawl-${result.mode}`, url: target, outcome: "parse-failed", reason: "parser", failureCategory: "parser" });
+          logger.warn({ source: source.name, method: `firecrawl-${result.mode}`, failureCategory: "parser" }, "Firecrawl content parsing failed");
+        }
       } catch (error) {
         const category = error instanceof FirecrawlAcquisitionError ? error.category : "provider-error";
         failures.push(error);
@@ -3556,15 +3572,24 @@ async function scrapeSource(
       apifyAttempted = true;
       try {
         const pages = await fetchApprovedSourceWithApify(source.name, target);
-        const items = pages.flatMap((page) => {
-          contentFingerprints.set(page.finalUrl, page.contentHash);
-          acquiredContents.set(page.finalUrl, page.content.slice(0, 100_000));
-          return parseFirecrawlMarkdown(page.content, source, page.finalUrl, startDate, endDate);
-        });
-        addUnique(items);
         apifySucceeded = true;
         repairedUrls.add(target);
-        recordAttempt({ method: "apify", url: target, outcome: successfulExtractionOutcome(items.length) });
+        for (const page of pages) {
+          contentFingerprints.set(page.finalUrl, page.contentHash);
+          acquiredContents.set(page.finalUrl, page.content.slice(0, 100_000));
+        }
+        try {
+          const items = pages.flatMap((page) =>
+            parseFirecrawlMarkdown(page.content, source, page.finalUrl, startDate, endDate));
+          addUnique(items);
+          apifyParsed = true;
+          recordAttempt({ method: "apify", url: target, outcome: successfulExtractionOutcome(items.length) });
+        } catch (error) {
+          failures.push(error);
+          normalisationNeededUrls.add(target);
+          recordAttempt({ method: "apify", url: target, outcome: "parse-failed", reason: "parser", failureCategory: "parser" });
+          logger.warn({ source: source.name, method: "apify", failureCategory: "parser" }, "Apify content parsing failed");
+        }
       } catch (error) {
         failures.push(error);
         recordAttempt({ method: "apify", url: target, outcome: "fetch-failed", reason: "provider-error", failureCategory: "provider-error" });
@@ -3619,6 +3644,7 @@ async function scrapeSource(
   // eligible for the existing bounded AI fallback.
   const unresolvedAttempts = attempts.filter((attempt) =>
     !attempt.url || !repairedUrls.has(attempt.url) ||
+    normalisationNeededUrls.has(attempt.url) ||
     attempt.outcome === "success-with-results" || attempt.outcome === "success-zero-results",
   );
   const fallbackReason = paidSourceFallbackReason(
@@ -3652,7 +3678,7 @@ async function scrapeSource(
 
   const outcome = sourceAcquisitionOutcome({
     projectCount: projects.length,
-    directSucceeded: directSucceeded || firecrawlSucceeded || apifySucceeded || brightSucceeded,
+    directSucceeded: directSucceeded || firecrawlParsed || apifyParsed || brightParsed,
     fallbackSucceeded,
     failureOutcome: finalFailureOutcome(failures),
   });
@@ -3694,12 +3720,13 @@ async function scrapeSource(
               : lastFailureCategory === "provider-error" || lastFailureCategory === "auth-failed"
                 ? "provider-error"
                 : "extraction-failed";
-  const acquisitionMethod = fallbackUsed ? "openai-normalisation"
-    : brightSucceeded ? "brightdata"
-      : apifySucceeded ? "apify"
-        : firecrawlSucceeded ? "firecrawl"
-          : attempts.find((attempt) => attempt.outcome === "success-with-results" || attempt.outcome === "success-zero-results")?.method
-            ?? acquisitionPlan.methods[0];
+  const acquisitionMethod = brightSucceeded ? "brightdata"
+    : apifySucceeded ? "apify"
+      : firecrawlSucceeded ? "firecrawl"
+        : directAcquired
+          ? attempts.find((attempt) => !attempt.method.startsWith("firecrawl") && attempt.method !== "apify" && !attempt.method.startsWith("bright-data-"))?.method
+            ?? acquisitionPlan.methods[0]
+          : acquisitionPlan.methods[0];
   return {
     projects: assignedProjects,
     health: {
@@ -3710,6 +3737,8 @@ async function scrapeSource(
       firecrawlSucceeded,
       apifyAttempted,
       brightDataAttempted: brightDataCalls > 0,
+      openaiNormalisationAttempted: fallbackUsed,
+      openaiNormalisationSucceeded: fallbackSucceeded,
       fallbackUsed: firecrawlAttempted || apifyAttempted || brightDataCalls > 0 || fallbackUsed,
       outcome: durableOutcome,
       candidateCount: assignedProjects.length,
@@ -3784,7 +3813,8 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
             sourceName: source.name,
             acquisitionMethod: getSourceAcquisitionPlan(source.name).methods[0],
             directAttempted: false, firecrawlAttempted: false, firecrawlSucceeded: false,
-            apifyAttempted: false, brightDataAttempted: false, fallbackUsed: false,
+            apifyAttempted: false, brightDataAttempted: false,
+            openaiNormalisationAttempted: false, openaiNormalisationSucceeded: false, fallbackUsed: false,
             outcome: "extraction-failed", candidateCount: 0, qualifyingProjectCount: 0,
             durationMs: 0, failureCategory: "unclassified", failureReason: "Source acquisition failed",
           });
@@ -3801,7 +3831,8 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
     let altEnergyHealth: ScanSourceHealthInput = {
       sourceName: "AltEnergy Australia", acquisitionMethod: "authenticated",
       directAttempted: true, firecrawlAttempted: false, firecrawlSucceeded: false,
-      apifyAttempted: false, brightDataAttempted: false, fallbackUsed: false,
+      apifyAttempted: false, brightDataAttempted: false,
+      openaiNormalisationAttempted: false, openaiNormalisationSucceeded: false, fallbackUsed: false,
       outcome: "missing-credentials", candidateCount: 0, qualifyingProjectCount: 0, durationMs: 0,
       failureCategory: "missing-credentials",
     };
@@ -3851,7 +3882,8 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
     let luviHealth: ScanSourceHealthInput = {
       sourceName: LUVI_SOURCE_NAME, acquisitionMethod: "authenticated",
       directAttempted: true, firecrawlAttempted: false, firecrawlSucceeded: false,
-      apifyAttempted: false, brightDataAttempted: false, fallbackUsed: false,
+      apifyAttempted: false, brightDataAttempted: false,
+      openaiNormalisationAttempted: false, openaiNormalisationSucceeded: false, fallbackUsed: false,
       outcome: "missing-credentials", candidateCount: 0, qualifyingProjectCount: 0, durationMs: 0,
       failureCategory: "missing-credentials",
     };

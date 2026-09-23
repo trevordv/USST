@@ -27,7 +27,7 @@ A valid empty result is successful acquisition and stops escalation. AltEnergy, 
 
 ## Durable health and operations
 
-`scan_source_health` records one row per scan/source with acquisition method, provider attempts, outcome, safe failure category, candidate and qualifying counts, timing, content fingerprint, and Firecrawl usage. The scan-detail page groups sources into healthy direct, Firecrawl, Apify, Bright Data, valid zero, degraded, blocked and failed states.
+`scan_source_health` records one row per scan/source with acquisition method, provider attempts, outcome, safe failure category, candidate and qualifying counts, timing, content fingerprint, and Firecrawl usage. `acquisition_method` always identifies the transport that obtained the content (`direct`, `firecrawl`, `apify`, or `brightdata`); bounded OpenAI extraction is recorded separately by `openai_normalisation_attempted` and `openai_normalisation_succeeded`. The scan-detail page therefore keeps a successfully acquired source in its healthy transport group and notes normalisation alongside the method instead of treating OpenAI as a transport or a degraded acquisition.
 
 The table is backend-only: RLS is enabled, public roles are revoked, and only the server service role is granted access. Apply the migration through the normal reviewed Supabase deployment process before deploying the application commit.
 

@@ -10,7 +10,7 @@ import { getSourceRepairStrategy } from "./source-repair-strategies.ts";
 const environment = { BRIGHT_DATA_API_KEY: "test-secret", BRIGHT_DATA_ZONE: "web_unlocker" };
 const networkFailure = (url) => [{ method: "html", url, outcome: "fetch-failed", failureCategory: "network" }];
 const managedFailures = (url, initial = networkFailure(url)) => [...initial,
-  { method: "firecrawl-scrape", url, outcome: "fetch-failed", failureCategory: "provider-error" },
+  { method: "firecrawl", url, outcome: "fetch-failed", failureCategory: "provider-error" },
   { method: "apify", url, outcome: "fetch-failed", failureCategory: "provider-error" },
 ];
 

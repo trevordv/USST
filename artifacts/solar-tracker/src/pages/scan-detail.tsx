@@ -70,7 +70,6 @@ export default function ScanDetail() {
       if (item.acquisitionMethod === "firecrawl") return "Healthy Firecrawl";
       if (item.acquisitionMethod === "apify") return "Healthy Apify";
       if (item.acquisitionMethod === "brightdata") return "Healthy Bright Data";
-      if (item.acquisitionMethod === "openai-normalisation") return "Degraded";
       return "Healthy direct";
     }
     if (item.outcome === "blocked") return "Blocked";
@@ -187,7 +186,14 @@ export default function ScanDetail() {
                         </Badge>
                         {item.failureReason && <div className="text-xs text-muted-foreground mt-1">{item.failureReason}</div>}
                       </TableCell>
-                      <TableCell className="font-mono text-xs">{item.acquisitionMethod}</TableCell>
+                      <TableCell className="font-mono text-xs">
+                        <div>{item.acquisitionMethod}</div>
+                        {item.openaiNormalisationAttempted && (
+                          <div className="mt-1 font-sans text-muted-foreground">
+                            OpenAI normalisation {item.openaiNormalisationSucceeded ? "completed" : "failed"}
+                          </div>
+                        )}
+                      </TableCell>
                       <TableCell className="text-right font-mono">{item.candidateCount}</TableCell>
                       <TableCell className="text-right font-mono">{item.qualifyingProjectCount}</TableCell>
                       <TableCell className="text-right font-mono text-xs">{(item.durationMs / 1000).toFixed(1)}s</TableCell>
