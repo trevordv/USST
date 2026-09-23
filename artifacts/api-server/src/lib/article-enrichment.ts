@@ -1,6 +1,7 @@
 import { mapWithConcurrency } from "./concurrency.ts";
-import { EXCLUDE_KEYWORDS, determineStatus, extractCapacity, extractDeveloper, extractLocation } from "./source-heuristics.ts";
+import { EXCLUDE_KEYWORDS, determineStatus, extractDeveloper } from "./source-heuristics.ts";
 import { extractMainText, isApprovedDiscoveredUrl } from "./source-text.ts";
+import { extractNamedProjectEvidence, isCompletedOrOperational, resolveTargetCountry } from "./news-project-evidence.ts";
 
 export const ARTICLE_ENRICH_LIMIT = 30;
 export const ARTICLE_ENRICH_CONCURRENCY = 4;
@@ -35,7 +36,7 @@ export interface EnrichmentResult<T> {
 
 /**
  * Read the source's own article page for candidates whose feed excerpt or
- * listing card carried no MW figure.
+ * listing card lacked a project MW figure or explicit AU/NZ geography.
  *
  * Excerpts rarely include the rating, so previously most solar articles were
  * discarded at the eligibility gate for "missing-capacity". Reading the
@@ -50,7 +51,7 @@ export async function enrichProjectsFromArticles<T extends EnrichableProject>(
   options: EnrichmentOptions,
 ): Promise<EnrichmentResult<T>> {
   const targets = projects
-    .filter((project) => project.needsArticleEnrichment && project.capacityMw == null && !options.isNoisyName(project.name))
+    .filter((project) => project.needsArticleEnrichment && !options.isNoisyName(project.name))
     .filter((project) => isApprovedDiscoveredUrl(project.sourceUrl, options.approvedHosts))
     .slice(0, options.limit ?? ARTICLE_ENRICH_LIMIT);
   if (!targets.length) return { kept: [...projects], attempted: 0, enriched: 0, dropped: 0 };
@@ -62,16 +63,25 @@ export async function enrichProjectsFromArticles<T extends EnrichableProject>(
       const html = await options.fetchHtml(project.sourceUrl.split("#")[0]);
       const text = extractMainText(html);
       if (!text) return;
-      if (EXCLUDE_KEYWORDS.some((keyword) => text.slice(0, 1_200).toLowerCase().includes(keyword))) {
+      if (EXCLUDE_KEYWORDS.some((keyword) => text.slice(0, 1_200).toLowerCase().includes(keyword)) ||
+          isCompletedOrOperational(text.slice(0, 1_200)) ||
+          resolveTargetCountry(`${project.name} ${text}`, options.country, true) == null) {
         dropped.add(project);
         return;
       }
-      const capacityMw = extractCapacity(`${project.name} ${text}`);
-      if (capacityMw == null) return;
+      const resolved = extractNamedProjectEvidence({
+        title: project.name,
+        text,
+        fallbackCountry: options.country,
+        requireCountryEvidence: true,
+      })
+        .find((candidate) => candidate.name.toLowerCase() === project.name.toLowerCase());
+      const capacityMw = resolved?.capacityMw ?? null;
+      if (capacityMw == null || !resolved) return;
       project.capacityMw = capacityMw;
       project.description = `${project.description ? `${project.description.slice(0, 200)}. ` : ""}${text.slice(0, 500)}`.slice(0, 800);
       project.developer ??= extractDeveloper(text.slice(0, 2_000));
-      project.location ??= extractLocation(text, options.country);
+      project.location ??= resolved.location;
       if (determineStatus(text) === "under_development") project.status = "under_development";
       enriched++;
     } catch {

@@ -10,13 +10,10 @@ import { parseFeedItems } from "./feed-items.ts";
 import {
   EXCLUDE_KEYWORDS,
   determineStatus,
-  extractCapacity,
   extractDeveloper,
-  extractLocation,
   isEarlyStage,
 } from "./source-heuristics.ts";
 import {
-  deriveProjectName,
   extractElementBlocks,
   fragmentToText,
   normalizeProjectName,
@@ -24,6 +21,7 @@ import {
   projectSlug,
   resolveHttpUrl,
 } from "./source-text.ts";
+import { extractNamedProjectEvidence, resolveTargetCountry } from "./news-project-evidence.ts";
 
 export interface NewsSource {
   name: string;
@@ -90,31 +88,34 @@ export function parseRssFeedPage(xml: string, source: NewsSource, startDate?: st
     if (startDate && item.date && item.date < startDate) continue;
     if (endDate && item.date && item.date > endDate) continue;
 
-    const derivedName = deriveProjectName(item.title);
-    const name = derivedName ?? item.title;
     const excerpt = (item.summary || body).slice(0, 700);
-    const description = derivedName && derivedName !== item.title
-      ? `${item.title}. ${excerpt}`.slice(0, 800)
-      : excerpt;
-    const capacityMw = extractCapacity(fullText);
-
-    projects.push({
-      name,
-      description,
-      capacityMw,
-      developer: extractDeveloper(`${item.title}. ${item.summary}`),
-      location: extractLocation(fullText, source.country),
-      country: source.country,
-      status: determineStatus(fullText),
-      sourceUrl: item.link,
-      sourceName: source.name,
-      announcedDate: item.date,
-      announcedDateEvidence: item.date ? "source_reported" : "unknown",
-      needsArticleEnrichment: capacityMw == null && item.content.length < 1_500,
-      contactName: null,
-      contactEmail: null,
-      contactPhone: null,
+    const articleCanEnrich = Boolean(item.link) && item.content.length < 1_500;
+    const hasCountryEvidence = resolveTargetCountry(fullText, source.country, true) != null;
+    const evidence = extractNamedProjectEvidence({
+      title: item.title,
+      text: `${item.summary} ${body}`,
+      fallbackCountry: source.country,
+      requireCountryEvidence: !articleCanEnrich,
     });
+    for (const candidate of evidence) {
+      projects.push({
+        name: candidate.name,
+        description: `${item.title}. ${excerpt}`.slice(0, 800),
+        capacityMw: candidate.capacityMw,
+        developer: extractDeveloper(`${item.title}. ${item.summary}`),
+        location: candidate.location,
+        country: candidate.country,
+        status: determineStatus(fullText),
+        sourceUrl: evidence.length > 1 ? `${item.link.split("#")[0]}#${projectSlug(candidate.name)}` : item.link,
+        sourceName: source.name,
+        announcedDate: item.date,
+        announcedDateEvidence: item.date ? "source_reported" : "unknown",
+        needsArticleEnrichment: articleCanEnrich && (candidate.capacityMw == null || !hasCountryEvidence),
+        contactName: null,
+        contactEmail: null,
+        contactPhone: null,
+      });
+    }
   }
 
   return { projects, itemCount: items.length, oldestDate, firstLink: items[0]?.link ?? null };
@@ -170,32 +171,40 @@ export function parseHtmlPage(
     if (startDate && announcedDate && announcedDate < startDate) continue;
     if (endDate && announcedDate && announcedDate > endDate) continue;
 
-    const derivedName = deriveProjectName(rawTitle);
-    const name = derivedName ?? rawTitle;
-    const key = `${link ?? pageUrl}|${normalizeProjectName(name)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    const capacityMw = extractCapacity(`${rawTitle} ${text}`);
-    const sourceUrl = link ?? `${pageUrl.split("#")[0]}#${projectSlug(name)}`;
     const listingPage = link != null && link.split("#")[0].replace(/\/$/, "") === pageUrl.split("#")[0].replace(/\/$/, "");
-    projects.push({
-      name,
-      description: (derivedName && derivedName !== rawTitle ? `${rawTitle}. ${text}` : text).slice(0, 600),
-      capacityMw,
-      developer: extractDeveloper(text),
-      location: extractLocation(text, source.country),
-      country: source.country,
-      status: determineStatus(text),
-      sourceUrl,
-      sourceName: source.name,
-      announcedDate,
-      announcedDateEvidence: announcedDate ? "source_reported" : "unknown",
-      needsArticleEnrichment: capacityMw == null && link != null && !listingPage,
-      contactName: null,
-      contactEmail: null,
-      contactPhone: null,
+    const articleCanEnrich = link != null && !listingPage;
+    const hasCountryEvidence = resolveTargetCountry(`${rawTitle} ${text}`, source.country, true) != null;
+    const evidence = extractNamedProjectEvidence({
+      title: rawTitle,
+      text,
+      fallbackCountry: source.country,
+      requireCountryEvidence: !articleCanEnrich,
     });
+    for (const candidate of evidence) {
+      const key = `${link ?? pageUrl}|${normalizeProjectName(candidate.name)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const sourceUrl = link
+        ? evidence.length > 1 ? `${link.split("#")[0]}#${projectSlug(candidate.name)}` : link
+        : `${pageUrl.split("#")[0]}#${projectSlug(candidate.name)}`;
+      projects.push({
+        name: candidate.name,
+        description: `${rawTitle}. ${text}`.slice(0, 600),
+        capacityMw: candidate.capacityMw,
+        developer: extractDeveloper(text),
+        location: candidate.location,
+        country: candidate.country,
+        status: determineStatus(text),
+        sourceUrl,
+        sourceName: source.name,
+        announcedDate,
+        announcedDateEvidence: announcedDate ? "source_reported" : "unknown",
+        needsArticleEnrichment: articleCanEnrich && (candidate.capacityMw == null || !hasCountryEvidence),
+        contactName: null,
+        contactEmail: null,
+        contactPhone: null,
+      });
+    }
   }
 
   return projects;

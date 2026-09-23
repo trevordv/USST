@@ -23,11 +23,11 @@ test("existing media project dated Aug 13 is included", () => {
 
 test("out-of-range existing lineage is neither linked nor counted", () => {
   const included = filterRelationsForScanWindow([
-    { projectId: 1, isNew: false, effectiveDate: "2026-08-04" },
-    { projectId: 2, isNew: false, effectiveDate: "2026-08-13" },
+    { projectId: 1, isNew: false, eventType: "updated", effectiveDate: "2026-08-04" },
+    { projectId: 2, isNew: false, eventType: "updated", effectiveDate: "2026-08-13" },
   ], window);
   assert.deepEqual(included.map((row) => row.projectId), [2]);
-  assert.deepEqual(summarizeScanLineage(included), { projectsFound: 1, newProjects: 0 });
+  assert.deepEqual(summarizeScanLineage(included, { bounded: true }), { projectsFound: 1, newProjects: 0, updatedProjects: 1, inventoryObservedCount: 0 });
 });
 
 test("View found and View new derive only from persisted in-window lineage", () => {
@@ -61,9 +61,11 @@ test("AltEnergy event/news updates still use their event date", () => {
     evidence: "altenergy_source_update",
     reason: "in-window",
   });
-  assert.deepEqual(summarizeScanLineage([{ projectId: 283, isNew: false }]), {
+  assert.deepEqual(summarizeScanLineage([{ projectId: 283, isNew: false, eventType: "updated", effectiveDate: result.effectiveDate }], { bounded: true }), {
     projectsFound: 1,
     newProjects: 0,
+    updatedProjects: 1,
+    inventoryObservedCount: 0,
   });
 });
 
@@ -140,9 +142,11 @@ test("Gunnedah inventory is linked in August despite January updated_at and pres
     effectiveDate: result.effectiveDate,
     dateEvidence: result.evidence,
   }], window);
-  assert.deepEqual(summarizeScanLineage(lineage), {
-    projectsFound: 1,
+  assert.deepEqual(summarizeScanLineage(lineage, { bounded: true }), {
+    projectsFound: 0,
     newProjects: 0,
+    updatedProjects: 0,
+    inventoryObservedCount: 1,
   });
 });
 
@@ -157,7 +161,7 @@ test("RUN-0095 fixture excludes all 204 Aug 4 LUVI projects", () => {
   const run95Luvi = Array.from({ length: 204 }, (_, index) => ({ projectId: index + 1, isNew: false, effectiveDate: "2026-08-04", sourceName: "LUVI Project Tracker" }));
   const found = filterRelationsForScanWindow(run95Luvi, window);
   assert.equal(found.length, 0);
-  assert.deepEqual(summarizeScanLineage(found), { projectsFound: 0, newProjects: 0 });
+  assert.deepEqual(summarizeScanLineage(found, { bounded: true }), { projectsFound: 0, newProjects: 0, updatedProjects: 0, inventoryObservedCount: 0 });
 });
 
 test("hard eligibility rules remain unchanged", () => {
@@ -179,6 +183,10 @@ test("routes persist the requested window and both scan views use authoritative 
   assert.match(detail, /\+\{newCount\}/);
   assert.match(detail, /Inventory Observed/);
   assert.match(detail, /Updated/);
+  assert.match(detail, /useState<ScanResultFilter>\("scan_period"\)/);
+  assert.match(detail, /\["scan_period", "Scan Period", scanPeriodCount\]/);
+  assert.match(detail, /order-2 border rounded-lg/);
+  assert.match(detail, /order-3 border rounded-lg/);
 });
 
 test("Watts News fallback repairs bounded sections instead of using a newsletter-wide zero gate", async () => {

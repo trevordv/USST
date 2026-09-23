@@ -67,7 +67,7 @@ const listing = `<html><body>
   <div class="post-card"><div class="post-body"><h3><a href="https://reneweconomy.com.au/news/foxtrot">Foxtrot Solar Project approved</a></h3>
     <p>Approved solar project in Queensland, size to be confirmed.</p></div></div>
   <div class="post-card"><div class="post-body"><h3>Golf Solar Farm application lodged</h3>
-    <p>An application for a 120 MW solar farm was lodged on 3 September 2026.</p></div></div>
+    <p>An application for a 120 MW solar farm in Victoria was lodged on 3 September 2026.</p></div></div>
   <div class="post-card"><h3><a href="/news/wind">Hotel Wind Farm approved</a></h3><p>Wind only.</p></div>
 </div></body></html>`;
 

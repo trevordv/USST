@@ -243,10 +243,11 @@ export function extractCapacityMw(text: string): number | null {
 
 const NAME_SUFFIX =
   "(?:Solar\\s+(?:Farm|Park|Project|Power\\s+Station|Power\\s+Plant|Hub|Plant|Precinct|Energy\\s+Project)|Solar\\s+and\\s+(?:Battery|BESS)\\s+(?:Farm|Project|Hub)|Renewable\\s+Energy\\s+(?:Hub|Park|Project|Precinct|Zone)|Energy\\s+(?:Hub|Park|Precinct)|Hybrid\\s+(?:Project|Farm))";
-const NAME_RUN_RE = new RegExp(`((?:[A-Z][A-Za-z0-9'’.\\-]*\\s+){1,4})(${NAME_SUFFIX})`, "g");
+const NAME_RUN_RE = new RegExp(`((?:[A-Z][A-Za-z0-9'’.\\-]*\\s+){1,4})(${NAME_SUFFIX})`, "gi");
 const LEADING_NOISE_RE =
-  /^(?:(?:New|Proposed|Planned|Massive|Giant|Huge|Another|First|Australia['’]s|Queensland['’]s|Victoria['’]s|NSW['’]s|Plans|Approval|Approves|Approved|Proposal|Green|Light|Australian|Large|Big|Major|The|A)\s+)+/;
+  /^(?:(?:New|Proposed|Planned|Massive|Giant|Huge|Another|First|Australia['’]s|Queensland['’]s|Victoria['’]s|NSW['’]s|Plans|Approval|Approves|Approved|Proposal|Green|Light|Australian|Large|Big|Major|The|A)\s+)+/i;
 const POSSESSIVE_PREFIX_RE = /^[A-Z][A-Za-z0-9.\-]*['’]s\s+/;
+const HEADLINE_ACTOR_RE = /^[A-Z][A-Za-z0-9&'.\-]*\s+(?:advances?|develops?|proposes?|plans?|backs?|unveils?|acquires?|sells?)\s+/i;
 
 /**
  * Derive a project name (e.g. "Culcairn Solar Farm") from a news headline such
@@ -256,9 +257,10 @@ const POSSESSIVE_PREFIX_RE = /^[A-Z][A-Za-z0-9.\-]*['’]s\s+/;
  * place/developer word in front of the suffix so "Solar Farm" alone never
  * qualifies.
  */
-export function deriveProjectName(headline: string): string | null {
-  const cleaned = headline.replace(/\s+/g, " ").trim();
-  let best: string | null = null;
+export function deriveProjectNames(text: string): string[] {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  const names: string[] = [];
+  const seen = new Set<string>();
   for (const match of cleaned.matchAll(NAME_RUN_RE)) {
     const prefixWords = match[1].trim().split(/\s+/);
     // Drop everything up to and including a unit token ("400 MW Culcairn ...").
@@ -266,18 +268,31 @@ export function deriveProjectName(headline: string): string | null {
     prefixWords.forEach((word, position) => {
       if (/^(?:mw|gw|mwh|gwh|mwp|mwac|mwdc|bess|pv)$/i.test(word)) lastUnit = position;
     });
-    const prefix = prefixWords
-      .slice(lastUnit + 1)
+    const afterUnit = prefixWords.slice(lastUnit + 1);
+    const firstProper = afterUnit.findIndex((word) => /^[A-Z]/.test(word));
+    const prefix = afterUnit
+      .slice(firstProper >= 0 ? firstProper : 0)
       .join(" ")
       .replace(POSSESSIVE_PREFIX_RE, "")
+      .replace(HEADLINE_ACTOR_RE, "")
       .replace(LEADING_NOISE_RE, "")
       .trim();
     if (!prefix) continue;
     const candidate = `${prefix} ${match[2].replace(/\s+/g, " ")}`;
     if (candidate.length < 8 || candidate.length > 80) continue;
-    if (!best || candidate.length > best.length) best = candidate;
+    const key = normalizeProjectName(candidate);
+    if (!seen.has(key)) {
+      seen.add(key);
+      names.push(candidate);
+    }
   }
-  return best;
+  return names;
+}
+
+export function deriveProjectName(headline: string): string | null {
+  const names = deriveProjectNames(headline);
+  return names.reduce<string | null>((best, candidate) =>
+    best == null || candidate.length > best.length ? candidate : best, null);
 }
 
 /** Stable lowercase identity for a project name (punctuation-insensitive). */

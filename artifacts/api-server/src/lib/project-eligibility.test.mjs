@@ -27,6 +27,8 @@ test("rejects 1 MW solar and does not count it", () => {
   assert.deepEqual(summarizeScanLineage([]), {
     projectsFound: 0,
     newProjects: 0,
+    updatedProjects: 0,
+    inventoryObservedCount: 0,
   });
 });
 
@@ -118,12 +120,34 @@ test("scan counters match unique eligible scan-detail results", () => {
     ...scanDetailProjects.map((project) => ({
       projectId: project.id,
       isNew: project.isNew,
+      eventType: project.isNew ? "new" : "updated",
+      effectiveDate: "2026-08-10",
     })),
-    { projectId: 11, isNew: false },
+    { projectId: 11, isNew: false, eventType: "updated", effectiveDate: "2026-08-10" },
   ];
 
   assert.deepEqual(summarizeScanLineage(lineage), {
     projectsFound: scanDetailProjects.length,
     newProjects: scanDetailProjects.filter((project) => project.isNew).length,
+    updatedProjects: 1,
+    inventoryObservedCount: 0,
+  });
+});
+
+test("bounded scan summary counts unique dated new and updated events, while retaining inventory lineage separately", () => {
+  const lineage = [
+    { projectId: 1, isNew: true, eventType: "new", effectiveDate: "2026-09-20" },
+    { projectId: 2, isNew: false, eventType: "updated", effectiveDate: "2026-09-21" },
+    { projectId: 2, isNew: false, eventType: "updated", effectiveDate: "2026-09-21" },
+    { projectId: 3, isNew: false, eventType: "inventory_observed", effectiveDate: null, dateEvidence: "altenergy_inventory_observation" },
+    { projectId: 4, isNew: false, eventType: "inventory_observed", effectiveDate: null, dateEvidence: "altenergy_inventory_observation" },
+    { projectId: 5, isNew: false, eventType: "updated", effectiveDate: null },
+    { projectId: 6, isNew: true, eventType: "new", effectiveDate: null, dateEvidence: "altenergy_inventory_observation" },
+  ];
+  assert.deepEqual(summarizeScanLineage(lineage, { bounded: true }), {
+    projectsFound: 2,
+    newProjects: 1,
+    updatedProjects: 1,
+    inventoryObservedCount: 3,
   });
 });

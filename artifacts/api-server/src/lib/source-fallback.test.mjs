@@ -6,6 +6,7 @@ import { isEligibleScanProject } from "./project-eligibility.ts";
 import { parseSourceFallbackArray } from "./source-access-outcome.ts";
 import { getSourceRepairStrategy } from "./source-repair-strategies.ts";
 import { hashSourceContent } from "./ai-source-cache.ts";
+import { extractNamedProjectEvidence } from "./news-project-evidence.ts";
 
 // Execute the production fallback body, substituting only its SDK import.
 // This avoids importing the DB-backed scanner or making paid/network requests.
@@ -30,7 +31,7 @@ async function extract(rows, selectedSource = source, outputText = JSON.stringif
   const requests = [];
   const gated = [];
   let responded = false;
-  const fallback = new Function("cachedSourceFallback", "pool", "hashSourceContent", "loadOpenAi", "process", "logger", "logScanSourceOutcome", "getSourceRepairStrategy", "parseSourceFallbackArray", "isEligibleScanProject", "runOpenAiEscalation", "OpenAiQualityError", "recordOpenAiCacheHit",
+  const fallback = new Function("cachedSourceFallback", "pool", "hashSourceContent", "loadOpenAi", "process", "logger", "logScanSourceOutcome", "getSourceRepairStrategy", "parseSourceFallbackArray", "isEligibleScanProject", "extractNamedProjectEvidence", "runOpenAiEscalation", "OpenAiQualityError", "recordOpenAiCacheHit",
     `${compiled}\nreturn scrapeWithChatGpt;`)(
     async (_pool, _key, load, validate) => validate(cacheResults === undefined ? await load() : cacheResults),
     {}, hashSourceContent,
@@ -41,6 +42,7 @@ async function extract(rows, selectedSource = source, outputText = JSON.stringif
     { env: { OPENAI_API_KEY: "mock-only" } }, { info() {}, warn() {} }, () => {},
     getSourceRepairStrategy, parseSourceFallbackArray,
     (candidate) => { assert.ok(responded || cacheResults !== undefined); gated.push(candidate); return isEligibleScanProject(candidate); },
+    extractNamedProjectEvidence,
     async options => options.validate(await options.request("gpt-5.6-luna", 1), "gpt-5.6-luna"),
     class OpenAiQualityError extends Error { constructor(reason, message) { super(message); this.reason = reason; } },
     async () => {},
@@ -74,7 +76,7 @@ test("shared eligibility gate runs after the AI response and rejects BESS and wi
     { ...project, name: "River Wind Farm", description: "Wind turbine project" },
     { ...project, name: "Unknown Solar", capacity_mw: null },
   ]);
-  assert.equal(gated.length, 4);
+  assert.equal(gated.length, 1);
   assert.deepEqual(results.map(r => r.name), [project.name]);
 });
 

@@ -33,6 +33,8 @@ export const EXCLUDE_KEYWORDS = [
   "fully operational", "now generating", "commissioned",
   "now online", "now operating", "energised", "energized",
   "connected to grid", "switched on", "now generating power",
+  "project completion", "construction completed", "has been completed",
+  "is completed", "completed project", "up and running",
 ];
 
 // Capacity extraction lives in source-text.ts (thousands separators, MWh/GWh
