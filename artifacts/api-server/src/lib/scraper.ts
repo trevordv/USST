@@ -16,13 +16,103 @@
  *  - NZ: Electricity Authority, Transpower, NZ Fast-track, NZ EPA
  *  - AltEnergy and LUVI are authenticated and handled separately
  *
- * Apify Google Search is used ONLY for the explicit contact-enrichment feature
- * (POST /projects/enrich-contacts), never during scanning.
+ * Managed acquisition is bounded to the approved registry: direct structured
+ * paths first, then Firecrawl, Apify and Bright Data where explicitly allowed.
  */
 
-import { db, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable, pvhContactsTable, type PvhContact } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { db, pool, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable, pvhContactsTable, type PvhContact } from "@workspace/db";
+import { and, eq } from "drizzle-orm";
 import { logger } from "./logger";
+import {
+  getProjectIneligibilityReason,
+  hasSolarComponent,
+  isEligibleScanProject,
+  isWindProject,
+  summarizeScanLineage,
+  type ScanProjectLineage,
+} from "./project-eligibility";
+import { decideScanDateWindow, parseSourceAnnouncementDate } from "./scan-date-window";
+import {
+  classifyAltEnergyProjectDbRecord,
+  createAltEnergyProjectDbDiagnostics,
+  type AltEnergyProjectDbRecord,
+} from "./altenergy-project-db";
+import {
+  CONTACT_DOMAIN_WORKERS,
+  GENERIC_SCAN_WORKERS,
+  mapWithConcurrency,
+} from "./concurrency";
+import { fetchEpbcRecords } from "./epbc-scraper";
+import {
+  classifySourceResponse,
+  parseAemoGenerationRows,
+  parseOfficialProjectHtml,
+  type SourceRepairCandidate,
+  type SourceResponseProblem,
+} from "./source-repair-parsers";
+import {
+  AEMO_GENERATION_WORKBOOK_URL,
+  getSourceAcquisitionPlan,
+  getSourceRepairStrategy,
+  validateSourceRepairStrategies,
+} from "./source-repair-strategies";
+import { readAemoGenerationWorkbookRows } from "./aemo-workbook";
+import {
+  deriveProjectName,
+  extractMainText,
+  isApprovedDiscoveredUrl,
+  nextListingPageUrl,
+  normalizeProjectName,
+  parseTextDate,
+  siteHost,
+} from "./source-text.ts";
+import { feedPageUrl } from "./feed-items.ts";
+import {
+  EXCLUDE_KEYWORDS,
+  determineStatus,
+  extractCapacity,
+  extractDeveloper,
+  extractLocation,
+  isEarlyStage,
+} from "./source-heuristics.ts";
+import { parseHtmlPage, parseRssFeed, parseRssFeedPage, type FeedPageResult } from "./news-parsers.ts";
+import { extractNamedProjectEvidence } from "./news-project-evidence.ts";
+import { classifyManagedZeroResult } from "./managed-source-extraction.ts";
+import { assignProjectIdentityUrls } from "./project-identity.ts";
+import { enrichProjectsFromArticles as enrichFromArticles } from "./article-enrichment.ts";
+import { parseSourceFallbackArray, sourceAcquisitionOutcome } from "./source-access-outcome";
+import { browseAiConfigurationProblem, runBrowseAiTask, type BrowseAiResult } from "./browse-ai-task";
+import { brightDataConfigured, fetchApprovedBrightData, planBrightDataTargets } from "./bright-data";
+import {
+  acquireApprovedSourceWithFirecrawl,
+  firecrawlConfigured,
+  FirecrawlAcquisitionError,
+} from "./firecrawl";
+import { apifySourceConfigured, fetchApprovedSourceWithApify } from "./apify-source";
+import {
+  combineContentFingerprints,
+  persistScanSourceHealth,
+  safeSourceFailureReason,
+  type DurableSourceOutcome,
+  type ScanSourceHealthInput,
+} from "./scan-source-health";
+import { cachedSourceFallback, hashMeaningfulSourceContent, hashSourceContent } from "./ai-source-cache";
+import { recordOpenAiCacheHit } from "./openai-usage";
+import { OpenAiQualityError, runOpenAiEscalation } from "./openai-escalation";
+import {
+  assertSourceDocument, failedExtractionOutcome, paidSourceFallbackReason,
+  successfulExtractionOutcome, SourceExtractionError, type ExtractionAttempt, type ExtractionOutcome,
+} from "./source-extraction-outcome";
+import {
+  WATTS_NEWS_UPDATE_EVIDENCE,
+  describeWattsNewsEvidence,
+  extractWattNewsProject,
+  extractWattsNewsCapacities,
+  findCanonicalWattsNewsMatch,
+  parseWattNewsSections,
+  planWattsNewsCanonicalUpdates,
+  type WattsNewsProjectEvidence,
+} from "./watts-news";
 
 // ---------------------------------------------------------------------------
 // AltEnergy authenticated session
@@ -46,6 +136,7 @@ const LUVI_SOURCE_NAME = "LUVI Project Tracker";
 
 /** In-memory cookie jar for AltEnergy session cookies */
 let altEnergyCookies: string[] = [];
+let altEnergyAuthenticated = false;
 let altEnergySessionExpiry = 0; // unix ms — re-login after 55 min
 
 /**
@@ -58,6 +149,7 @@ let altEnergySessionExpiry = 0; // unix ms — re-login after 55 min
  *   3. Store the authenticated session cookie returned in the redirect response
  */
 async function loginAltEnergy(): Promise<void> {
+  altEnergyAuthenticated = false;
   const email = process.env.ALTENERGY_USERNAME;
   const password = process.env.ALTENERGY_PASSWORD;
 
@@ -132,6 +224,7 @@ async function loginAltEnergy(): Promise<void> {
     const loggedIn = res.status === 302 && !location.includes("/login");
 
     if (loggedIn) {
+      altEnergyAuthenticated = true;
       logger.info({ redirectTo: location }, "AltEnergy login successful");
     } else {
       logger.warn(
@@ -172,6 +265,9 @@ async function fetchAltEnergy(url: string, timeoutMs = 15000): Promise<string> {
   if (Date.now() > altEnergySessionExpiry || altEnergyCookies.length === 0) {
     await loginAltEnergy();
   }
+  if (!altEnergyAuthenticated) {
+    throw new Error("AltEnergy authentication failed");
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -200,7 +296,18 @@ interface ScrapedProject {
   status: "announced" | "under_development";
   sourceUrl: string;
   sourceName: string;
-  announcedDate: string;
+  announcedDate: string | null;
+  announcedDateEvidence?: "source_reported" | "unknown";
+  sourceEventDate?: string | null;
+  sourceEventEvidence?: "source_update" | "altenergy_source_update" | "altenergy_watts_news_update";
+  inventoryObservation?: boolean;
+  eventType?: "new" | "updated" | "inventory_observed";
+  wattsNewsEvidence?: WattsNewsProjectEvidence;
+  rawStructuredCapacityMw?: number | null;
+  capacityEvidence?: "structured_capacity" | "explicit_ac_capacity" | "explicit_project_capacity" | "none";
+  capacityEvidenceText?: string | null;
+  /** Internal: capacity unknown after the excerpt; read the same-site article (see enrichProjectsFromArticles). */
+  needsArticleEnrichment?: boolean;
   contactName: string | null;
   contactEmail: string | null;
   contactPhone: string | null;
@@ -215,12 +322,6 @@ interface ScrapeSource {
   authenticated?: boolean;
   /** Extra URLs to scrape in addition to searchUrl (e.g. category pages) */
   extraUrls?: string[];
-  /**
-   * If true, use the Firecrawl API (FIRECRAWL_API_KEY) instead of raw fetch+Cheerio.
-   * Firecrawl renders JavaScript and returns clean markdown — ideal for government
-   * portals and industry sites that don't expose a usable RSS feed or HTML article list.
-   */
-  firecrawl?: boolean;
   /**
    * Browse.AI robot ID to use for this source.
    * The robot must be pre-configured in the Browse.AI dashboard
@@ -238,6 +339,64 @@ interface ScrapeSource {
    *   "url" / "link"                     → project detail URL
    */
   browseAiRobotId?: string;
+}
+
+type ScanSourceOutcome =
+  | "attempted"
+  | "success"
+  | "empty"
+  | "fallback-used"
+  | "extraction-failed"
+  | "blocked"
+  | "timeout"
+  | "skipped-missing-credentials"
+  | "error";
+
+function diagnosticUrl(url?: string): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function logScanSourceOutcome(
+  source: string,
+  outcome: ScanSourceOutcome,
+  details: {
+    projectCount?: number;
+    durationMs?: number;
+    method?: string;
+    url?: string;
+    reason?: string;
+    missing?: string[];
+    directSucceeded?: boolean;
+    brightSucceeded?: boolean;
+    brightDataCalls?: number;
+    fallbackSucceeded?: boolean;
+    fallbackUsed?: boolean;
+    extractionOutcomes?: ExtractionAttempt[];
+    resultOutcome?: ExtractionOutcome;
+    failureCount?: number;
+    err?: unknown;
+  } = {},
+): void {
+  const { err, ...safeDetails } = details;
+  const context = {
+    source, outcome, ...safeDetails,
+    url: diagnosticUrl(details.url),
+    extractionOutcomes: details.extractionOutcomes?.map(({ method, url, outcome, reason, failureCategory }) => ({
+      method, url: diagnosticUrl(url), outcome, reason, failureCategory,
+    })),
+    failureCategory: err instanceof SourceRequestError ? err.problem : err ? "unclassified" : undefined,
+  };
+  if (["error", "blocked", "timeout", "extraction-failed", "skipped-missing-credentials"].includes(outcome)) {
+    logger.warn(context, "Scan source outcome");
+  } else {
+    logger.info(context, "Scan source outcome");
+  }
 }
 
 /**
@@ -306,7 +465,7 @@ const SOURCES: ScrapeSource[] = [
     searchUrl: "https://www.aemo.com.au/energy-systems/electricity/national-electricity-market-nem/nem-forecasting-and-planning/forecasting-and-planning-data/generation-information",
   },
   {
-    // DCCEEW pages are government portals — Firecrawl consistently times out on these URLs.
+    // DCCEEW retains its reviewed direct official-page path.
     name: "Capacity Investment Scheme",
     country: "AU",
     searchUrl: "https://www.dcceew.gov.au/energy/renewable/capacity-investment-scheme/closed-cis-tenders",
@@ -335,10 +494,10 @@ const SOURCES: ScrapeSource[] = [
   {
     name: "NSW Planning Renewable Energy",
     country: "AU",
-    searchUrl: "https://www.planning.nsw.gov.au/policy-and-legislation/renewable-energy",
+    searchUrl: "https://www.planning.nsw.gov.au/the-planning-system/renewable-energy",
   },
   {
-    // JS-rendered planning portal — Firecrawl consistently times out.
+    // Direct official HTML first; bounded Firecrawl is available only on failure.
     name: "Planning Victoria",
     country: "AU",
     searchUrl: "https://www.planning.vic.gov.au/guides-and-resources/guides/all-guides/renewable-energy-facilities/solar-energy-facilities",
@@ -370,23 +529,23 @@ const SOURCES: ScrapeSource[] = [
   },
   // ── Industry / Data Platforms ─────────────────────────────────────────────
   {
-    // JS-rendered app — Firecrawl times out; plain HTML also returns nothing useful.
+    // Direct official HTML first; bounded managed acquisition is failure-only.
     name: "Planning Alerts Australia",
     country: "AU",
     searchUrl: "https://www.planningalerts.org.au/",
   },
   {
-    // CEC pages are JS-rendered membership portals / PDF downloads — Firecrawl consistently
-    // times out (30 s) and returns 0 projects even when it does respond. Use plain HTML.
+    // CEC pages may be JS-rendered or PDF-backed; retain direct first and use
+    // the reviewed bounded managed-acquisition hierarchy on a real failure.
     name: "Clean Energy Council",
     country: "AU",
     searchUrl: "https://cleanenergycouncil.org.au/advocacy/large-scale-solar",
   },
   {
-    // QLD Planning is a JS-rendered gov portal — Firecrawl times out consistently.
+    // JS-rendered government portal; direct remains first, Firecrawl is bounded fallback.
     name: "QLD Planning – Renewable Energy",
     country: "AU",
-    searchUrl: "https://www.planning.qld.gov.au/planning-issues-and-interests/renewable-energy",
+    searchUrl: "https://www.planning.qld.gov.au/planning-framework/state-assessment-and-referral-agency/sara-submissions-portal",
   },
   {
     name: "Smart Energy Council",
@@ -397,7 +556,7 @@ const SOURCES: ScrapeSource[] = [
   {
     name: "Energy Magazine",
     country: "AU",
-    searchUrl: "https://www.energymagazine.com.au/category/solar/",
+    searchUrl: "https://www.energymagazine.com.au/?s=solar+project",
     feedUrl: "https://www.energymagazine.com.au/feed/",
   },
   {
@@ -411,25 +570,24 @@ const SOURCES: ScrapeSource[] = [
     searchUrl: "https://www.transpower.co.nz/connections/whats-latest-grid-connections",
   },
   {
-    // Cloudflare-protected — requires Browse.AI robot.
-    // Set browseAiRobotId once the robot is created at https://app.browse.ai
-    // Robot columns: Project Name | Capacity | Status | Region | Developer | URL
+    // Protected/JS-rendered portal; direct then bounded Firecrawl, with later
+    // providers used only after a recorded acquisition failure.
     name: "NZ Fast-track",
     country: "NZ",
     searchUrl: "https://www.fasttrack.govt.nz/projects/",
     // browseAiRobotId: "TODO",
   },
   {
-    // Legacy COVID-era / NBEA fast-track consenting referrals.
-    // Cloudflare-protected — requires Browse.AI robot.
+    // Legacy COVID-era / NBEA fast-track consenting referrals. Direct first,
+    // then the reviewed bounded managed-acquisition hierarchy.
     name: "NZ EPA – Fast-track Projects",
     country: "NZ",
     searchUrl: "https://www.epa.govt.nz/fast-track-consenting/fast-track-projects/",
     // browseAiRobotId: "TODO",
   },
   {
-    // Pre-2024 pathway: RMA Proposals of National Significance.
-    // Cloudflare-protected — requires Browse.AI robot.
+    // Pre-2024 pathway: RMA Proposals of National Significance. Direct first,
+    // then the reviewed bounded managed-acquisition hierarchy.
     name: "NZ EPA – RMA Proposals",
     country: "NZ",
     searchUrl: "https://www.epa.govt.nz/industry-areas/rma-proposals/",
@@ -437,7 +595,7 @@ const SOURCES: ScrapeSource[] = [
   },
   {
     // Broader EPA consultations aggregator — catches projects not listed elsewhere.
-    // Cloudflare-protected — requires Browse.AI robot.
+    // Direct first, then the reviewed bounded managed-acquisition hierarchy.
     name: "NZ EPA – Public Consultations",
     country: "NZ",
     searchUrl: "https://www.epa.govt.nz/public-consultations/",
@@ -450,216 +608,93 @@ const SOURCES: ScrapeSource[] = [
   },
 ];
 
-// Keywords that indicate a project is in early stage (not yet generating)
-const EARLY_STAGE_KEYWORDS = [
-  // Announcement / proposal
-  "announced", "proposed", "proposes", "proposal", "plans to build",
-  "new project", "new solar", "new bess", "new battery",
-  // Approval / consent
-  "planning approval", "resource consent", "development approval", "da approved",
-  "approved", "approval", "receives approval", "gets approval", "granted",
-  "permit", "permits", "consent", "consented",
-  "planning permit", "planning consent",
-  // Application / referral
-  "application", "applies", "applied", "lodged", "lodges",
-  "referral", "referred", "da lodged", "eis lodged",
-  "environmental impact", "eis", "epbc referral",
-  // Development stages
-  "under development", "under construction", "in development",
-  "planning", "feasibility", "pre-development", "early stage",
-  "to build", "will build", "breaking ground", "scoping",
-  // Investment / commitment signals
-  "commits", "committed", "invest", "investment", "selected",
-  "awarded", "awarded contract", "reaches financial close",
-  "financial close", "reaches fc",
-  // Construction commencement
-  "commences", "commence", "begins construction", "begin construction",
-  "construction begins", "construction commences", "starts construction",
-  "breaks ground", "groundbreaking",
-];
+export const CONFIGURED_SCAN_SOURCE_NAMES = [
+  ...SOURCES.map((source) => source.name),
+  "AltEnergy Australia",
+  LUVI_SOURCE_NAME,
+] as const;
 
-// Keywords that indicate a project is generating (exclude these)
-const EXCLUDE_KEYWORDS = [
-  "fully operational", "now generating", "commissioned",
-  "now online", "now operating", "energised", "energized",
-  "connected to grid", "switched on", "now generating power",
-];
-
-// Capacity extraction regex: matches "200 MW", "1.2GW", "500MW", "50 megawatt"
-const CAPACITY_RE = /(\d+(?:\.\d+)?)\s*(mw|gw|megawatt|gigawatt)/gi;
-
-// Common AU/NZ solar states and regions for location inference
-const AU_LOCATIONS = [
-  "NSW", "VIC", "QLD", "SA", "WA", "TAS", "NT", "ACT",
-  "New South Wales", "Victoria", "Queensland", "South Australia",
-  "Western Australia", "Tasmania", "Northern Territory",
-];
-const NZ_LOCATIONS = [
-  "Auckland", "Wellington", "Canterbury", "Otago", "Waikato",
-  "Bay of Plenty", "Manawatu", "Hawke's Bay", "Marlborough",
-  "Northland", "Southland",
-];
-
-function extractCapacity(text: string): number | null {
-  const matches = [...text.matchAll(CAPACITY_RE)];
-  if (!matches.length) return null;
-
-  const match = matches[0];
-  let value = parseFloat(match[1]);
-  const unit = match[2].toLowerCase();
-  if (unit.startsWith("g")) value *= 1000; // GW → MW
-
-  return value;
-}
-
-function extractLocation(text: string, country: "AU" | "NZ"): string | null {
-  const candidates = country === "AU" ? AU_LOCATIONS : NZ_LOCATIONS;
-  for (const loc of candidates) {
-    if (text.includes(loc)) return loc;
-  }
-  return null;
-}
-
-function isEarlyStage(text: string): boolean {
-  const lower = text.toLowerCase();
-  const hasExclude = EXCLUDE_KEYWORDS.some((kw) => lower.includes(kw));
-  if (hasExclude) return false;
-  return EARLY_STAGE_KEYWORDS.some((kw) => lower.includes(kw));
-}
-
-function determineStatus(text: string): "announced" | "under_development" {
-  const lower = text.toLowerCase();
-  if (
-    lower.includes("under development") ||
-    lower.includes("under construction") ||
-    lower.includes("development approval") ||
-    lower.includes("planning approval") ||
-    lower.includes("resource consent")
+class SourceRequestError extends Error {
+  constructor(
+    message: string,
+    readonly problem: SourceResponseProblem,
+    readonly url: string,
+    readonly status?: number,
+    readonly contentHash?: string,
   ) {
-    return "under_development";
+    super(message);
+    this.name = "SourceRequestError";
   }
-  return "announced";
 }
 
-function extractDeveloper(text: string): string | null {
-  // Look for common company patterns near solar keywords
-  const patterns = [
-    /(?:by|developer?|developed by|from)\s+([A-Z][A-Za-z\s&]+(?:Energy|Solar|Power|Renewables|Green|Clean|Capital|Group|Ltd|Pty|Inc|Corp|Co\.|Company)?)/,
-    /([A-Z][A-Za-z\s&]+(?:Energy|Solar|Power|Renewables|Green|Clean|Capital|Group|Ltd|Pty))/,
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      const candidate = match[1].trim();
-      if (candidate.length > 3 && candidate.length < 60) {
-        return candidate;
-      }
-    }
-  }
-  return null;
-}
-
-async function fetchWithTimeout(url: string, timeoutMs = 15000): Promise<string> {
+async function fetchWithTimeout(url: string, timeoutMs = 15000, redirect: "follow" | "error" = "follow"): Promise<string> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
       signal: controller.signal,
+      redirect,
       headers: {
         "User-Agent":
           "Mozilla/5.0 (compatible; SolarTrackerBot/1.0; +https://solar-tracker.replit.app)",
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       },
     });
-    return await response.text();
+    const text = await response.text();
+    const contentType = response.headers.get("content-type") ?? "";
+    const problem = classifySourceResponse(response.status, contentType, text, response.headers.get("www-authenticate"));
+    if (problem) {
+      throw new SourceRequestError(
+        `Source response rejected: ${problem} (${response.status})`,
+        problem,
+        response.url || url,
+        response.status,
+        hashMeaningfulSourceContent(text),
+      );
+    }
+    return text;
+  } catch (err) {
+    if (err instanceof SourceRequestError) throw err;
+    if (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError")) {
+      throw new SourceRequestError("Source request timed out", "timeout", url);
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
 }
 
-function parseRssFeed(xml: string, source: ScrapeSource, startDate?: string, endDate?: string): ScrapedProject[] {
-  const projects: ScrapedProject[] = [];
+// Older feed pages (`?paged=N`) recover items that scrolled out of page one.
+// Bounded scans keep paging until the page is older than the requested window.
+const FEED_MAX_PAGES_BOUNDED = 10;
+const FEED_MAX_PAGES_UNBOUNDED = 4;
+const EXTRA_LISTING_PAGES = 2;
 
-  // Extract items from RSS
-  const itemMatches = xml.matchAll(/<item>([\s\S]*?)<\/item>/gi);
-
-  for (const itemMatch of itemMatches) {
-    const item = itemMatch[1];
-
-    const titleMatch = item.match(/<title[^>]*><!\[CDATA\[(.*?)\]\]><\/title>|<title[^>]*>(.*?)<\/title>/i);
-    const linkMatch = item.match(/<link[^>]*>(.*?)<\/link>|<link[^>]*\/>/i);
-    const descMatch = item.match(/<description[^>]*><!\[CDATA\[([\s\S]*?)\]\]><\/description>|<description[^>]*>([\s\S]*?)<\/description>/i);
-    const pubDateMatch = item.match(/<pubDate[^>]*>(.*?)<\/pubDate>/i);
-
-    const title = (titleMatch?.[1] ?? titleMatch?.[2] ?? "").trim();
-    const link = (linkMatch?.[1] ?? "").trim();
-    const rawDesc = (descMatch?.[1] ?? descMatch?.[2] ?? "").trim();
-    const pubDate = pubDateMatch?.[1]?.trim();
-
-    // Strip HTML tags from description
-    const desc = rawDesc.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 800);
-
-    if (!title || !link) continue;
-
-    // Check if it's solar-related
-    const fullText = `${title} ${desc}`;
-    const lower = fullText.toLowerCase();
-    if (!lower.includes("solar") && !lower.includes("photovoltaic") && !lower.includes(" pv ")) continue;
-
-    // Exclude clearly operational articles (commissioned, now generating, etc.)
-    // Don't require positive early-stage keywords — news articles from trusted
-    // solar publications are implicitly project-relevant if they mention solar.
-    if (EXCLUDE_KEYWORDS.some((kw) => lower.includes(kw))) continue;
-
-    // Parse date
-    let announcedDate: string;
-    let dateParsed = false;
-    try {
-      if (pubDate) {
-        const d = new Date(pubDate);
-        if (!isNaN(d.getTime())) {
-          announcedDate = d.toISOString().slice(0, 10);
-          dateParsed = true;
-        } else {
-          announcedDate = new Date().toISOString().slice(0, 10);
-        }
-      } else {
-        announcedDate = new Date().toISOString().slice(0, 10);
-      }
-    } catch {
-      announcedDate = new Date().toISOString().slice(0, 10);
-    }
-
-    // When a date-range filter is active, skip items with no parseable publication date.
-    // Without this, the new Date() fallback always passes the startDate check.
-    if (!dateParsed && (startDate || endDate)) continue;
-    if (startDate && announcedDate < startDate) continue;
-    if (endDate && announcedDate > endDate) continue;
-
-    const capacityMw = extractCapacity(fullText);
-    const location = extractLocation(fullText, source.country);
-    const developer = extractDeveloper(fullText);
-    const status = determineStatus(fullText);
-
-    projects.push({
-      name: title,
-      description: desc,
-      capacityMw,
-      developer,
-      location,
-      country: source.country,
-      status,
-      sourceUrl: link,
-      sourceName: source.name,
-      announcedDate,
-      contactName: null,
-      contactEmail: null,
-      contactPhone: null,
-    });
+function approvedHosts(source: ScrapeSource): Set<string> {
+  const hosts = new Set<string>();
+  for (const url of [source.searchUrl, source.feedUrl, ...(source.extraUrls ?? [])]) {
+    const host = url ? siteHost(url) : null;
+    if (host) hosts.add(host);
   }
+  return hosts;
+}
 
-  return projects;
+/** Discovered article/pagination URLs are not source configuration. Never follow redirects. */
+function fetchApprovedDiscoveredPage(source: ScrapeSource, url: string): Promise<string> {
+  if (!isApprovedDiscoveredUrl(url, approvedHosts(source))) {
+    throw new SourceRequestError("Discovered URL is not an approved HTTPS source host", "invalid-content", url);
+  }
+  return fetchWithTimeout(url, 12_000, "error");
+}
+
+/** Same-site article reads for candidates without a capacity (see article-enrichment.ts). */
+function enrichProjectsFromArticles(source: ScrapeSource, projects: readonly ScrapedProject[]) {
+  return enrichFromArticles(projects, {
+    country: source.country,
+    approvedHosts: approvedHosts(source),
+    fetchHtml: (url) => fetchApprovedDiscoveredPage(source, url),
+    isNoisyName: isNoisyProjectName,
+  });
 }
 
 /** Pick the right fetch function based on whether the source needs auth */
@@ -739,16 +774,11 @@ function parseAltEnergyListing(html: string): Array<{ title: string; url: string
  */
 async function fetchAltEnergyArticleBody(url: string): Promise<string> {
   const html = await fetchAltEnergy(url);
-  // The article body is in <div class="lower-box"> or <div class="post-details">
-  const bodyMatch = html.match(
-    /<div[^>]*class="[^"]*(?:lower-box|post-details|blog-content)[^"]*"[^>]*>([\s\S]*?)<\/div>/i
-  );
-  if (!bodyMatch) return "";
-  return bodyMatch[1]
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 1000);
+  // Balanced-tag extraction of the article container. The previous non-greedy
+  // `<div class="lower-box">…</div>` regex stopped at the first nested `</div>`
+  // and the result was cut to 1,000 characters, hiding the MW figure that
+  // normally sits in the second or third paragraph.
+  return extractMainText(html, 8_000);
 }
 
 /** Solar-related keywords to check in AltEnergy article titles */
@@ -762,7 +792,7 @@ const SOLAR_TITLE_KEYWORDS = [
 // — project data is embedded as `var project = [...]` JavaScript in the page
 // ---------------------------------------------------------------------------
 
-interface AltEnergyProjectRecord {
+interface AltEnergyProjectRecord extends AltEnergyProjectDbRecord {
   id: number;
   energy_id: number;
   type: string;
@@ -784,12 +814,6 @@ interface AltEnergyProjectRecord {
   created_at: string;
   new_updates: string | null;
 }
-
-/** energy_ids we consider "solar or closely related" */
-const SOLAR_ENERGY_IDS = new Set([1, 4, 9]); // solar-pv, solar-thermal, (hybrid)
-
-/** Wind energy IDs — excluded from all scraping */
-const WIND_ENERGY_IDS = new Set([2, 3]); // kept for reference only — not ingested
 
 /**
  * Extract the embedded `var project = [...]` JSON from an AltEnergy page.
@@ -885,6 +909,15 @@ export async function scrapeAltEnergy(
   startDate?: string,
   endDate?: string
 ): Promise<ScrapedProject[]> {
+  const missingCredentials = ["ALTENERGY_USERNAME", "ALTENERGY_PASSWORD"]
+    .filter((key) => !process.env[key]?.trim());
+  if (missingCredentials.length > 0) {
+    logScanSourceOutcome("AltEnergy Australia", "skipped-missing-credentials", {
+      missing: missingCredentials,
+    });
+    return [];
+  }
+
   const projects: ScrapedProject[] = [];
   const seenUrls = new Set<string>();
 
@@ -896,30 +929,34 @@ export async function scrapeAltEnergy(
     const cards = parseAltEnergyListing(html);
     logger.info({ cards: cards.length }, "AltEnergy newsandviews listing parsed");
 
-    for (const card of cards) {
-      if (seenUrls.has(card.url)) continue;
-      if (startDate && card.date < startDate) continue;
-      if (endDate && card.date > endDate) continue;
-
+    const eligibleCards = cards.filter((card) => {
+      if (seenUrls.has(card.url)) return false;
+      if (startDate && card.date < startDate) return false;
+      if (endDate && card.date > endDate) return false;
       const titleLower = card.title.toLowerCase();
-      if (!SOLAR_TITLE_KEYWORDS.some((kw) => titleLower.includes(kw))) continue;
-
+      if (!SOLAR_TITLE_KEYWORDS.some((kw) => titleLower.includes(kw))) return false;
       // Newsandviews titles are article headlines — only keep ones that look like project names
-      if (isNoisyProjectName(card.title, /* requireProjectShape */ true)) continue;
-
-      let body = "";
+      return !isNoisyProjectName(card.title, /* requireProjectShape */ true);
+    });
+    // Article bodies are independent reads: fetch them with bounded concurrency
+    // instead of one at a time.
+    const bodies = await mapWithConcurrency(eligibleCards, 4, async (card) => {
       try {
-        body = await fetchAltEnergyArticleBody(card.url);
+        return await fetchAltEnergyArticleBody(card.url);
       } catch (err) {
         logger.warn({ err, url: card.url }, "AltEnergy article fetch failed");
+        return "";
       }
+    });
 
+    eligibleCards.forEach((card, index) => {
+      const body = bodies[index];
       const fullText = `${card.title} ${body}`;
-      if (!isEarlyStage(fullText)) continue;
+      if (!isEarlyStage(fullText)) return;
 
       seenUrls.add(card.url);
       projects.push({
-        name: card.title,
+        name: deriveProjectName(card.title) ?? card.title,
         description: body.slice(0, 600) || card.title,
         capacityMw: extractCapacity(fullText),
         developer: extractDeveloper(fullText),
@@ -933,7 +970,7 @@ export async function scrapeAltEnergy(
         contactEmail: null,
         contactPhone: null,
       });
-    }
+    });
   } catch (err) {
     logger.warn({ err }, "AltEnergy newsandviews scrape failed");
   }
@@ -943,61 +980,44 @@ export async function scrapeAltEnergy(
     const html = await fetchAltEnergy("https://altenergy.com.au/kilowatt_subcribers");
     const records = parseAltEnergyProjectDb(html);
     logger.info({ total: records.length }, "AltEnergy project DB records found");
+    const diagnostics = createAltEnergyProjectDbDiagnostics();
+    let addedFromProjectDb = 0;
 
     for (const rec of records) {
       const url = `https://altenergy.com.au/projectdata/show/${rec.id}`;
       if (seenUrls.has(url)) continue;
-
-      // Only solar-related energy types (no wind)
-      if (!SOLAR_ENERGY_IDS.has(rec.energy_id)) continue;
-
-      // Only In Development / announced projects
-      const typeStr = (rec.type ?? "").toLowerCase();
-      const statusStr = (rec.status ?? "").toLowerCase();
-      const earlyStageRecord =
-        typeStr.includes("in development") ||
-        typeStr.includes("announced") ||
-        typeStr.includes("planning") ||
-        typeStr.includes("proposed") ||
-        statusStr.includes("in development") ||
-        statusStr.includes("under development") ||
-        statusStr.includes("announced") ||
-        statusStr.includes("planning");
-      if (!earlyStageRecord) continue;
-
-      // Date range filter: use updated_at (format "2026-03-09 23:00:28")
-      if (startDate || endDate) {
-        const updatedDate = (rec.updated_at ?? "").slice(0, 10);
-        if (startDate && updatedDate < startDate) continue;
-        if (endDate && updatedDate > endDate) continue;
-      }
+      const decision = classifyAltEnergyProjectDbRecord(rec);
+      diagnostics[decision.outcome]++;
+      if (decision.outcome !== "accepted") continue;
 
       seenUrls.add(url);
-      const capacityNum = parseFloat(rec.capacity);
-
-      // Enforce >=5 MW minimum (skip projects with known sub-5MW capacity)
-      if (!isNaN(capacityNum) && capacityNum < 5) continue;
-
-      const country = rec.country === "NZ" ? "NZ" : "AU";
       const location = [rec.location, rec.state].filter(Boolean).join(", ");
 
       projects.push({
-        name: rec.project_name,
+        name: rec.project_name!,
         description: (rec.description ?? "").slice(0, 600),
-        capacityMw: isNaN(capacityNum) ? null : capacityNum,
+        capacityMw: decision.capacityMw,
+        rawStructuredCapacityMw: decision.rawStructuredCapacityMw,
+        capacityEvidence: decision.capacityEvidence,
+        capacityEvidenceText: decision.capacityEvidenceText,
         developer: rec.developer || rec.owner || null,
         location: location || null,
-        country,
+        country: decision.country!,
         status: rec.type === "In Development" ? "under_development" : determineStatus(rec.type + " " + rec.status),
         sourceUrl: url,
         sourceName: "AltEnergy Australia",
-        announcedDate: (rec.updated_at ?? "").slice(0, 10) || new Date().toISOString().slice(0, 10),
+        announcedDate: null,
+        announcedDateEvidence: "unknown",
+        sourceEventDate: decision.sourceUpdatedDate,
+        sourceEventEvidence: "altenergy_source_update",
+        inventoryObservation: true,
         contactName: rec.contact_name ?? null,
         contactEmail: isValidProjectContact(rec.contact_email, rec.developer || rec.owner) ? rec.contact_email : null,
         contactPhone: rec.contact_phone ?? null,
       });
+      addedFromProjectDb++;
     }
-    logger.info({ added: projects.length }, "AltEnergy project DB scrape complete");
+    logger.info({ total: records.length, added: addedFromProjectDb, ...diagnostics }, "AltEnergy project DB scrape complete");
   } catch (err) {
     logger.warn({ err }, "AltEnergy project DB scrape failed");
   }
@@ -1016,7 +1036,14 @@ export async function scrapeAltEnergy(
 
       try {
         const newsletterHtml = await fetchAltEnergy(newsletter.url);
-        let foundInNewsletter = 0;
+        const diagnostics = {
+          newslettersFetched: 1,
+          candidateSections: 0,
+          deterministicSectionsResolved: 0,
+          aiRepairedSections: 0,
+          unresolvedMissingCapacity: 0,
+          rejectedStatusTechnology: 0,
+        };
 
         // 3a. Parse the Project Milestones Summary table (top of every newsletter).
         //     This catches all newly-added projects even if they have no dedicated article section.
@@ -1025,75 +1052,83 @@ export async function scrapeAltEnergy(
           if (!seenUrls.has(p.sourceUrl)) {
             seenUrls.add(p.sourceUrl);
             projects.push(p);
-            foundInNewsletter++;
             logger.info({ name: p.name }, "Watt News milestones table: project found");
           }
         }
 
-        // 3b. Parse "NEW PROJECT:" and "PROJECT UPDATE:" article sections from the body text.
-        //     Strip HTML and increase limit to capture full newsletter content.
-        const text = newsletterHtml
-          .replace(/<script[\s\S]*?<\/script>/gi, " ")
-          .replace(/<style[\s\S]*?<\/style>/gi, " ")
-          .replace(/<[^>]+>/g, " ")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 20000);
-
-        const sections = text.split(/(?=NEW PROJECT:|PROJECT UPDATE:|PROJECT MILESTONE:)/i);
+        // 3b. Parse bounded project articles from the newsletter DOM. Each
+        // unresolved section is repaired independently; a successful section
+        // never suppresses repair of another one.
+        const sections = parseWattNewsSections(newsletterHtml, newsletter.url);
+        diagnostics.candidateSections = sections.length;
         for (const section of sections) {
-          const isNew = /^NEW PROJECT:/i.test(section);
-          const isUpdate = /^PROJECT UPDATE:/i.test(section);
-          if (!isNew && !isUpdate) continue;
+          let evidence = extractWattNewsProject(section, newsletter.date);
+          if (!evidence.activeLifecycle) {
+            diagnostics.rejectedStatusTechnology++;
+            continue;
+          }
 
-          const snippet = section.slice(0, 700);
-          const sectionLower = snippet.toLowerCase();
+          const deterministicallyResolved = evidence.technologyResolved && evidence.solarCapacityMw != null;
+          if (!deterministicallyResolved) {
+            logger.info(
+              { url: section.sourceUrl, missingTechnology: !evidence.technologyResolved, missingSolarCapacity: evidence.solarCapacityMw == null },
+              "Watt News section requires bounded AI repair",
+            );
+            const repaired = (await parseWattNewsWithChatGpt(section.text, newsletter.date, section.sourceUrl))[0];
+            if (repaired) {
+              evidence = {
+                ...evidence,
+                name: repaired.name || evidence.name,
+                description: repaired.description || evidence.description,
+                developer: repaired.developer ?? evidence.developer,
+                location: repaired.location ?? evidence.location,
+                country: repaired.country,
+                status: repaired.status,
+                solarCapacityMw: repaired.capacityMw ?? evidence.solarCapacityMw,
+                technologyResolved: hasSolarComponent(repaired.name, repaired.description) || evidence.technologyResolved,
+              };
+              diagnostics.aiRepairedSections++;
+            }
+          } else {
+            diagnostics.deterministicSectionsResolved++;
+          }
 
-          // Must have a solar keyword in the section
-          if (!SOLAR_TITLE_KEYWORDS.some((kw) => sectionLower.includes(kw))) continue;
-
-          const nameMatch = section.match(/^(?:NEW PROJECT|PROJECT UPDATE|PROJECT MILESTONE):\s*([^\n.]+)/i);
-          const name = nameMatch?.[1]?.trim();
-          if (!name || name.length < 5) continue;
-
-          const projectUrl = `${newsletter.url}#${encodeURIComponent(name.slice(0, 40))}`;
-          if (seenUrls.has(projectUrl)) continue;
-          seenUrls.add(projectUrl);
-
-          const capacityMw = extractCapacity(snippet);
-          if (capacityMw == null || capacityMw < 5) continue;
-
+          if (!evidence.technologyResolved) {
+            diagnostics.rejectedStatusTechnology++;
+            continue;
+          }
+          // A missing section capacity is retained only so a later strong
+          // canonical match can reuse verified existing capacity. An unmatched
+          // project still fails the ordinary missing-capacity gate.
+          if (evidence.solarCapacityMw == null) diagnostics.unresolvedMissingCapacity++;
+          if (seenUrls.has(section.sourceUrl)) continue;
+          seenUrls.add(section.sourceUrl);
           projects.push({
-            name,
-            description: snippet.replace(/^[^\n]+\n/, "").trim().slice(0, 600),
-            capacityMw,
-            developer: extractDeveloper(snippet),
-            location: extractLocation(snippet, "AU"),
-            country: "AU",
-            status: isNew ? "announced" : "under_development",
-            sourceUrl: projectUrl,
+            name: evidence.name,
+            description: describeWattsNewsEvidence(evidence),
+            capacityMw: evidence.solarCapacityMw,
+            developer: evidence.developer,
+            location: evidence.location,
+            country: evidence.country,
+            status: evidence.status,
+            sourceUrl: section.sourceUrl,
             sourceName: "AltEnergy – Watts News",
             announcedDate: newsletter.date,
+            sourceEventDate: newsletter.date,
+            sourceEventEvidence: WATTS_NEWS_UPDATE_EVIDENCE,
+            eventType: "updated",
+            wattsNewsEvidence: evidence,
             contactName: null,
             contactEmail: null,
             contactPhone: null,
           });
-          foundInNewsletter++;
+          logger.info({ name: evidence.name, deterministic: deterministicallyResolved }, "Watt News project section accepted for canonical resolution");
         }
 
-        // 3c. ChatGPT fallback — fires when HTML parsing found nothing for this newsletter.
-        //     Sends the stripped page text to GPT-4o for project extraction.
-        if (foundInNewsletter === 0) {
-          logger.info({ url: newsletter.url }, "Watt News HTML parsing found 0 projects — trying ChatGPT fallback");
-          const gptProjs = await parseWattNewsWithChatGpt(text, newsletter.date, newsletter.url);
-          for (const p of gptProjs) {
-            if (!seenUrls.has(p.sourceUrl)) {
-              seenUrls.add(p.sourceUrl);
-              projects.push(p);
-              logger.info({ name: p.name }, "Watt News ChatGPT fallback: project found");
-            }
-          }
-        }
+        logger.info(
+          { url: newsletter.url, ...diagnostics },
+          "AltEnergy Watts News newsletter diagnostics",
+        );
       } catch (err) {
         logger.warn({ err, url: newsletter.url }, "Watt News article fetch failed");
       }
@@ -1103,6 +1138,7 @@ export async function scrapeAltEnergy(
   }
 
   logger.info({ total: projects.length }, "AltEnergy scrape complete");
+  if (!altEnergyAuthenticated) throw new Error("AltEnergy authenticated source was not accessible");
   return projects;
 }
 
@@ -1118,6 +1154,9 @@ interface LuviPipelineProject {
   capacity?: unknown;
   capacityRaw?: unknown;
   epc?: unknown;
+  announcedDate?: unknown;
+  announcementDate?: unknown;
+  eventDate?: unknown;
 }
 
 /**
@@ -1156,7 +1195,6 @@ export async function scrapeLuvi(
       return [];
     }
 
-    const today = new Date().toISOString().slice(0, 10);
     const projects: ScrapedProject[] = [];
     const seenNames = new Set<string>();
 
@@ -1204,6 +1242,7 @@ export async function scrapeLuvi(
         .filter(Boolean)
         .join(" · ");
 
+      const announcedDate = parseSourceAnnouncementDate(raw as Record<string, unknown>);
       projects.push({
         name,
         description: description || name,
@@ -1214,109 +1253,25 @@ export async function scrapeLuvi(
         status: status === "Proposed" ? "announced" : "under_development",
         sourceUrl,
         sourceName: LUVI_SOURCE_NAME,
-        announcedDate: today,
+        announcedDate,
+        announcedDateEvidence: announcedDate ? "source_reported" : "unknown",
         contactName: null,
         contactEmail: null,
         contactPhone: null,
       });
     }
 
-    // LUVI's data is a current snapshot without per-project announcement dates.
-    // When a date window is requested, include the snapshot only if today is in it.
-    if ((startDate && today < startDate) || (endDate && today > endDate)) return [];
-
-    logger.info({ found: projects.length }, "LUVI pipeline scrape complete");
+    logger.info({ found: projects.length, startDate, endDate, dated: projects.filter((project) => project.announcedDate).length }, "LUVI pipeline scrape complete; unknown dates remain unknown until the lineage gate");
     return projects;
   } catch (err) {
     logger.warn({ err }, "LUVI pipeline scrape failed — password may be invalid or the payload changed");
-    return [];
+    throw err;
   }
-}
-
-/** Extract project entries from an HTML page */
-function parseHtmlPage(
-  html: string,
-  source: ScrapeSource,
-  startDate?: string,
-  endDate?: string
-): ScrapedProject[] {
-  const projects: ScrapedProject[] = [];
-
-  const articleMatches = html.matchAll(
-    /<(?:article|div|section)[^>]*class="[^"]*(?:post|article|entry|item|result)[^"]*"[^>]*>([\s\S]*?)<\/(?:article|div|section)>/gi
-  );
-
-  for (const match of articleMatches) {
-    const snippet = match[1];
-    const lower = snippet.toLowerCase();
-
-    if (!lower.includes("solar") && !lower.includes("photovoltaic") && !lower.includes(" pv ")) continue;
-    if (!isEarlyStage(snippet)) continue;
-
-    const titleMatch = snippet.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i);
-    const linkMatch = snippet.match(/href="(https?:\/\/[^"]+)"/i);
-    const dateMatch = snippet.match(/(\d{4}-\d{2}-\d{2})|(\w+ \d{1,2},? \d{4})/i);
-
-    const rawTitle = (titleMatch?.[1] ?? "").replace(/<[^>]+>/g, "").trim();
-    const link = linkMatch?.[1] ?? source.searchUrl;
-    const descText = snippet.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 600);
-
-    if (!rawTitle || rawTitle.length < 10) continue;
-
-    let announcedDate: string;
-    let dateParsed = false;
-    try {
-      if (dateMatch) {
-        const d = new Date(dateMatch[0]);
-        if (!isNaN(d.getTime())) {
-          announcedDate = d.toISOString().slice(0, 10);
-          dateParsed = true;
-        } else {
-          announcedDate = new Date().toISOString().slice(0, 10);
-        }
-      } else {
-        announcedDate = new Date().toISOString().slice(0, 10);
-      }
-    } catch {
-      announcedDate = new Date().toISOString().slice(0, 10);
-    }
-
-    if (!dateParsed && (startDate || endDate)) continue;
-    if (startDate && announcedDate < startDate) continue;
-    if (endDate && announcedDate > endDate) continue;
-
-    projects.push({
-      name: rawTitle,
-      description: descText.slice(0, 500),
-      capacityMw: extractCapacity(snippet),
-      developer: extractDeveloper(snippet),
-      location: extractLocation(snippet, source.country),
-      country: source.country,
-      status: determineStatus(snippet),
-      sourceUrl: link,
-      sourceName: source.name,
-      announcedDate,
-      contactName: null,
-      contactEmail: null,
-      contactPhone: null,
-    });
-  }
-
-  return projects;
 }
 
 // ──────────────────────────────────────────────────────────────
 // Firecrawl helpers
 // ──────────────────────────────────────────────────────────────
-
-interface FirecrawlScrapeResponse {
-  success: boolean;
-  data?: {
-    markdown?: string;
-    metadata?: { sourceURL?: string; title?: string };
-  };
-  error?: string;
-}
 
 /**
  * Parse Firecrawl markdown output into ScrapedProject records.
@@ -1333,6 +1288,17 @@ function parseFirecrawlMarkdown(
   endDate?: string,
 ): ScrapedProject[] {
   const projects: ScrapedProject[] = [];
+  const approvedPage = new URL(pageUrl);
+  const approvedLink = (value?: string): string => {
+    if (!value) return pageUrl;
+    try {
+      const parsed = new URL(value, pageUrl);
+      return parsed.protocol === "https:" && !parsed.username && !parsed.password && !parsed.port &&
+        parsed.hostname === approvedPage.hostname ? parsed.href : pageUrl;
+    } catch {
+      return pageUrl;
+    }
+  };
 
   // Split at every heading line (H1–H3) to get one section per potential project
   const sections = markdown.split(/\n(?=#{1,3} )/);
@@ -1379,30 +1345,22 @@ function parseFirecrawlMarkdown(
 
     // Prefer an in-text hyperlink, otherwise fall back to the page URL
     const linkMatch = section.match(/\[.*?\]\((https?:\/\/[^)]+)\)/);
-    const sourceUrl = linkMatch?.[1] ?? pageUrl;
+    const sourceUrl = approvedLink(linkMatch?.[1]);
 
     // Date extraction
     const dateMatch = section.match(/(\d{4}-\d{2}-\d{2})|(\w+ \d{1,2},? \d{4})/);
-    let announcedDate: string;
-    let dateParsed = false;
+    let announcedDate: string | null = null;
     try {
       if (dateMatch) {
         const d = new Date(dateMatch[0]);
         if (!isNaN(d.getTime())) {
           announcedDate = d.toISOString().slice(0, 10);
-          dateParsed = true;
-        } else {
-          announcedDate = new Date().toISOString().slice(0, 10);
         }
-      } else {
-        announcedDate = new Date().toISOString().slice(0, 10);
       }
-    } catch {
-      announcedDate = new Date().toISOString().slice(0, 10);
-    }
-    if (!dateParsed && (startDate || endDate)) continue;
-    if (startDate && announcedDate < startDate) continue;
-    if (endDate && announcedDate > endDate) continue;
+    } catch { /* unknown remains unknown */ }
+    if (!announcedDate && (startDate || endDate)) continue;
+    if (startDate && announcedDate && announcedDate < startDate) continue;
+    if (endDate && announcedDate && announcedDate > endDate) continue;
 
     projects.push({
       name,
@@ -1471,21 +1429,19 @@ function parseFirecrawlMarkdown(
 
       // Date: scan whole row for a date pattern
       const dateMatch = rowText.match(/(\d{4}-\d{2}-\d{2})|(\w+ \d{1,2},? \d{4})/);
-      let announcedDate = new Date().toISOString().slice(0, 10);
-      let dateParsed = false;
+      let announcedDate: string | null = null;
       if (dateMatch) {
         const d = new Date(dateMatch[0]);
         if (!isNaN(d.getTime())) {
           announcedDate = d.toISOString().slice(0, 10);
-          dateParsed = true;
         }
       }
-      if (!dateParsed && (startDate || endDate)) continue;
-      if (startDate && announcedDate < startDate) continue;
-      if (endDate && announcedDate > endDate) continue;
+      if (!announcedDate && (startDate || endDate)) continue;
+      if (startDate && announcedDate && announcedDate < startDate) continue;
+      if (endDate && announcedDate && announcedDate > endDate) continue;
 
       const linkMatch = rowText.match(/\[.*?\]\((https?:\/\/[^)]+)\)/);
-      const sourceUrl = linkMatch?.[1] ?? pageUrl;
+      const sourceUrl = approvedLink(linkMatch?.[1]);
 
       projects.push({
         name,
@@ -1536,21 +1492,19 @@ function parseFirecrawlMarkdown(
     if (projects.some((p) => p.name.toLowerCase() === name.toLowerCase())) continue;
 
     const linkMatch = line.match(/\[.*?\]\((https?:\/\/[^)]+)\)/);
-    const sourceUrl = linkMatch?.[1] ?? pageUrl;
+    const sourceUrl = approvedLink(linkMatch?.[1]);
 
     const dateMatch = line.match(/(\d{4}-\d{2}-\d{2})|(\w+ \d{1,2},? \d{4})/);
-    let announcedDate = new Date().toISOString().slice(0, 10);
-    let dateParsed = false;
+    let announcedDate: string | null = null;
     if (dateMatch) {
       const d = new Date(dateMatch[0]);
       if (!isNaN(d.getTime())) {
         announcedDate = d.toISOString().slice(0, 10);
-        dateParsed = true;
       }
     }
-    if (!dateParsed && (startDate || endDate)) continue;
-    if (startDate && announcedDate < startDate) continue;
-    if (endDate && announcedDate > endDate) continue;
+    if (!announcedDate && (startDate || endDate)) continue;
+    if (startDate && announcedDate && announcedDate < startDate) continue;
+    if (endDate && announcedDate && announcedDate > endDate) continue;
 
     projects.push({
       name,
@@ -1569,76 +1523,31 @@ function parseFirecrawlMarkdown(
     });
   }
 
-  return projects;
-}
-
-/**
- * Fetch a single URL via the Firecrawl API and return parsed projects.
- * Requires FIRECRAWL_API_KEY environment variable.
- * Returns [] and logs a warning if the key is absent or the request fails.
- */
-async function scrapeWithFirecrawl(
-  url: string,
-  source: ScrapeSource,
-  startDate?: string,
-  endDate?: string,
-): Promise<ScrapedProject[]> {
-  const apiKey = process.env.FIRECRAWL_API_KEY;
-  if (!apiKey) {
-    logger.warn({ source: source.name, url }, "FIRECRAWL_API_KEY not set — skipping Firecrawl source");
-    return [];
-  }
-
-  try {
-    const resp = await fetch("https://api.firecrawl.dev/v1/scrape", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        url,
-        formats: ["markdown"],
-        onlyMainContent: true,
-      }),
-      signal: AbortSignal.timeout(30_000), // 30 s hard cap per Firecrawl request
+  const validated = projects.flatMap((project) => {
+    const evidence = extractNamedProjectEvidence({
+      title: project.name,
+      text: project.description,
+      fallbackCountry: source.country,
+      requireCountryEvidence: Boolean(source.feedUrl),
     });
-
-    if (!resp.ok) {
-      logger.warn({ status: resp.status, url, source: source.name }, "Firecrawl API request failed");
-      return [];
-    }
-
-    const data = (await resp.json()) as FirecrawlScrapeResponse;
-    if (!data.success || !data.data?.markdown) {
-      logger.warn({ url, error: data.error, source: source.name }, "Firecrawl returned no markdown");
-      return [];
-    }
-
-    const pageUrl = data.data.metadata?.sourceURL ?? url;
-    const results = parseFirecrawlMarkdown(data.data.markdown, source, pageUrl, startDate, endDate);
-    logger.info({ source: source.name, url, found: results.length }, "Firecrawl scrape complete");
-    return results;
-  } catch (err) {
-    logger.warn({ err, url, source: source.name }, "Firecrawl scrape threw");
-    return [];
-  }
+    return evidence.map((candidate) => ({
+      ...project,
+      name: candidate.name,
+      capacityMw: candidate.capacityMw,
+      country: candidate.country,
+      location: candidate.location ?? project.location,
+      sourceUrl: evidence.length > 1
+        ? `${project.sourceUrl.split("#")[0]}#${normalizeProjectName(candidate.name).replace(/\s+/g, "-")}`
+        : project.sourceUrl,
+    }));
+  });
+  return validated.filter((project, index, all) => all.findIndex((other) =>
+    normalizeProjectName(other.name) === normalizeProjectName(project.name) && other.sourceUrl === project.sourceUrl) === index);
 }
 
 // ──────────────────────────────────────────────────────────────
 // Browse.AI integration
 // ──────────────────────────────────────────────────────────────
-
-interface BrowseAiTaskResponse {
-  statusCode: number;
-  messageCode: string;
-  result?: {
-    id?: string;
-    status?: "successful" | "failed" | "running" | "pending";
-    capturedLists?: Record<string, Array<Record<string, string>>>;
-    capturedTexts?: Record<string, string>;
-  };
-}
 
 /** Column-name fragments Browse.AI robots use for each field (case-insensitive substring match). */
 const BA_NAME_COLS    = ["project name", "name", "title", "project", "development name"];
@@ -1665,7 +1574,7 @@ function browseAiMatchCol(row: Record<string, string>, patterns: string[]): stri
  * Column names are defined by the robot configuration in the Browse.AI dashboard.
  */
 function parseBrowseAiResult(
-  result: NonNullable<BrowseAiTaskResponse["result"]>,
+  result: BrowseAiResult,
   source: ScrapeSource,
   pageUrl: string,
   startDate?: string,
@@ -1686,8 +1595,14 @@ function parseBrowseAiResult(
       // Skip exclusion keywords (operational, commissioned, etc.)
       if (EXCLUDE_KEYWORDS.some((kw) => allLower.includes(kw))) continue;
 
-      // Must have an extractable MW capacity
-      const capacityMw = extractCapacity(allValues);
+      // Must have an extractable MW capacity. Robots usually expose capacity as
+      // its own column, often as a bare number ("150") with the unit only in the
+      // header, so read that column first and only then fall back to row text.
+      const capacityCell = browseAiMatchCol(row, BA_CAP_COLS);
+      const bareCapacity = capacityCell && /^\s*\d[\d,]*(?:\.\d+)?\s*$/.test(capacityCell)
+        ? Number.parseFloat(capacityCell.replace(/,/g, ""))
+        : null;
+      const capacityMw = bareCapacity ?? (capacityCell ? extractCapacity(capacityCell) : null) ?? extractCapacity(allValues);
       if (capacityMw === null) continue;
 
       // --- Project name ---
@@ -1708,15 +1623,21 @@ function parseBrowseAiResult(
         Object.values(row).find((v) => typeof v === "string" && v.startsWith("http")) ??
         pageUrl;
 
-      // --- Date (government listing pages rarely include one — fall back to today) ---
-      let announcedDate = new Date().toISOString().slice(0, 10);
-      const dateMatch = allValues.match(/(\d{4}-\d{2}-\d{2})|(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/);
-      if (dateMatch) {
-        const d = new Date(dateMatch[0].replace(/\//g, "-"));
-        if (!isNaN(d.getTime())) announcedDate = d.toISOString().slice(0, 10);
+      // --- Date --- Government listing pages often carry none; an undated row
+      // stays unknown instead of being stamped with today (Scan-Date-Window-Policy).
+      // Day-first NZ/AU dates such as 12/06/2026 are read as D/M/Y.
+      let announcedDate = parseTextDate(allValues);
+      if (!announcedDate) {
+        const dmy = allValues.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\b/);
+        if (dmy) {
+          const iso = `${dmy[3]}-${dmy[2].padStart(2, "0")}-${dmy[1].padStart(2, "0")}`;
+          const parsed = new Date(`${iso}T00:00:00Z`);
+          if (!Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === iso) announcedDate = iso;
+        }
       }
-      if (startDate && announcedDate < startDate) continue;
-      if (endDate && announcedDate > endDate) continue;
+      if ((startDate || endDate) && !announcedDate) continue;
+      if (startDate && announcedDate && announcedDate < startDate) continue;
+      if (endDate && announcedDate && announcedDate > endDate) continue;
 
       projects.push({
         name,
@@ -1757,72 +1678,13 @@ async function scrapeWithBrowseAi(
   startDate?: string,
   endDate?: string,
 ): Promise<ScrapedProject[]> {
-  const apiKey = process.env.BROWSE_AI_API_KEY;
-  if (!apiKey) {
-    logger.warn({ source: source.name, url }, "BROWSE_AI_API_KEY not set — skipping Browse.AI source");
-    return [];
-  }
-
+  const result = await runBrowseAiTask(robotId, process.env.BROWSE_AI_API_KEY ?? "", url);
   try {
-    // 1. Create task
-    const createResp = await fetch(`https://api.browse.ai/v2/robots/${robotId}/tasks`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ inputParameters: { originUrl: url } }),
-      signal: AbortSignal.timeout(15_000),
-    });
-
-    if (!createResp.ok) {
-      const body = await createResp.text().catch(() => "");
-      logger.warn({ status: createResp.status, robotId, url, body }, "Browse.AI task creation failed");
-      return [];
-    }
-
-    const createData = (await createResp.json()) as BrowseAiTaskResponse;
-    const taskId = createData.result?.id;
-    if (!taskId) {
-      logger.warn({ createData, robotId }, "Browse.AI: no task ID in creation response");
-      return [];
-    }
-
-    logger.info({ robotId, taskId, url, source: source.name }, "Browse.AI task created — polling");
-
-    // 2. Poll for completion (max 90 s, every 5 s = 18 attempts)
-    for (let attempt = 0; attempt < 18; attempt++) {
-      await new Promise((r) => setTimeout(r, 5_000));
-
-      const pollResp = await fetch(`https://api.browse.ai/v2/robots/${robotId}/tasks/${taskId}`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-        signal: AbortSignal.timeout(10_000),
-      });
-
-      if (!pollResp.ok) {
-        logger.warn({ status: pollResp.status, attempt, robotId, taskId }, "Browse.AI poll HTTP error — retrying");
-        continue;
-      }
-
-      const pollData = (await pollResp.json()) as BrowseAiTaskResponse;
-      const status = pollData.result?.status;
-
-      if (status === "successful") {
-        const results = parseBrowseAiResult(pollData.result!, source, url, startDate, endDate);
-        logger.info({ robotId, url, found: results.length, source: source.name }, "Browse.AI task complete");
-        return results;
-      }
-
-      if (status === "failed") {
-        logger.warn({ robotId, taskId, url, source: source.name }, "Browse.AI task failed");
-        return [];
-      }
-
-      logger.info({ attempt, status, robotId, taskId }, "Browse.AI task still running");
-    }
-
-    logger.warn({ robotId, taskId, url, source: source.name }, "Browse.AI task timed out after 90 s");
-    return [];
-  } catch (err) {
-    logger.warn({ err, robotId, url, source: source.name }, "Browse.AI scrape threw");
-    return [];
+    const projects = parseBrowseAiResult(result, source, url, startDate, endDate);
+    logger.info({ source: source.name, found: projects.length }, "Browse.AI task complete");
+    return projects;
+  } catch {
+    throw new SourceExtractionError("parse-failed", "Browse.AI result could not be parsed");
   }
 }
 
@@ -1907,26 +1769,6 @@ function isPersonalEmail(email: string): boolean {
 }
 
 /**
- * Detect wind projects even when the name doesn't contain "wind".
- * Checks description for turbine-related keywords.
- */
-function isWindProject(name: string, description?: string | null): boolean {
-  if (/wind\b/i.test(name)) return true;
-  const desc = (description ?? "").toLowerCase();
-  if (desc.includes("turbine")) return true;
-  return false;
-}
-
-/**
- * Returns true only if the project has a solar component (solar-only or solar+BESS hybrid).
- * Standalone BESS / battery-only projects return false and are rejected at ingest.
- */
-function hasSolarComponent(name: string, description?: string | null): boolean {
-  const text = `${name} ${description ?? ""}`;
-  return /\b(solar|photovoltaic|\bpv\b)\b/i.test(text);
-}
-
-/**
  * Parse the Project Milestones Summary table from raw Watts News HTML.
  * This table appears at the top of every newsletter and lists all projects
  * that changed status in the past week, including newly-added ones.
@@ -1978,7 +1820,12 @@ function parseWattNewsMilestonesTable(
       // Reject wind
       if (isWindProject(projectName, descRaw)) continue;
 
-      const capacityMw = extractCapacity(fullText);
+      const capacities = extractWattsNewsCapacities(fullText);
+      // In a hybrid milestone row, a generic MW value can describe the BESS.
+      // Only fall back to the legacy generic extractor when battery terminology
+      // is absent; otherwise require explicitly solar-labelled capacity.
+      const capacityMw = capacities.solarCapacityMw
+        ?? (!/\b(?:BESS|battery|energy storage)\b/i.test(fullText) ? extractCapacity(fullText) : null);
       if (capacityMw == null || capacityMw < 5) continue;
 
       const country: "AU" | "NZ" = /\bNZ\b/.test(stateRaw) ? "NZ" : "AU";
@@ -1996,6 +1843,9 @@ function parseWattNewsMilestonesTable(
         sourceUrl: `${newsletterUrl}#milestone-${encodeURIComponent(projectName.slice(0, 40))}`,
         sourceName: "AltEnergy – Watts News",
         announcedDate: newsletterDate,
+        sourceEventDate: newsletterDate,
+        sourceEventEvidence: WATTS_NEWS_UPDATE_EVIDENCE,
+        eventType: "updated",
         contactName: null,
         contactEmail: null,
         contactPhone: null,
@@ -2007,8 +1857,8 @@ function parseWattNewsMilestonesTable(
 }
 
 /**
- * Use ChatGPT to extract solar/hybrid projects from a Watts News newsletter
- * when HTML table/section parsing yields nothing.
+ * Repair one bounded Watts News project section when deterministic extraction
+ * cannot establish project identity, technology, or solar capacity.
  */
 async function parseWattNewsWithChatGpt(
   text: string,
@@ -2019,7 +1869,7 @@ async function parseWattNewsWithChatGpt(
     const { openai } = await import("@workspace/integrations-openai-ai-server");
     const gpt = openai as unknown as GptScraperOpenAI;
 
-    const prompt = `The following is the text content of an AltEnergy Watts News newsletter dated ${newsletterDate}.
+    const prompt = `The following is one bounded project article section from an AltEnergy Watts News newsletter dated ${newsletterDate}.
 
 Extract all solar or solar+BESS hybrid projects ≥5 MW in Australia or New Zealand that are newly announced, proposed, approved, or being assessed. Do NOT include standalone battery/BESS-only projects, wind-only projects, or operational projects.
 
@@ -2028,7 +1878,9 @@ Return ONLY a valid JSON array (no prose, no markdown fences):
   {
     "name": "Example Solar Farm",
     "description": "250 MW solar farm in regional VIC",
-    "capacity_mw": 250,
+    "solar_capacity_mw": 250,
+    "bess_power_mw": 200,
+    "bess_energy_mwh": 800,
     "developer": "Acme Energy",
     "location": "Regional VIC",
     "country": "AU",
@@ -2039,52 +1891,58 @@ Return ONLY a valid JSON array (no prose, no markdown fences):
 Rules:
 - country: "AU" or "NZ" only
 - status: "announced" or "under_development"
-- capacity_mw: number (MW) or null — exclude projects <5 MW
+- solar_capacity_mw is solar generation MW only, never BESS power or MWh
+- bess_power_mw and bess_energy_mwh are optional battery evidence
+- use null when an explicit value is absent; never invent capacity
 - Exclude: wind-only, BESS-only, operational/generating, headlines about industry trends or policy
 - Return [] if nothing relevant found
 
-Newsletter text:
+Bounded article section:
 ${text.slice(0, 12000)}`;
 
-    const response = await gpt.responses.create({
-      model: "gpt-5.6-sol",
-      tools: [] as { type: string }[],
-      input: prompt,
-      max_output_tokens: 4096,
-    });
-
-    let raw = response.output_text ?? "";
-    if (!raw && Array.isArray(response.output)) {
-      for (const block of response.output) {
-        if ((block as { type: string; text?: string }).type === "message") {
-          raw = (block as { type: string; text?: string }).text ?? "";
-          break;
+    const parsed = await runOpenAiEscalation({ context: {
+      operation: "watt_news_extract", sourceName: "AltEnergy – Watts News",
+      sourceUrl: newsletterUrl, sourceIdentifier: newsletterDate,
+    }, request: model => gpt.responses.create({
+      model, tools: [] as { type: string }[], input: prompt, max_output_tokens: 4096,
+    }), validate: response => {
+      let raw = response.output_text ?? "";
+      if (!raw && Array.isArray(response.output)) {
+        for (const block of response.output) {
+          if ((block as { type: string; text?: string }).type === "message") {
+            raw = (block as { type: string; text?: string }).text ?? "";
+            break;
+          }
         }
       }
-    }
-
-    raw = raw.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
-    const start = raw.indexOf("[");
-    const end = raw.lastIndexOf("]");
-    if (start === -1 || end === -1) return [];
-
-    const parsed = JSON.parse(raw.slice(start, end + 1)) as Array<{
-      name?: string;
-      description?: string;
-      capacity_mw?: number | null;
-      developer?: string | null;
-      location?: string | null;
-      country?: string;
-      status?: string;
-    }>;
-    if (!Array.isArray(parsed)) return [];
+      raw = raw.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+      const start = raw.indexOf("[");
+      const end = raw.lastIndexOf("]");
+      if (start === -1 || end === -1) {
+        throw new OpenAiQualityError("malformed_output", "Watts News response did not contain a JSON array");
+      }
+      try {
+        const rows: unknown = JSON.parse(raw.slice(start, end + 1));
+        if (!Array.isArray(rows) || rows.some(row => !row || typeof row !== "object" || Array.isArray(row))) {
+          throw new OpenAiQualityError("schema_invalid", "Watts News response was not a project-object array");
+        }
+        return rows as Array<{
+          name?: string; description?: string; solar_capacity_mw?: number | null;
+          bess_power_mw?: number | null; bess_energy_mwh?: number | null;
+          developer?: string | null; location?: string | null; country?: string; status?: string;
+        }>;
+      } catch (error) {
+        if (error instanceof OpenAiQualityError) throw error;
+        throw new OpenAiQualityError("malformed_output", "Watts News response contained malformed JSON");
+      }
+    }, resultCount: rows => rows.length });
 
     return parsed
-      .filter((r) => r.name)
+      .filter((r) => r.name && (r.country === "AU" || r.country === "NZ"))
       .map((r) => {
         const fullText = `${r.name ?? ""} ${r.description ?? ""}`;
         // Use GPT-provided capacity first; fall back to regex extraction from description
-        let capacityMw: number | null = typeof r.capacity_mw === "number" ? r.capacity_mw : null;
+        let capacityMw: number | null = typeof r.solar_capacity_mw === "number" ? r.solar_capacity_mw : null;
         if (capacityMw == null) capacityMw = extractCapacity(fullText);
         return {
           name: r.name!,
@@ -2092,7 +1950,7 @@ ${text.slice(0, 12000)}`;
           capacityMw,
           developer: r.developer ?? null,
           location: r.location ?? null,
-          country: (r.country === "NZ" ? "NZ" : "AU") as "AU" | "NZ",
+          country: r.country as "AU" | "NZ",
           status: (r.status === "under_development" ? "under_development" : "announced") as "announced" | "under_development",
           sourceUrl: `${newsletterUrl}#gpt-${encodeURIComponent((r.name ?? "").slice(0, 40))}`,
           sourceName: "AltEnergy – Watts News",
@@ -2678,6 +2536,7 @@ async function callLushaProspecting(
  * Phase 3:    LinkedIn profile search for developers with generic contacts.
  */
 export async function enrichMissingContacts(runId?: number): Promise<{ checked: number; updated: number }> {
+  const enrichmentStartedAt = performance.now();
   const GENERIC_PREFIXES = [
     "info@", "admin@", "contact@", "hello@", "enquiries@", "enquiry@",
     "general@", "mail@", "projects@", "team@", "reception@", "office@",
@@ -2691,7 +2550,16 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     return false;
   }
 
-  const allProjects = await db.select().from(projectsTable);
+  const allProjects = await db
+    .select({
+      id: projectsTable.id,
+      developer: projectsTable.developer,
+      sourceUrl: projectsTable.sourceUrl,
+      contactName: projectsTable.contactName,
+      contactEmail: projectsTable.contactEmail,
+      contactPhone: projectsTable.contactPhone,
+    })
+    .from(projectsTable);
   const toEnrich = allProjects.filter(needsEnrichment);
   logger.info({ count: toEnrich.length, runId }, "Contact enrichment: starting");
   if (toEnrich.length === 0) {
@@ -2764,24 +2632,42 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
   }
 
   // ── Phase 1: Scrape known domains ─────────────────────────
-  for (const [devKey, g] of groups) {
-    if (!g.domain) { noDomainGroups.push([devKey, g]); continue; }
+  // Developer domains are independent. A three-worker cap reduces wall time
+  // while avoiding uncontrolled pressure on external sites.
+  const phaseOneMisses = await mapWithConcurrency(
+    [...groups.entries()],
+    CONTACT_DOMAIN_WORKERS,
+    async ([devKey, g]): Promise<[string, GroupEntry] | null> => {
+      if (!g.domain) return [devKey, g];
 
-    for (const path of CONTACT_PATHS) {
-      const contact = await scrapeUrlForContact(`https://${g.domain}${path}`, g.projects[0].developer ?? null);
-      if (contact) {
-        await applyContact(g, contact);
-        enrichedKeys.add(devKey);
-        logger.info({ devKey, email: contact.email }, "Contact enriched via domain scrape");
-        break;
+      for (const path of CONTACT_PATHS) {
+        const contact = await scrapeUrlForContact(
+          `https://${g.domain}${path}`,
+          g.projects[0].developer ?? null,
+        );
+        if (contact) {
+          await applyContact(g, contact);
+          enrichedKeys.add(devKey);
+          logger.info({ devKey, email: contact.email }, "Contact enriched via domain scrape");
+          return null;
+        }
       }
-    }
-    if (!enrichedKeys.has(devKey)) noDomainGroups.push([devKey, g]);
-  }
+      return [devKey, g];
+    },
+  );
+  noDomainGroups.push(
+    ...phaseOneMisses.filter((entry): entry is [string, GroupEntry] => entry !== null),
+  );
 
   // ── Phase 2: Apify Google Search for developers without a known domain ────
   const token = process.env.APIFY_API_TOKEN;
   const phaseTwo = noDomainGroups.filter(([k]) => !enrichedKeys.has(k));
+  if (phaseTwo.length > 0 && !token) {
+    logger.warn(
+      { phase: "Apify search", outcome: "skipped-missing-credentials", missing: ["APIFY_API_TOKEN"] },
+      "Contact enrichment integration outcome",
+    );
+  }
   if (phaseTwo.length > 0 && token) {
     logger.info({ count: phaseTwo.length }, "Contact enrichment: Phase 2 Apify search");
 
@@ -2849,6 +2735,13 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
   //   search-and-enrich REQUIRES firstName + lastName — sending company-only returns 400.
   const lushaKey = process.env.LUSHA_API_KEY;
   const lushaPool = noDomainGroups.filter(([k]) => !enrichedKeys.has(k));
+
+  if (lushaPool.length > 0 && !lushaKey) {
+    logger.warn(
+      { phase: "Lusha enrichment", outcome: "skipped-missing-credentials", missing: ["LUSHA_API_KEY"] },
+      "Contact enrichment integration outcome",
+    );
+  }
 
   if (lushaPool.length > 0 && lushaKey) {
     // Split: known-name entries go to bulk search-and-enrich; nameless entries go to prospecting
@@ -3034,7 +2927,15 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     }
   }
 
-  logger.info({ checked: toEnrich.length, updated, runId }, "Contact enrichment complete");
+  logger.info(
+    {
+      checked: toEnrich.length,
+      updated,
+      runId,
+      durationMs: Math.round(performance.now() - enrichmentStartedAt),
+    },
+    "Contact enrichment complete",
+  );
   if (runId) {
     await db.update(contactEnrichmentsTable)
       .set({ status: "completed", completedAt: new Date(), checked: toEnrich.length, updated })
@@ -3047,7 +2948,7 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
  * Start an enrichment run in the background and return the run ID.
  * The caller receives 202 Accepted immediately; the enrichment runs asynchronously.
  */
-export async function startEnrichment(): Promise<number> {
+export async function startEnrichment(): Promise<{ runId: number; completion: Promise<unknown> }> {
   const [run] = await db.insert(contactEnrichmentsTable)
     .values({ status: "running", checked: 0, updated: 0 })
     .returning();
@@ -3055,7 +2956,7 @@ export async function startEnrichment(): Promise<number> {
   const runId = run.id;
 
   // Kick off the long-running work without awaiting
-  enrichMissingContacts(runId).catch((err: Error) => {
+  const completion = enrichMissingContacts(runId).catch((err: Error) => {
     logger.error({ err, runId }, "Contact enrichment background task failed");
     db.update(contactEnrichmentsTable)
       .set({ status: "failed", completedAt: new Date(), errorMessage: err.message })
@@ -3063,7 +2964,7 @@ export async function startEnrichment(): Promise<number> {
       .catch((e) => logger.error({ err: e, runId }, "Failed to mark enrichment as failed"));
   });
 
-  return runId;
+  return { runId, completion };
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -3127,7 +3028,7 @@ function extractSourceName(url: string): string {
   }
 }
 
-// ── ChatGPT web-search fallback ───────────────────────────────────────────────
+// ── Bounded OpenAI normalisation of already-acquired source content ──────────
 
 type GptScraperOpenAI = {
   responses: {
@@ -3153,369 +3054,1169 @@ interface GptSourceProject {
 }
 
 /**
- * ChatGPT web-search fallback for a single source.
- * Called when standard HTML/RSS parsing returns 0 projects.
+ * OpenAI normalisation for a single source's bounded acquired content.
+ * It never searches the web and is not an acquisition/completeness layer.
+ * Cached raw responses still pass the same current eligibility gates below.
  */
 async function scrapeWithChatGpt(
   source: ScrapeSource,
   startDate?: string,
   endDate?: string,
+  contentHash = hashSourceContent("no captured source content"),
+  contentObserved = false,
+  acquiredContent = "",
 ): Promise<ScrapedProject[]> {
   try {
-    const { openai } = await import("@workspace/integrations-openai-ai-server");
-    const gpt = openai as unknown as GptScraperOpenAI;
+    const strategy = getSourceRepairStrategy(source.name);
+    if (!contentObserved || !acquiredContent.trim()) {
+      throw new Error("Source normalisation requires acquired source content");
+    }
     const today = new Date().toISOString().slice(0, 10);
+    const officialHosts = [...new Set(strategy.officialUrls.map((url) => new URL(url).hostname))];
 
     const dateClause = startDate || endDate
       ? ` announced between ${startDate ?? "any date"} and ${endDate ?? today}`
       : "";
 
-    const prompt = `Today is ${today}. Search "${source.name}" (${source.searchUrl}) for utility-scale solar energy or solar+BESS hybrid projects in Australia or New Zealand${dateClause}.
+    const todayContext = startDate && endDate ? "" : `Today is ${today}. `;
+    const prompt = `${todayContext}Extract utility-scale solar energy or solar+BESS hybrid projects in Australia or New Zealand${dateClause} from the bounded content acquired from the approved source "${source.name}" (${source.searchUrl}).
 
 Find all solar/PV projects ≥5 MW that have been announced, approved, or are under assessment. Include the project's MW capacity if stated.
 
-Return ONLY a valid JSON array (no prose, no markdown fences):
-[
-  {
-    "name": "Example Solar Farm",
-    "description": "150 MW solar farm in regional NSW",
-    "capacity_mw": 150,
-    "developer": "Acme Energy Pty Ltd",
-    "location": "Regional NSW",
-    "country": "AU",
-    "status": "announced",
-    "source_url": "https://example.com/project/example-solar-farm",
-    "announced_date": "2024-03-15"
-  }
-]
+Return ONLY a valid compact JSON array. No prose, no markdown fences, no chain-of-thought or reasoning in the response.
+Include only these parser fields: name, description, capacity_mw, developer, location, country, status, source_url, announced_date.
+Keep descriptions to one short factual phrase; avoid repeating source text or quoting article passages. Do not add explanations or extra fields. Omit unnecessary whitespace.
+Example shape:
+[{"name":"Example Solar Farm","description":"150 MW solar farm in regional NSW","capacity_mw":150,"developer":"Acme Energy Pty Ltd","location":"Regional NSW","country":"AU","status":"announced","source_url":"https://example.com/project/example-solar-farm","announced_date":"2024-03-15"}]
 
 Rules:
+- Use ONLY the acquired content below and cite only these approved official hostnames: ${officialHosts.join(", ")}
+- Do not search the web, infer missing records, or treat this content as complete
+- Do not use news aggregators, developer sites, social media, cached copies, or unofficial mirrors
 - country: "AU" or "NZ" only
 - status: "announced" or "under_development"
 - capacity_mw: number or null if unknown — only include projects ≥5 MW or where size is unknown
 - source_url: direct URL to the specific project page/article if known, otherwise use ${source.searchUrl}
 - announced_date: YYYY-MM-DD format, null if unknown
 - Exclude wind-only projects, mining, roads, housing
-- Return [] if nothing relevant found`;
+- Return [] when no valid projects are found
 
-    const response = await gpt.responses.create({
-      model: "gpt-5.6-sol",
-      tools: [{ type: "web_search_preview" }],
-      input: prompt,
-      max_output_tokens: 8192,
-    });
+ACQUIRED SOURCE CONTENT (bounded):
+${acquiredContent.slice(0, 60_000)}`;
 
-    let text = response.output_text ?? "";
-    if (!text && Array.isArray(response.output)) {
-      for (const block of response.output) {
-        if (block.type === "message" && block.text) { text = block.text; break; }
-      }
-    }
-
-    // Strip markdown fences, find JSON array
-    text = text.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
-    const start = text.indexOf("[");
-    const end = text.lastIndexOf("]");
-    if (start === -1 || end === -1) return [];
-
-    const parsed = JSON.parse(text.slice(start, end + 1)) as GptSourceProject[];
-    if (!Array.isArray(parsed)) return [];
+    const model = "gpt-5.6-luna";
+    let cacheHit = false;
+    const parsed = await cachedSourceFallback<GptSourceProject>(
+      pool,
+      {
+        sourceName: source.name, sourceUrl: source.searchUrl, contentHash,
+        startDate, endDate, model, contentObserved,
+        promptHash: hashSourceContent(JSON.stringify({ prompt, maxOutputTokens: 2500, tool: "none", escalation: "luna-terra-sol-v1" })),
+      },
+      async () => {
+        if (!process.env.OPENAI_API_KEY?.trim()) {
+          logScanSourceOutcome(source.name, "skipped-missing-credentials", {
+            missing: ["OPENAI_API_KEY"],
+          });
+          throw new Error("Source fallback unavailable: OPENAI_API_KEY is not configured");
+        }
+        const { openai } = await import("@workspace/integrations-openai-ai-server");
+        const gpt = openai as unknown as GptScraperOpenAI;
+        return runOpenAiEscalation({ context: {
+          operation: "source_fallback", sourceName: source.name,
+          sourceUrl: source.searchUrl,
+          metadata: { contentHash, startDate, endDate },
+        }, request: attemptModel => gpt.responses.create({
+          model: attemptModel, tools: [], input: prompt, max_output_tokens: 2500,
+        }), validate: response => {
+          let text = response.output_text ?? "";
+          if (!text && Array.isArray(response.output)) {
+            for (const block of response.output) {
+              if (block.type === "message" && block.text) { text = block.text; break; }
+            }
+          }
+          try { return parseSourceFallbackArray<GptSourceProject>(text); }
+          catch (error) {
+            const reason = error instanceof Error && /invalid project array/i.test(error.message)
+              ? "schema_invalid" : "malformed_output";
+            throw new OpenAiQualityError(reason, error instanceof Error ? error.message : "Invalid source response");
+          }
+        }, resultCount: rows => rows.length });
+      },
+      value => parseSourceFallbackArray<GptSourceProject>(JSON.stringify(value)),
+      (event, fields) => {
+        if (event === "ai_source_cache_hit") cacheHit = true;
+        logger.info({ event, ...fields }, "AI source cache");
+      },
+    );
+    if (cacheHit) await recordOpenAiCacheHit({
+      operation: "source_fallback", sourceName: source.name,
+      sourceUrl: source.searchUrl, model, metadata: { contentHash, startDate, endDate },
+    }, parsed.length);
 
     const results: ScrapedProject[] = [];
     for (const r of parsed) {
       if (!r.name) continue;
-      const cap = typeof r.capacity_mw === "number" ? r.capacity_mw : null;
-      if (cap !== null && cap < 5) continue; // respect ≥5 MW gate
-      results.push({
-        name: r.name,
-        description: r.description ?? r.name,
-        capacityMw: cap,
-        developer: r.developer ?? null,
-        location: r.location ?? null,
-        country: (r.country === "NZ" ? "NZ" : "AU") as "AU" | "NZ",
-        status: (r.status === "under_development" ? "under_development" : "announced") as "announced" | "under_development",
-        sourceUrl: r.source_url ?? source.searchUrl,
-        sourceName: source.name,
-        announcedDate: r.announced_date ?? today,
-        contactName: null,
-        contactEmail: null,
-        contactPhone: null,
+      if (r.country !== "AU" && r.country !== "NZ") continue;
+      const evidence = extractNamedProjectEvidence({
+        title: r.name,
+        text: `${r.description ?? ""} ${r.location ?? ""}`,
+        fallbackCountry: r.country,
+        requireCountryEvidence: Boolean(source.feedUrl),
       });
+      if (!evidence.length) continue;
+      const parsedCapacity = typeof r.capacity_mw === "string" ? Number.parseFloat(String(r.capacity_mw).replace(/,/g, "")) : r.capacity_mw;
+      const structuredCapacity = typeof parsedCapacity === "number" && Number.isFinite(parsedCapacity) ? parsedCapacity : null;
+      let sourceUrl = source.searchUrl;
+      if (r.source_url) {
+        try {
+          const candidateUrl = new URL(r.source_url);
+          if (officialHosts.includes(candidateUrl.hostname)) sourceUrl = candidateUrl.href;
+        } catch { /* retain the configured official URL */ }
+      }
+      // A model-supplied date is used only when it is a real calendar date. A
+      // missing date stays unknown rather than becoming today's date
+      // (docs/Scan-Date-Window-Policy.md); bounded scans then exclude it.
+      const reportedDate = typeof r.announced_date === "string" ? r.announced_date.trim() : "";
+      const announcedDate = /^\d{4}-\d{2}-\d{2}$/.test(reportedDate) && !Number.isNaN(Date.parse(`${reportedDate}T00:00:00Z`))
+        ? reportedDate
+        : null;
+      if ((startDate || endDate) && !announcedDate) continue;
+      if (startDate && announcedDate && announcedDate < startDate) continue;
+      if (endDate && announcedDate && announcedDate > endDate) continue;
+      for (const candidate of evidence) {
+        results.push({
+          name: candidate.name,
+          description: r.description ?? r.name,
+          capacityMw: candidate.capacityMw ?? structuredCapacity,
+          developer: r.developer ?? null,
+          location: candidate.location ?? r.location ?? null,
+          country: candidate.country,
+          status: (r.status === "under_development" ? "under_development" : "announced") as "announced" | "under_development",
+          sourceUrl,
+          sourceName: source.name,
+          announcedDate,
+          contactName: null,
+          contactEmail: null,
+          contactPhone: null,
+        });
+      }
     }
 
-    logger.info({ source: source.name, found: results.length }, "ChatGPT fallback complete");
-    return results;
+    const eligibleResults = results.filter(isEligibleScanProject);
+    logger.info({ source: source.name, found: eligibleResults.length }, "ChatGPT fallback complete");
+    return eligibleResults;
   } catch (err) {
     logger.warn({ err, source: source.name }, "ChatGPT fallback failed");
-    return [];
+    throw err;
   }
 }
 
 // ── Per-source scrape ─────────────────────────────────────────────────────────
 
+function sourceRepairCandidatesToProjects(
+  candidates: readonly SourceRepairCandidate[],
+  source: ScrapeSource,
+  startDate?: string,
+  endDate?: string,
+  preserveMissingDate = false,
+): ScrapedProject[] {
+  const today = new Date().toISOString().slice(0, 10);
+  return candidates.flatMap((candidate) => {
+    if (preserveMissingDate && !candidate.announcedDate && (startDate || endDate)) return [];
+    const announcedDate = candidate.announcedDate ?? (preserveMissingDate ? null : today);
+    if (startDate && announcedDate && announcedDate < startDate) return [];
+    if (endDate && announcedDate && announcedDate > endDate) return [];
+    const project: ScrapedProject = {
+      ...candidate,
+      country: source.country,
+      sourceName: source.name,
+      announcedDate,
+      contactName: null,
+      contactEmail: null,
+      contactPhone: null,
+    };
+    return isEligibleScanProject(project) ? [project] : [];
+  });
+}
+
+async function scrapeAemoGenerationWorkbook(
+  source: ScrapeSource,
+  startDate?: string,
+  endDate?: string,
+): Promise<ScrapedProject[]> {
+  const response = await fetch(AEMO_GENERATION_WORKBOOK_URL, {
+    headers: {
+      "User-Agent": "USST/1.0 (approved public energy-data ingestion)",
+      Accept: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream",
+    },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) {
+    throw new SourceRequestError(
+      `AEMO workbook returned HTTP ${response.status}`,
+      response.status === 403 ? "blocked" : "http-error",
+      response.url || AEMO_GENERATION_WORKBOOK_URL,
+      response.status,
+    );
+  }
+  const workbook = Buffer.from(await response.arrayBuffer());
+  try {
+    const rows = await readAemoGenerationWorkbookRows(workbook);
+    const today = new Date().toISOString().slice(0, 10);
+    return sourceRepairCandidatesToProjects(
+      parseAemoGenerationRows(rows, AEMO_GENERATION_WORKBOOK_URL, today),
+      source,
+      startDate,
+      endDate,
+    );
+  } catch {
+    throw new SourceExtractionError("parse-failed", "AEMO workbook could not be parsed");
+  }
+}
+
+async function scrapeEpbcOfficialLayer(
+  source: ScrapeSource,
+  startDate?: string,
+  endDate?: string,
+): Promise<ScrapedProject[]> {
+  const records = await fetchEpbcRecords(startDate, endDate, {
+    supplementStructuredRecords: false,
+    fallback: async () => { throw new Error("EPBC official ArcGIS layer unavailable"); },
+  });
+  const candidates: SourceRepairCandidate[] = records
+    .filter((record) => record.isSolar)
+    .map((record) => ({
+      name: record.projectName,
+      description: record.rawDescription ?? `${record.technologyType ?? "Solar"} EPBC referral ${record.epbcNumber}`,
+      capacityMw: record.sizeMw,
+      developer: record.proponent,
+      location: record.location ?? record.state,
+      status: record.isApproved ? "under_development" : "announced",
+      sourceUrl: record.sourceUrl ?? source.searchUrl,
+      announcedDate: record.referralDate,
+    }));
+  return sourceRepairCandidatesToProjects(candidates, source, startDate, endDate);
+}
+
+function finalFailureOutcome(failures: readonly unknown[]): "blocked" | "timeout" | "extraction-failed" {
+  if (failures.some((error) => error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError"))) {
+    return "timeout";
+  }
+  const problems = failures
+    .filter((error): error is SourceRequestError => error instanceof SourceRequestError)
+    .map((error) => error.problem);
+  if (problems.includes("timeout")) return "timeout";
+  if (problems.includes("blocked") || problems.includes("public-access-block")) return "blocked";
+  return "extraction-failed";
+}
+
+function logDirectSourceFailure(source: string, error: unknown): void {
+  if (error instanceof SourceRequestError) {
+    logScanSourceOutcome(
+      source,
+      error.problem === "blocked" || error.problem === "public-access-block" ? "blocked" : error.problem === "timeout" ? "timeout" : "extraction-failed",
+      { err: error, url: error.url, reason: error.problem },
+    );
+    return;
+  }
+  logScanSourceOutcome(source, "extraction-failed", { err: error });
+}
+
 async function scrapeSource(
   source: ScrapeSource,
   startDate?: string,
-  endDate?: string
-): Promise<ScrapedProject[]> {
+  endDate?: string,
+): Promise<{ projects: ScrapedProject[]; health: ScanSourceHealthInput }> {
+  const startedAt = performance.now();
   const projects: ScrapedProject[] = [];
+  let extraListingPagesFetched = 0;
   const seenUrls = new Set<string>();
+  const failures: unknown[] = [];
+  const attempts: ExtractionAttempt[] = [];
+  const contentFingerprints = new Map<string, string>();
+  const acquiredContents = new Map<string, string>();
+  const repairedUrls = new Set<string>();
+  const normalisationNeededUrls = new Set<string>();
+  const strategy = getSourceRepairStrategy(source.name);
+  const acquisitionPlan = getSourceAcquisitionPlan(source.name);
+  let directSucceeded = false;
+  let directAcquired = false;
+  let directAttempted = false;
+  let firecrawlAttempted = false;
+  let firecrawlSucceeded = false;
+  let firecrawlParsed = false;
+  let firecrawlCalls = 0;
+  let firecrawlPages = 0;
+  let firecrawlCacheReused = false;
+  let apifyAttempted = false;
+  let apifySucceeded = false;
+  let apifyParsed = false;
+  let brightSucceeded = false;
+  let brightParsed = false;
+  let brightDataCalls = 0;
+  let fallbackUsed = false;
+  let fallbackSucceeded = false;
 
-  function addUnique(items: ScrapedProject[]) {
-    for (const p of items) {
-      if (!seenUrls.has(p.sourceUrl)) {
-        seenUrls.add(p.sourceUrl);
-        projects.push(p);
-      }
+  logScanSourceOutcome(source.name, "attempted", {
+    method: strategy.mode,
+    url: source.searchUrl,
+  });
+
+  // Distinct projects may legitimately share one URL (a listing page, or an
+  // article covering several farms). Keying on URL alone silently kept only the
+  // first of them; the identity is URL + normalised project name.
+  function addUnique(items: readonly ScrapedProject[]): void {
+    for (const project of items) {
+      const key = `${project.sourceUrl}|${normalizeProjectName(project.name)}`;
+      if (seenUrls.has(key)) continue;
+      seenUrls.add(key);
+      projects.push(project);
     }
   }
 
-  try {
-    if (source.browseAiRobotId) {
-      // ── Browse.AI path ────────────────────────────────────────────────────
-      // Run the primary URL + all extraUrls sequentially (each task takes 5–90 s).
-      // Sequential (not parallel) to avoid hammering the robot's task queue.
-      const allUrls = [source.searchUrl, ...(source.extraUrls ?? [])];
-      for (const url of allUrls) {
+  function recordAttempt(attempt: ExtractionAttempt): void {
+    attempts.push(attempt);
+    logger.info({
+      source: source.name, method: attempt.method, outcome: attempt.outcome,
+      url: diagnosticUrl(attempt.url), reason: attempt.reason,
+      failureCategory: attempt.failureCategory,
+    }, "Source extraction attempt");
+  }
+
+  async function extract<T>(
+    method: string,
+    url: string,
+    fetchInput: () => Promise<T>,
+    parse: (input: T) => ScrapedProject[] | Promise<ScrapedProject[]>,
+  ): Promise<number | null> {
+    let phase: "fetch" | "parse" = "fetch";
+    try {
+      const input = await fetchInput();
+      if (method.startsWith("bright-data-")) brightSucceeded = true;
+      else directAcquired = true;
+      if (typeof input === "string") {
+        contentFingerprints.set(url, hashMeaningfulSourceContent(input));
+        acquiredContents.set(url, input.slice(0, 100_000));
+      }
+      if (method.startsWith("bright-data-") && Buffer.isBuffer(input)) {
+        const text = input.toString("utf8");
+        contentFingerprints.set(url, hashMeaningfulSourceContent(text));
+        acquiredContents.set(url, text.slice(0, 100_000));
+      }
+      phase = "parse";
+      const items = await parse(input);
+      addUnique(items);
+      if (method.startsWith("bright-data-")) brightParsed = true;
+      else {
+        directSucceeded = true; // A fetch alone is not successful extraction.
+        directAttempted = true;
+      }
+      recordAttempt({ method, url, outcome: successfulExtractionOutcome(items.length) });
+      return items.length;
+    } catch (err) {
+      failures.push(err);
+      if (method.startsWith("bright-data-")) {
+        logger.warn({ source: source.name, method, failureCategory: phase === "fetch" ? "provider-fetch" : "parser" }, "Bright Data fallback failed");
+      } else {
+        directAttempted = true;
+        logDirectSourceFailure(source.name, err);
+      }
+      if (err instanceof SourceRequestError && err.contentHash) contentFingerprints.set(url, err.contentHash);
+      const failureCategory = err instanceof SourceRequestError
+        ? err.problem
+        : phase === "fetch" ? "network" : "parser";
+      recordAttempt({
+        method, url, outcome: failedExtractionOutcome(err, phase),
+        reason: failureCategory,
+        failureCategory,
+      });
+      return null;
+    }
+  }
+
+  if (strategy.mode === "openai-first") {
+    // Formerly these sources skipped directly to AI. They now always prove the
+    // deterministic official path first, then use managed acquisition only on
+    // a real access/parser failure.
+    await extract("direct-structured-html", source.searchUrl,
+      () => fetchForSource(source, source.searchUrl), html => {
+        assertSourceDocument(html, "structured-html");
+        return sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, source.searchUrl), source, startDate, endDate, true);
+      });
+  } else if (strategy.mode === "aemo-workbook") {
+    await extract("aemo-workbook", AEMO_GENERATION_WORKBOOK_URL,
+      () => scrapeAemoGenerationWorkbook(source, startDate, endDate), items => items);
+  } else if (strategy.mode === "epbc-arcgis") {
+    await extract("epbc-arcgis", source.searchUrl,
+      () => scrapeEpbcOfficialLayer(source, startDate, endDate), items => items);
+  } else if (strategy.mode === "browse-ai-or-openai") {
+    await extract("direct-structured-html", source.searchUrl,
+      () => fetchForSource(source, source.searchUrl), html => {
+        assertSourceDocument(html, "structured-html");
+        return sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, source.searchUrl), source, startDate, endDate, true);
+      });
+  } else {
+    if (strategy.mode !== "structured-html" && source.feedUrl) {
+      let firstFeedPage: FeedPageResult | null = null;
+      await extract("rss", source.feedUrl, () => fetchForSource(source, source.feedUrl!), xml => {
+        assertSourceDocument(xml, "rss");
+        firstFeedPage = parseRssFeedPage(xml, source, startDate, endDate);
+        return firstFeedPage.projects;
+      });
+      // Older pages are best-effort backfill: they are not recorded as
+      // extraction attempts, so a missing page can never trigger paid fallback.
+      let previousPage = firstFeedPage as FeedPageResult | null;
+      const maxPages = startDate ? FEED_MAX_PAGES_BOUNDED : FEED_MAX_PAGES_UNBOUNDED;
+      for (let page = 2; previousPage && page <= maxPages; page++) {
+        if (previousPage.itemCount === 0) break;
+        if (startDate && previousPage.oldestDate && previousPage.oldestDate < startDate) break;
+        const pageUrl = feedPageUrl(source.feedUrl, page);
+        if (!pageUrl) break;
         try {
-          addUnique(await scrapeWithBrowseAi(source.browseAiRobotId, url, source, startDate, endDate));
-        } catch (err) {
-          logger.warn({ err, url, source: source.name }, "Browse.AI URL failed");
-        }
-      }
-    } else if (source.firecrawl) {
-      // ── Firecrawl path ────────────────────────────────────────────────────
-      // Run the primary URL + all extraUrls in parallel (each has a 30 s timeout).
-      const allUrls = [source.searchUrl, ...(source.extraUrls ?? [])];
-      const fcResults = await Promise.allSettled(
-        allUrls.map((url) => scrapeWithFirecrawl(url, source, startDate, endDate)),
-      );
-      for (const result of fcResults) {
-        if (result.status === "fulfilled") addUnique(result.value);
-        else logger.warn({ err: result.reason, source: source.name }, "Firecrawl URL failed");
-      }
-    } else {
-      // ── Standard fetch + Cheerio path ────────────────────────────────────
-      // 1. Try RSS feed first — best structured data
-      if (source.feedUrl) {
-        const xml = await fetchForSource(source, source.feedUrl);
-        addUnique(parseRssFeed(xml, source, startDate, endDate));
-        logger.info({ source: source.name, rssCount: projects.length }, "RSS scraped");
-      }
-
-      // 2. Scrape primary + extra URLs in parallel
-      const htmlUrls = [source.searchUrl, ...(source.extraUrls ?? [])];
-      const htmlResults = await Promise.allSettled(
-        htmlUrls.map((url) => fetchForSource(source, url)),
-      );
-      for (let i = 0; i < htmlResults.length; i++) {
-        const result = htmlResults[i];
-        if (result.status === "fulfilled") {
-          addUnique(parseHtmlPage(result.value, source, startDate, endDate));
-        } else {
-          logger.warn({ err: result.reason, url: htmlUrls[i], source: source.name }, "HTML URL fetch failed");
+          const xml = await fetchForSource(source, pageUrl);
+          assertSourceDocument(xml, "rss");
+          const parsed = parseRssFeedPage(xml, source, startDate, endDate);
+          if (parsed.firstLink && parsed.firstLink === previousPage.firstLink) break;
+          addUnique(parsed.projects);
+          previousPage = parsed;
+        } catch {
+          break; // end of feed, or the publisher does not paginate
         }
       }
     }
-
-    logger.info({ source: source.name, total: projects.length }, "Source scrape complete");
-
-    // ── ChatGPT fallback ──────────────────────────────────────────────────────
-    // If standard parsing (RSS + HTML) returned nothing, try ChatGPT web search.
-    // Skip for Browse.AI sources (they have their own JS-rendering fallback)
-    // and for authenticated sources (AltEnergy is handled separately).
-    if (projects.length === 0 && !source.browseAiRobotId && !source.authenticated) {
-      logger.info({ source: source.name }, "Standard parse returned 0 — trying ChatGPT fallback");
-      const gptResults = await scrapeWithChatGpt(source, startDate, endDate);
-      addUnique(gptResults);
+    const format = strategy.mode === "structured-html" ? "structured-html" : "html";
+    // Preserve every configured HTML path even after successful RSS extraction.
+    const urls = [source.searchUrl, ...(source.extraUrls ?? [])];
+    const fetched = await Promise.allSettled(urls.map(url => fetchForSource(source, url)));
+    // Parse in configuration order to preserve first-URL-wins deduplication.
+    for (let index = 0; index < urls.length; index++) {
+      const url = urls[index];
+      const firstPageCount = await extract(format, url, async () => {
+        const result = fetched[index];
+        if (result.status === "rejected") throw result.reason;
+        return result.value;
+      }, html => {
+        assertSourceDocument(html, format);
+        return format === "structured-html"
+          ? sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, url), source, startDate, endDate)
+          : parseHtmlPage(html, source, startDate, endDate, url);
+      });
+      const firstPage = fetched[index];
+      if (format !== "html" || firstPageCount === null || firstPage.status !== "fulfilled") continue;
+      let pageUrl = url;
+      let pageHtml = firstPage.value;
+      const seenPages = new Set([url]);
+      for (let page = 0; page < EXTRA_LISTING_PAGES; page++) {
+        const nextUrl = nextListingPageUrl(pageHtml, pageUrl);
+        if (!nextUrl || seenPages.has(nextUrl)) break;
+        seenPages.add(nextUrl);
+        try {
+          pageHtml = await fetchApprovedDiscoveredPage(source, nextUrl);
+          assertSourceDocument(pageHtml, "html");
+          addUnique(parseHtmlPage(pageHtml, source, startDate, endDate, nextUrl));
+          extraListingPagesFetched++;
+          pageUrl = nextUrl;
+        } catch {
+          break; // Best-effort depth never changes source outcome or triggers paid AI.
+        }
+      }
     }
-  } catch (err) {
-    logger.warn({ err, source: source.name }, "Failed to scrape source");
+    if (extraListingPagesFetched) {
+      logger.info({ source: source.name, extraListingPagesFetched }, "Additional listing pages read");
+    }
+    const enrichment = await enrichProjectsFromArticles(source, projects);
+    if (enrichment.attempted > 0) {
+      projects.splice(0, projects.length, ...enrichment.kept);
+      logger.info({ source: source.name, ...enrichment, kept: undefined }, "Article enrichment complete");
+    }
   }
 
-  return projects;
+  function managedTargets(limit: number): string[] {
+    const successful = new Set(attempts.filter((attempt) =>
+      attempt.outcome === "success-with-results" || attempt.outcome === "success-zero-results",
+    ).map((attempt) => attempt.url));
+    return [...new Set(attempts.filter((attempt) =>
+      attempt.url && !successful.has(attempt.url) &&
+      ["fetch-failed", "parse-failed", "content-unusable", "requires-js-or-ai-repair"].includes(attempt.outcome),
+    ).map((attempt) => attempt.url!))]
+      .filter((url) => strategy.officialUrls.includes(url) && !/\/feed\/?(?:\?|$)/i.test(new URL(url).pathname))
+      .slice(0, limit);
+  }
+
+  // Firecrawl v2 is the first managed transport after deterministic acquisition.
+  // A valid zero is successful acquisition and never triggers the next provider.
+  if (acquisitionPlan.methods.includes("firecrawl")) {
+    const targets = managedTargets(acquisitionPlan.firecrawlMode === "crawl" ? 1 : 2);
+    if (targets.length && !firecrawlConfigured()) {
+      recordAttempt({ method: "firecrawl", url: targets[0], outcome: "fetch-failed", reason: "missing-credentials", failureCategory: "missing-credentials" });
+    }
+    for (const target of firecrawlConfigured() ? targets : []) {
+      firecrawlAttempted = true;
+      firecrawlCalls++;
+      try {
+        const result = await acquireApprovedSourceWithFirecrawl(source.name, target);
+        firecrawlSucceeded = true;
+        repairedUrls.add(target);
+        firecrawlPages += result.pagesFetched;
+        firecrawlCacheReused ||= result.cacheReuse;
+        for (const page of result.pages) {
+          contentFingerprints.set(page.finalUrl, page.contentHash);
+          acquiredContents.set(page.finalUrl, page.content.slice(0, 100_000));
+        }
+        try {
+          const items = result.pages.flatMap((page) =>
+            parseFirecrawlMarkdown(page.content, source, page.finalUrl, startDate, endDate));
+          if (!items.length && classifyManagedZeroResult(source.name, result.pages.map((page) => page.content).join("\n")) === "unresolved") {
+            throw new SourceExtractionError("requires-js-or-ai-repair", "managed transport returned portal content whose project records were not deterministically resolved");
+          }
+          addUnique(items);
+          firecrawlParsed = true;
+          recordAttempt({ method: `firecrawl-${result.mode}`, url: target, outcome: successfulExtractionOutcome(items.length) });
+          logger.info({
+            source: source.name, method: `firecrawl-${result.mode}`, pagesFetched: result.pagesFetched,
+            durationMs: result.durationMs, cacheReuse: result.cacheReuse, outcome: successfulExtractionOutcome(items.length),
+          }, "Firecrawl source acquisition");
+        } catch (error) {
+          failures.push(error);
+          normalisationNeededUrls.add(target);
+          recordAttempt({ method: `firecrawl-${result.mode}`, url: target, outcome: failedExtractionOutcome(error, "parse"), reason: "parser", failureCategory: "parser" });
+          logger.warn({ source: source.name, method: `firecrawl-${result.mode}`, failureCategory: "parser" }, "Firecrawl content parsing failed");
+        }
+      } catch (error) {
+        const category = error instanceof FirecrawlAcquisitionError ? error.category : "provider-error";
+        failures.push(error);
+        recordAttempt({ method: "firecrawl", url: target, outcome: "fetch-failed", reason: category, failureCategory: category });
+        logger.warn({ source: source.name, method: "firecrawl", failureCategory: category }, "Firecrawl source acquisition failed");
+      }
+    }
+  }
+
+  // Apify is the bounded secondary managed transport. It is never called after
+  // Firecrawl (including a valid zero) has repaired the same approved URL.
+  if (acquisitionPlan.methods.includes("apify")) {
+    const targets = managedTargets(acquisitionPlan.firecrawlMode === "crawl" ? 1 : 2)
+      .filter((url) => !repairedUrls.has(url));
+    if (targets.length && !apifySourceConfigured()) {
+      recordAttempt({ method: "apify", url: targets[0], outcome: "fetch-failed", reason: "missing-credentials", failureCategory: "missing-credentials" });
+    }
+    for (const target of apifySourceConfigured() ? targets : []) {
+      apifyAttempted = true;
+      try {
+        const pages = await fetchApprovedSourceWithApify(source.name, target);
+        apifySucceeded = true;
+        repairedUrls.add(target);
+        for (const page of pages) {
+          contentFingerprints.set(page.finalUrl, page.contentHash);
+          acquiredContents.set(page.finalUrl, page.content.slice(0, 100_000));
+        }
+        try {
+          const items = pages.flatMap((page) =>
+            parseFirecrawlMarkdown(page.content, source, page.finalUrl, startDate, endDate));
+          if (!items.length && classifyManagedZeroResult(source.name, pages.map((page) => page.content).join("\n")) === "unresolved") {
+            throw new SourceExtractionError("requires-js-or-ai-repair", "managed transport returned portal content whose project records were not deterministically resolved");
+          }
+          addUnique(items);
+          apifyParsed = true;
+          recordAttempt({ method: "apify", url: target, outcome: successfulExtractionOutcome(items.length) });
+        } catch (error) {
+          failures.push(error);
+          normalisationNeededUrls.add(target);
+          recordAttempt({ method: "apify", url: target, outcome: failedExtractionOutcome(error, "parse"), reason: "parser", failureCategory: "parser" });
+          logger.warn({ source: source.name, method: "apify", failureCategory: "parser" }, "Apify content parsing failed");
+        }
+      } catch (error) {
+        failures.push(error);
+        recordAttempt({ method: "apify", url: target, outcome: "fetch-failed", reason: "provider-error", failureCategory: "provider-error" });
+        logger.warn({ source: source.name, method: "apify", failureCategory: "provider-error" }, "Apify source acquisition failed");
+      }
+    }
+  }
+
+  // Re-fetch only a failed, pre-approved public URL. A successful direct parse
+  // (including an eligible zero) never spends on Bright Data. Authenticated
+  // AltEnergy/LUVI and the specialized EPBC ArcGIS path are not proxied.
+  const brightTargets = planBrightDataTargets(strategy, attempts);
+  if (brightTargets.length && !brightDataConfigured()) {
+    logger.info({ source: source.name, targetCount: brightTargets.length }, "Bright Data fallback unavailable: key or zone not configured");
+  }
+  for (const target of brightDataConfigured() ? brightTargets : []) {
+    brightDataCalls++;
+    const startedAt = new Date();
+    const acceptedBefore = projects.length;
+    const recordsReceived = await extract(`bright-data-${target.format}`, target.url,
+      () => fetchApprovedBrightData(source.name, target),
+      async body => {
+        const text = body.toString("utf8");
+        assertSourceDocument(text, target.format);
+        return target.format === "rss"
+          ? parseRssFeed(text, source, startDate, endDate)
+          : target.format === "structured-html"
+            ? sourceRepairCandidatesToProjects(parseOfficialProjectHtml(text, target.url), source, startDate, endDate, true)
+            : parseHtmlPage(text, source, startDate, endDate, target.url);
+      });
+    const brightAttempt = attempts.at(-1);
+    logger.info({
+      source: source.name,
+      method: "bright-data",
+      targetPath: diagnosticUrl(target.url),
+      startedAt: startedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: Date.now() - startedAt.getTime(),
+      recordsReceived: recordsReceived ?? 0,
+      recordsAccepted: projects.length - acceptedBefore,
+      fallbackUsed: true,
+      outcome: recordsReceived == null ? "FALLBACK_FAILED" : "FALLBACK_SUCCESS",
+      failureCategory: recordsReceived == null ? brightAttempt?.failureCategory ?? "unclassified" : undefined,
+    }, "Bright Data source fallback outcome");
+    if (attempts.at(-1)?.outcome === "success-with-results" || attempts.at(-1)?.outcome === "success-zero-results") {
+      repairedUrls.add(target.url);
+    }
+  }
+
+  // A provider fetch that parsed successfully, including a valid zero, repairs
+  // the earlier access failure for that same URL. Other failed URLs remain
+  // eligible for the existing bounded AI fallback.
+  const unresolvedAttempts = attempts.filter((attempt) =>
+    !attempt.url || !repairedUrls.has(attempt.url) ||
+    normalisationNeededUrls.has(attempt.url) ||
+    attempt.outcome === "success-with-results" || attempt.outcome === "success-zero-results",
+  );
+  const fallbackReason = paidSourceFallbackReason(
+    unresolvedAttempts,
+    acquisitionPlan.methods.includes("openai-normalisation") && acquiredContents.size > 0,
+  );
+  if (fallbackReason) {
+    fallbackUsed = true;
+    logScanSourceOutcome(source.name, "fallback-used", {
+      method: "openai-normalisation", reason: fallbackReason,
+      extractionOutcomes: attempts,
+    });
+    try {
+      const contentHash = hashSourceContent(JSON.stringify(attempts.map(attempt => ({
+        method: attempt.method, url: attempt.url, outcome: attempt.outcome,
+        contentHash: contentFingerprints.get(attempt.url ?? "") ?? null,
+      }))));
+      const boundedContent = [...acquiredContents.entries()]
+        .map(([url, content]) => `SOURCE URL: ${url}\n${content}`)
+        .join("\n\n---\n\n")
+        .slice(0, 60_000);
+      addUnique(await scrapeWithChatGpt(
+        source, startDate, endDate, contentHash, contentFingerprints.size > 0, boundedContent,
+      ));
+      fallbackSucceeded = true;
+    } catch (err) {
+      failures.push(err);
+      logger.warn({ err, source: source.name }, "Source AI repair failed");
+    }
+  }
+
+  const outcome = sourceAcquisitionOutcome({
+    projectCount: projects.length,
+    directSucceeded: directSucceeded || firecrawlParsed || apifyParsed || brightParsed,
+    fallbackSucceeded,
+    failureOutcome: finalFailureOutcome(failures),
+  });
+  logScanSourceOutcome(source.name, outcome, {
+    projectCount: projects.length,
+    durationMs: Math.round(performance.now() - startedAt),
+    method: [strategy.mode, firecrawlSucceeded ? "firecrawl" : null, apifySucceeded ? "apify" : null,
+      brightDataCalls ? "bright-data" : null, fallbackUsed ? "openai-normalisation" : null].filter(Boolean).join("+"),
+    directSucceeded,
+    brightSucceeded,
+    brightDataCalls,
+    fallbackSucceeded,
+    fallbackUsed,
+    extractionOutcomes: attempts,
+    resultOutcome: outcome === "success" || outcome === "empty"
+      ? successfulExtractionOutcome(projects.length) : undefined,
+    failureCount: failures.length,
+    reason: outcome === "empty" && !fallbackUsed
+      ? "success-zero-results: normal extraction completed; no paid AI fallback"
+      : outcome === "empty" ? "AI repair completed with no qualifying projects" : undefined,
+    err: outcome === "extraction-failed" ? failures.at(-1) : undefined,
+  });
+  const assignedProjects = assignProjectIdentityUrls(
+    [source.searchUrl, source.feedUrl, ...(source.extraUrls ?? [])], projects,
+  );
+  const lastFailureCategory = [...attempts].reverse().find((attempt) => attempt.failureCategory)?.failureCategory ?? null;
+  const durableOutcome: DurableSourceOutcome = outcome === "success"
+    ? "success-with-results"
+    : outcome === "empty"
+      ? "success-zero-results"
+      : outcome === "blocked"
+        ? "blocked"
+        : outcome === "timeout"
+          ? "timeout"
+          : lastFailureCategory === "rate-limited"
+            ? "rate-limited"
+            : lastFailureCategory === "missing-credentials"
+              ? "missing-credentials"
+              : lastFailureCategory === "provider-error" || lastFailureCategory === "auth-failed"
+                ? "provider-error"
+                : "extraction-failed";
+  const acquisitionMethod = brightSucceeded ? "brightdata"
+    : apifySucceeded ? "apify"
+      : firecrawlSucceeded ? "firecrawl"
+        : directAcquired
+          ? attempts.find((attempt) => !attempt.method.startsWith("firecrawl") && attempt.method !== "apify" && !attempt.method.startsWith("bright-data-"))?.method
+            ?? acquisitionPlan.methods[0]
+          : acquisitionPlan.methods[0];
+  return {
+    projects: assignedProjects,
+    health: {
+      sourceName: source.name,
+      acquisitionMethod,
+      directAttempted,
+      firecrawlAttempted,
+      firecrawlSucceeded,
+      apifyAttempted,
+      brightDataAttempted: brightDataCalls > 0,
+      openaiNormalisationAttempted: fallbackUsed,
+      openaiNormalisationSucceeded: fallbackSucceeded,
+      fallbackUsed: firecrawlAttempted || apifyAttempted || brightDataCalls > 0 || fallbackUsed,
+      outcome: durableOutcome,
+      candidateCount: assignedProjects.length,
+      qualifyingProjectCount: assignedProjects.filter(isEligibleScanProject).length,
+      durationMs: Math.round(performance.now() - startedAt),
+      failureCategory: durableOutcome === "success-with-results" || durableOutcome === "success-zero-results" ? null : lastFailureCategory,
+      failureReason: durableOutcome === "success-with-results" || durableOutcome === "success-zero-results"
+        ? null : safeSourceFailureReason(lastFailureCategory),
+      contentFingerprint: combineContentFingerprints(contentFingerprints.values()),
+      firecrawlCalls,
+      firecrawlPages,
+      firecrawlCacheReused,
+    },
+  };
 }
 
 export async function runScan(scanId: number, startDate?: string, endDate?: string): Promise<void> {
-  logger.info({ scanId, startDate, endDate }, "Starting scan");
+  const scanStartedAt = performance.now();
+  const configuredSourceCount = SOURCES.length + 2;
+  validateSourceRepairStrategies(CONFIGURED_SCAN_SOURCE_NAMES);
+  logger.info(
+    { scanId, startDate, endDate, configuredSourceCount },
+    "Starting scan",
+  );
+  if (configuredSourceCount !== 34) {
+    logger.error(
+      { configuredSourceCount, expectedSourceCount: 34 },
+      "Scan source registry parity mismatch",
+    );
+  }
 
-  let validProjectsFound = 0;
-  let newProjects = 0;
+  const persistedLineage: ScanProjectLineage[] = [];
+  const linkedProjectIds = new Set<number>();
   let sourcesScanned = 0;
   let errorMessage: string | null = null;
 
   try {
-    // Fetch existing project source URLs to deduplicate
-    const existingProjects = await db.select({ sourceUrl: projectsTable.sourceUrl }).from(projectsTable);
-    const existingUrls = new Set(existingProjects.map((p) => p.sourceUrl).filter(Boolean));
-
     const allScraped: ScrapedProject[] = [];
+    let progressUpdate = Promise.resolve();
 
-    for (const source of SOURCES) {
-      try {
-        const scraped = await scrapeSource(source, startDate, endDate);
-        allScraped.push(...scraped);
-        sourcesScanned++;
-
-        // Update scan progress in DB
+    async function recordSourceComplete(): Promise<void> {
+      sourcesScanned++;
+      const completedCount = sourcesScanned;
+      progressUpdate = progressUpdate.then(async () => {
         await db
           .update(scansTable)
-          .set({ sourcesScanned })
+          .set({ sourcesScanned: completedCount })
           .where(eq(scansTable.id, scanId));
-      } catch (err) {
-        logger.warn({ err, source: source.name }, "Source scrape error");
-        sourcesScanned++;
+      });
+      await progressUpdate;
+    }
+
+    async function persistHealth(input: ScanSourceHealthInput): Promise<void> {
+      try {
+        await persistScanSourceHealth(scanId, input);
+      } catch (error) {
+        logger.error({ scanId, source: input.sourceName, failureCategory: "source-health-write" }, "Scan source health persistence failed");
       }
     }
 
+    const genericResults = await mapWithConcurrency(
+      SOURCES,
+      GENERIC_SCAN_WORKERS,
+      async (source) => {
+        try {
+          const result = await scrapeSource(source, startDate, endDate);
+          await persistHealth(result.health);
+          return result.projects;
+        } catch (err) {
+          logger.warn({ err, source: source.name }, "Source scrape error");
+          await persistHealth({
+            sourceName: source.name,
+            acquisitionMethod: getSourceAcquisitionPlan(source.name).methods[0],
+            directAttempted: false, firecrawlAttempted: false, firecrawlSucceeded: false,
+            apifyAttempted: false, brightDataAttempted: false,
+            openaiNormalisationAttempted: false, openaiNormalisationSucceeded: false, fallbackUsed: false,
+            outcome: "extraction-failed", candidateCount: 0, qualifyingProjectCount: 0,
+            durationMs: 0, failureCategory: "unclassified", failureReason: "Source acquisition failed",
+          });
+          return [];
+        } finally {
+          await recordSourceComplete();
+        }
+      },
+    );
+    for (const scraped of genericResults) allScraped.push(...scraped);
+
     // Dedicated AltEnergy authenticated scrape (separate from generic SOURCES)
+    const altEnergyStartedAt = performance.now();
+    let altEnergyHealth: ScanSourceHealthInput = {
+      sourceName: "AltEnergy Australia", acquisitionMethod: "authenticated",
+      directAttempted: true, firecrawlAttempted: false, firecrawlSucceeded: false,
+      apifyAttempted: false, brightDataAttempted: false,
+      openaiNormalisationAttempted: false, openaiNormalisationSucceeded: false, fallbackUsed: false,
+      outcome: "missing-credentials", candidateCount: 0, qualifyingProjectCount: 0, durationMs: 0,
+      failureCategory: "missing-credentials",
+    };
     try {
+      logScanSourceOutcome("AltEnergy Australia", "attempted", { method: "authenticated" });
       const altEnergyProjects = await scrapeAltEnergy(startDate, endDate);
       allScraped.push(...altEnergyProjects);
-      sourcesScanned++; // count AltEnergy as one source
-
-      await db
-        .update(scansTable)
-        .set({ sourcesScanned })
-        .where(eq(scansTable.id, scanId));
+      if (process.env.ALTENERGY_USERNAME?.trim() && process.env.ALTENERGY_PASSWORD?.trim()) {
+        altEnergyHealth = {
+          ...altEnergyHealth,
+          outcome: altEnergyProjects.length ? "success-with-results" : "success-zero-results",
+          candidateCount: altEnergyProjects.length,
+          qualifyingProjectCount: altEnergyProjects.filter(isEligibleScanProject).length,
+          durationMs: Math.round(performance.now() - altEnergyStartedAt),
+          failureCategory: null,
+        };
+        logScanSourceOutcome(
+          "AltEnergy Australia",
+          altEnergyProjects.length > 0 ? "success" : "empty",
+          {
+            projectCount: altEnergyProjects.length,
+            durationMs: Math.round(performance.now() - altEnergyStartedAt),
+            method: "authenticated",
+          },
+        );
+      }
     } catch (err) {
       logger.warn({ err }, "AltEnergy scrape error");
-      sourcesScanned++;
+      logScanSourceOutcome("AltEnergy Australia", "extraction-failed", {
+        err,
+        durationMs: Math.round(performance.now() - altEnergyStartedAt),
+        method: "authenticated",
+      });
+      altEnergyHealth = {
+        ...altEnergyHealth, outcome: "extraction-failed",
+        durationMs: Math.round(performance.now() - altEnergyStartedAt),
+        failureCategory: "unclassified", failureReason: "Authenticated source acquisition failed",
+      };
+    } finally {
+      altEnergyHealth.durationMs = Math.round(performance.now() - altEnergyStartedAt);
+      await persistHealth(altEnergyHealth);
+      await recordSourceComplete();
     }
 
     // Dedicated LUVI authenticated development-pipeline scrape.
+    const luviStartedAt = performance.now();
+    let luviHealth: ScanSourceHealthInput = {
+      sourceName: LUVI_SOURCE_NAME, acquisitionMethod: "authenticated",
+      directAttempted: true, firecrawlAttempted: false, firecrawlSucceeded: false,
+      apifyAttempted: false, brightDataAttempted: false,
+      openaiNormalisationAttempted: false, openaiNormalisationSucceeded: false, fallbackUsed: false,
+      outcome: "missing-credentials", candidateCount: 0, qualifyingProjectCount: 0, durationMs: 0,
+      failureCategory: "missing-credentials",
+    };
     try {
-      const luviProjects = await scrapeLuvi(startDate, endDate);
-      allScraped.push(...luviProjects);
-      sourcesScanned++; // count LUVI as one source
-
-      await db
-        .update(scansTable)
-        .set({ sourcesScanned })
-        .where(eq(scansTable.id, scanId));
+      const luviMissing = process.env.LUVI_PASSWORD?.trim() ? [] : ["LUVI_PASSWORD"];
+      let luviProjects: ScrapedProject[] = [];
+      if (luviMissing.length > 0) {
+        logScanSourceOutcome(LUVI_SOURCE_NAME, "skipped-missing-credentials", {
+          missing: luviMissing,
+          method: "authenticated",
+          durationMs: Math.round(performance.now() - luviStartedAt),
+        });
+      } else {
+        logScanSourceOutcome(LUVI_SOURCE_NAME, "attempted", { method: "authenticated" });
+        luviProjects = await scrapeLuvi(startDate, endDate);
+        allScraped.push(...luviProjects);
+        luviHealth = {
+          ...luviHealth,
+          outcome: luviProjects.length ? "success-with-results" : "success-zero-results",
+          candidateCount: luviProjects.length,
+          qualifyingProjectCount: luviProjects.filter(isEligibleScanProject).length,
+          durationMs: Math.round(performance.now() - luviStartedAt),
+          failureCategory: null,
+        };
+        logScanSourceOutcome(
+          LUVI_SOURCE_NAME,
+          luviProjects.length > 0 ? "success" : "empty",
+          {
+            projectCount: luviProjects.length,
+            durationMs: Math.round(performance.now() - luviStartedAt),
+            method: "authenticated",
+          },
+        );
+      }
     } catch (err) {
       logger.warn({ err }, "LUVI scrape error");
-      sourcesScanned++;
+      logScanSourceOutcome(LUVI_SOURCE_NAME, "extraction-failed", {
+        err,
+        durationMs: Math.round(performance.now() - luviStartedAt),
+        method: "authenticated",
+      });
+      luviHealth = {
+        ...luviHealth, outcome: "extraction-failed",
+        durationMs: Math.round(performance.now() - luviStartedAt),
+        failureCategory: "unclassified", failureReason: "Authenticated source acquisition failed",
+      };
+    } finally {
+      luviHealth.durationMs = Math.round(performance.now() - luviStartedAt);
+      await persistHealth(luviHealth);
+      await recordSourceComplete();
     }
 
     // Build a lookup of existing sourceUrl -> { id, announcedDate } for quick checking
     const existingByUrl = new Map<string, number>();
-    const existingDateByUrl = new Map<string, string>(); // sourceUrl -> DB-stored announcedDate
-    const existingRows = await db.select({ id: projectsTable.id, sourceUrl: projectsTable.sourceUrl, announcedDate: projectsTable.announcedDate }).from(projectsTable);
+    const existingByNameKey = new Map<string, number>();
+    const existingDateByUrl = new Map<string, string | null>(); // sourceUrl -> DB-stored announcedDate
+    const existingDateById = new Map<number, string | null>();
+    const eligibleExistingProjectIds = new Set<number>();
+    const existingRows = await db.select({
+      id: projectsTable.id,
+      name: projectsTable.name,
+      description: projectsTable.description,
+      capacityMw: projectsTable.capacityMw,
+      developer: projectsTable.developer,
+      location: projectsTable.location,
+      country: projectsTable.country,
+      sourceUrl: projectsTable.sourceUrl,
+      sourceName: projectsTable.sourceName,
+      status: projectsTable.status,
+      announcedDate: projectsTable.announcedDate,
+    }).from(projectsTable);
     for (const r of existingRows) {
+      existingDateById.set(r.id, r.announcedDate);
       if (r.sourceUrl) {
         existingByUrl.set(r.sourceUrl, r.id);
-        if (r.announcedDate) existingDateByUrl.set(r.sourceUrl, r.announcedDate);
+        existingDateByUrl.set(r.sourceUrl, r.announcedDate);
       }
+      if (r.sourceName && r.name) existingByNameKey.set(`${r.sourceName}|${normalizeProjectName(r.name)}`, r.id);
+      if (isEligibleScanProject(r)) eligibleExistingProjectIds.add(r.id);
     }
 
     // Load PVH fallback contacts once for the whole scan
     const pvhContacts = await db.select().from(pvhContactsTable);
+    const wattsPersistenceDiagnostics = {
+      acceptedNew: 0,
+      canonicalUpdatesMatched: 0,
+      inventoryObservations: 0,
+      duplicateMatches: 0,
+      rejectedMissingCapacity: 0,
+      rejectedStatusTechnology: 0,
+    };
 
     // Insert / record every project found by this scan (deduplicate by sourceUrl)
     for (const project of allScraped) {
-      // Pre-insert quality gate — skip noise
-      if (isNoisyProjectName(project.name)) {
-        if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1); // sentinel
-        continue;
-      }
-      // Only AU and NZ
-      if (project.country && !["AU", "NZ"].includes(project.country)) {
-        if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
-        continue;
-      }
-      // Must have capacity (no null capacity projects)
-      if (project.capacityMw == null) {
-        logger.info({ project: project.name, source: project.sourceName }, "Quality gate: no capacity — dropped");
-        if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
-        continue;
-      }
-      // No wind projects — catch turbines even when name doesn't contain "wind"
-      if (isWindProject(project.name, project.description)) {
-        if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
-        continue;
-      }
-      // Only solar or hybrid (solar + BESS) — reject standalone BESS / battery-only projects
-      if (!hasSolarComponent(project.name, project.description)) {
-        logger.info({ project: project.name }, "Quality gate: no solar component — BESS-only rejected");
-        if (project.sourceUrl) existingByUrl.set(project.sourceUrl, -1);
-        continue;
+      // Resolve dated Watts News events against canonical projects before the
+      // quality gate. This permits a strongly matched update with no capacity
+      // in the article (for example Wooderson) to reuse verified canonical
+      // capacity, while an unmatched/new article can never invent it.
+      const wattsMatch = project.wattsNewsEvidence
+        ? findCanonicalWattsNewsMatch(project.wattsNewsEvidence, existingRows)
+        : null;
+      const urlMatchedProjectId = project.sourceUrl ? existingByUrl.get(project.sourceUrl) : undefined;
+      // Fragment URLs (`page#project-slug`) identify one project on a shared
+      // page. Records stored before those fragments existed carry the bare page
+      // URL, so fall back to a same-source, same-name match rather than
+      // re-inserting duplicates.
+      const nameMatchedProjectId = urlMatchedProjectId == null && !project.wattsNewsEvidence && project.sourceUrl?.includes("#")
+        ? existingByNameKey.get(`${project.sourceName}|${normalizeProjectName(project.name)}`)
+        : undefined;
+      let existingProjectId = wattsMatch?.project.id ?? urlMatchedProjectId ?? nameMatchedProjectId ?? null;
+      if (wattsMatch) {
+        wattsPersistenceDiagnostics.canonicalUpdatesMatched++;
+        if (project.capacityMw == null) project.capacityMw = Number(wattsMatch.project.capacityMw);
+        logger.info(
+          { project: project.name, projectId: wattsMatch.project.id, matchReason: wattsMatch.reason, matchScore: wattsMatch.score, reusedCanonicalCapacity: project.wattsNewsEvidence?.solarCapacityMw == null },
+          "AltEnergy Watts News canonical project matched",
+        );
       }
 
+      // Pre-insert quality gate — skip noise
+      if (isNoisyProjectName(project.name)) {
+        continue;
+      }
+      const ineligibilityReason = getProjectIneligibilityReason(project);
+      if (ineligibilityReason) {
+        if (project.sourceName === "AltEnergy – Watts News") {
+          if (ineligibilityReason === "missing-capacity" || ineligibilityReason === "below-minimum-capacity") {
+            wattsPersistenceDiagnostics.rejectedMissingCapacity++;
+          } else {
+            wattsPersistenceDiagnostics.rejectedStatusTechnology++;
+          }
+        }
+        logger.info(
+          {
+            project: project.name,
+            source: project.sourceName,
+            capacityMw: project.capacityMw,
+            reason: ineligibilityReason,
+          },
+          "Quality gate: ineligible scan project dropped",
+        );
+        continue;
+      }
+      if (project.capacityEvidence && project.capacityEvidence !== "structured_capacity") {
+        logger.info(
+          {
+            project: project.name,
+            rawStructuredCapacityMw: project.rawStructuredCapacityMw,
+            eligibilityCapacityMw: project.capacityMw,
+            capacityEvidence: project.capacityEvidence,
+            capacityEvidenceText: project.capacityEvidenceText,
+          },
+          "Capacity gate: explicit AltEnergy project capacity evidence applied",
+        );
+      }
       // Date-range gate: when a range is specified, only accept projects whose
       // announced date falls within it. For existing projects (already in DB),
       // use the DB-stored date — some sources assign today's date as a fallback
       // for undated items, which would otherwise let old March/May records slip
       // through. For new projects, use the scraped date directly.
-      if (startDate || endDate) {
-        const isExisting = !!project.sourceUrl && existingByUrl.has(project.sourceUrl);
-        const effectiveDate = isExisting && project.sourceUrl
-          ? (existingDateByUrl.get(project.sourceUrl) ?? project.announcedDate)
-          : project.announcedDate;
-        if (startDate && effectiveDate < startDate) continue;
-        if (endDate && effectiveDate > endDate) continue;
+      const isExisting = existingProjectId != null;
+      if (existingProjectId != null && existingProjectId !== -1) {
+        await db.update(projectsTable).set({ lastSeenAt: new Date() }).where(eq(projectsTable.id, existingProjectId));
+      }
+      const dateDecision = decideScanDateWindow({
+        startDate,
+        endDate,
+        scrapedAnnouncedDate: project.announcedDate,
+        sourceEventDate: project.sourceEventDate,
+        sourceEventEvidence: project.sourceEventEvidence,
+        inventoryObservation: project.inventoryObservation,
+        persistedAnnouncedDate: existingProjectId != null
+          ? existingDateById.get(existingProjectId)
+          : project.sourceUrl ? existingDateByUrl.get(project.sourceUrl) : null,
+        existingProject: isExisting,
+      });
+      if (!dateDecision.include) {
+        logger.info({ project: project.name, source: project.sourceName, effectiveDate: dateDecision.effectiveDate, startDate, endDate, reason: dateDecision.reason }, "Date gate: project not linked to scan");
+        continue;
       }
 
-      // Count valid projects that passed all quality gates
-      validProjectsFound++;
-
-      const isNew = !project.sourceUrl || !existingByUrl.has(project.sourceUrl);
-      let projectId: number;
+      const isNew = !isExisting;
+      const eventType = isNew
+        ? "new"
+        : project.eventType ?? (project.inventoryObservation ? "inventory_observed" : "updated");
 
       try {
-        if (isNew) {
-          // Apply PVH fallback contact if the project has no contact info
-          let contactName = project.contactName;
-          let contactEmail = project.contactEmail;
-          let contactPhone = project.contactPhone;
-
-          if (!contactEmail && !contactName && project.developer) {
-            const fallback = matchFallbackContact(project.developer, pvhContacts);
-            if (fallback) {
-              contactName = fallback.name;
-              contactEmail = fallback.email;
-              logger.info({ project: project.name, developer: project.developer, fallbackEmail: fallback.email }, "Applied PVH fallback contact");
-            }
-          }
-
-          const [inserted] = await db.insert(projectsTable).values({
-            name: project.name,
-            description: project.description,
-            capacityMw: String(project.capacityMw),
-            developer: project.developer,
-            epc: null,
-            location: project.location,
-            country: project.country,
-            status: project.status,
-            sourceUrl: project.sourceUrl,
-            sourceName: project.sourceName,
-            announcedDate: project.announcedDate,
-            contactName,
-            contactEmail,
-            contactPhone,
-            scanId,
-          }).returning({ id: projectsTable.id });
-          projectId = inserted.id;
-          newProjects++;
-          if (project.sourceUrl) existingByUrl.set(project.sourceUrl, projectId);
-        } else {
-          projectId = existingByUrl.get(project.sourceUrl!)!;
+        if (existingProjectId != null && !eligibleExistingProjectIds.has(existingProjectId) && !wattsMatch) {
+          logger.info(
+            { project: project.name, projectId: existingProjectId },
+            "Quality gate: ineligible historical project not linked to new scan",
+          );
+          continue;
+        }
+        if (existingProjectId != null && !eligibleExistingProjectIds.has(existingProjectId) && wattsMatch) {
+          logger.info(
+            { project: project.name, projectId: existingProjectId, matchReason: wattsMatch.reason },
+            "Dated Watts News evidence restored eligibility for a strongly matched canonical project",
+          );
         }
 
-        // Record all found projects (new and existing) in scan_projects.
-        // isNew=true flags genuinely new inserts; existing re-discovered projects
-        // get isNew=false so the scan detail can show all 18 found while still
-        // highlighting the 2 that are net-new.
-        await db.insert(scanProjectsTable).values({
-          scanId,
-          projectId,
-          projectName: project.name,
-          isNew,
+        const projectId = await db.transaction(async (tx) => {
+          let persistedProjectId = existingProjectId;
+
+          if (persistedProjectId == null) {
+            // Apply PVH fallback contact if the project has no contact info
+            let contactName = project.contactName;
+            let contactEmail = project.contactEmail;
+            let contactPhone = project.contactPhone;
+
+            if (!contactEmail && !contactName && project.developer) {
+              const fallback = matchFallbackContact(project.developer, pvhContacts);
+              if (fallback) {
+                contactName = fallback.name;
+                contactEmail = fallback.email;
+                logger.info({ project: project.name, developer: project.developer, fallbackEmail: fallback.email }, "Applied PVH fallback contact");
+              }
+            }
+
+            const [inserted] = await tx.insert(projectsTable).values({
+              name: project.name,
+              description: project.description,
+              capacityMw: String(project.capacityMw),
+              developer: project.developer,
+              epc: null,
+              location: project.location,
+              country: project.country,
+              status: project.status,
+              sourceUrl: project.sourceUrl,
+              sourceName: project.sourceName,
+              announcedDate: project.announcedDate,
+              announcedDateEvidence: project.announcedDateEvidence ?? (project.announcedDate ? "source_reported" : "unknown"),
+              lastSeenAt: new Date(),
+              contactName,
+              contactEmail,
+              contactPhone,
+              scanId,
+            }).returning({ id: projectsTable.id });
+            persistedProjectId = inserted.id;
+          }
+
+          if (persistedProjectId == null) {
+            throw new Error("Project insert did not return an id");
+          }
+
+          if (wattsMatch && project.wattsNewsEvidence) {
+            const canonical = wattsMatch.project;
+            const { updates: fieldUpdates, decisions } = planWattsNewsCanonicalUpdates(project.wattsNewsEvidence, canonical);
+            const updates: Partial<typeof projectsTable.$inferInsert> = { ...fieldUpdates, lastSeenAt: new Date() };
+            await tx.update(projectsTable).set(updates).where(eq(projectsTable.id, persistedProjectId));
+            logger.info({ projectId: persistedProjectId, sourceUrl: project.sourceUrl, decisions }, "Canonical field precedence evaluated for Watts News update");
+          }
+
+          const relationValues = {
+            projectName: project.name,
+            isNew,
+            eventType,
+            effectiveDate: dateDecision.effectiveDate,
+            dateEvidence: dateDecision.evidence,
+            sourceUrl: project.sourceUrl,
+            sourceName: project.sourceName,
+          };
+          if (linkedProjectIds.has(persistedProjectId)) {
+            if (project.sourceName === "AltEnergy – Watts News") wattsPersistenceDiagnostics.duplicateMatches++;
+            if (eventType === "updated") {
+              await tx.update(scanProjectsTable).set(relationValues).where(and(
+                eq(scanProjectsTable.scanId, scanId),
+                eq(scanProjectsTable.projectId, persistedProjectId),
+              ));
+            }
+          } else {
+            await tx.insert(scanProjectsTable).values({ scanId, projectId: persistedProjectId, ...relationValues });
+          }
+
+          return persistedProjectId;
         });
+
+        linkedProjectIds.add(projectId);
+        persistedLineage.push({
+          projectId,
+          isNew,
+          eventType,
+          effectiveDate: dateDecision.effectiveDate,
+          dateEvidence: dateDecision.evidence,
+        });
+        if (project.sourceName === "AltEnergy – Watts News" && isNew) wattsPersistenceDiagnostics.acceptedNew++;
+        if (project.inventoryObservation) wattsPersistenceDiagnostics.inventoryObservations++;
+        if (isNew && project.sourceUrl) existingByUrl.set(project.sourceUrl, projectId);
+        if (isNew) existingByNameKey.set(`${project.sourceName}|${normalizeProjectName(project.name)}`, projectId);
       } catch (err) {
         logger.warn({ err, project: project.name }, "Failed to insert project or scan relationship");
       }
     }
+
+    const { projectsFound, newProjects, updatedProjects, inventoryObservedCount } = summarizeScanLineage(
+      persistedLineage,
+      { bounded: Boolean(startDate || endDate) },
+    );
 
     await db
       .update(scansTable)
@@ -3523,15 +4224,39 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         status: "completed",
         completedAt: new Date(),
         sourcesScanned,
-        projectsFound: validProjectsFound,
+        projectsFound,
         newProjects,
       })
       .where(eq(scansTable.id, scanId));
 
-    logger.info({ scanId, sourcesScanned, validProjectsFound, newProjects }, "Scan completed");
+    logger.info(
+      {
+        scanId,
+        sourcesScanned,
+        projectsFound,
+        newProjects,
+        updatedProjects,
+        inventoryObservedCount,
+        durationMs: Math.round(performance.now() - scanStartedAt),
+      },
+      "Scan completed",
+    );
+    logger.info({ scanId, ...wattsPersistenceDiagnostics }, "AltEnergy Watts News persistence diagnostics");
   } catch (err) {
     errorMessage = err instanceof Error ? err.message : String(err);
-    logger.error({ err, scanId }, "Scan failed");
+    logger.error(
+      {
+        err,
+        scanId,
+        sourcesScanned,
+        durationMs: Math.round(performance.now() - scanStartedAt),
+      },
+      "Scan failed",
+    );
+    const { projectsFound, newProjects } = summarizeScanLineage(
+      persistedLineage,
+      { bounded: Boolean(startDate || endDate) },
+    );
 
     await db
       .update(scansTable)
@@ -3539,7 +4264,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         status: "failed",
         completedAt: new Date(),
         sourcesScanned,
-        projectsFound: validProjectsFound,
+        projectsFound,
         newProjects,
         errorMessage,
       })

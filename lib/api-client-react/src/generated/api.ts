@@ -24,6 +24,7 @@ import type {
   AccessTokenInput,
   AccessTokenValidation,
   ContactEnrichment,
+  ContactEnrichmentStart,
   EpbcImportResult,
   EpbcMeta,
   EpbcProject,
@@ -41,6 +42,7 @@ import type {
   ScanInput,
   ScanProject,
   ScanRun,
+  ScanSourceHealth,
   ValidateAccessTokenBody
 } from './api.schemas';
 
@@ -676,6 +678,76 @@ export function useExportProjects<TData = Awaited<ReturnType<typeof exportProjec
 
 
 
+export const getStartContactEnrichmentUrl = () => {
+
+
+
+
+  return `/api/projects/enrich-contacts`
+}
+
+/**
+ * @summary Start a contact enrichment run
+ */
+export const startContactEnrichment = async ( options?: RequestInit): Promise<ContactEnrichmentStart> => {
+
+  return customFetch<ContactEnrichmentStart>(getStartContactEnrichmentUrl(),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+export const getStartContactEnrichmentMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof startContactEnrichment>>, TError,void, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof startContactEnrichment>>, TError,void, TContext> => {
+
+const mutationKey = ['startContactEnrichment'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof startContactEnrichment>>, void> = () => {
+
+
+          return  startContactEnrichment(requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type StartContactEnrichmentMutationResult = NonNullable<Awaited<ReturnType<typeof startContactEnrichment>>>
+
+    export type StartContactEnrichmentMutationError = ErrorType<void>
+
+    /**
+ * @summary Start a contact enrichment run
+ */
+export const useStartContactEnrichment = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof startContactEnrichment>>, TError,void, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof startContactEnrichment>>,
+        TError,
+        void,
+        TContext
+      > => {
+      return useMutation(getStartContactEnrichmentMutationOptions(options));
+    }
+
 export const getListScansUrl = () => {
 
 
@@ -910,7 +982,7 @@ export const getGetScanProjectsUrl = (id: number,) => {
 }
 
 /**
- * Returns every project found by this scan run (both new and existing), with an isNew flag on each.
+ * Returns every qualifying project linked to this scan, including new projects, dated updates to canonical projects, and current inventory observations.
  * @summary List all projects discovered by a scan
  */
 export const getScanProjects = async (id: number, options?: RequestInit): Promise<ScanProject[]> => {
@@ -967,6 +1039,83 @@ export function useGetScanProjects<TData = Awaited<ReturnType<typeof getScanProj
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getGetScanProjectsQueryOptions(id,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getGetScanSourcesUrl = (id: number,) => {
+
+
+
+
+  return `/api/scans/${id}/sources`
+}
+
+/**
+ * @summary List durable source-acquisition health for a scan
+ */
+export const getScanSources = async (id: number, options?: RequestInit): Promise<ScanSourceHealth[]> => {
+
+  return customFetch<ScanSourceHealth[]>(getGetScanSourcesUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetScanSourcesQueryKey = (id: number,) => {
+    return [
+    `/api/scans/${id}/sources`
+    ] as const;
+    }
+
+
+export const getGetScanSourcesQueryOptions = <TData = Awaited<ReturnType<typeof getScanSources>>, TError = ErrorType<void>>(id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getScanSources>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetScanSourcesQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getScanSources>>> = ({ signal }) => getScanSources(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: !!(id), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getScanSources>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetScanSourcesQueryResult = NonNullable<Awaited<ReturnType<typeof getScanSources>>>
+export type GetScanSourcesQueryError = ErrorType<void>
+
+
+/**
+ * @summary List durable source-acquisition health for a scan
+ */
+
+export function useGetScanSources<TData = Awaited<ReturnType<typeof getScanSources>>, TError = ErrorType<void>>(
+ id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getScanSources>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetScanSourcesQueryOptions(id,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

@@ -1,0 +1,46 @@
+name: Migration Check
+
+on:
+  push:
+    branches:
+      - migration/railway-supabase
+
+# When several migration files are committed in quick succession, only the
+# newest check needs to finish. This avoids duplicate runs and failure-email
+# noise from temporary intermediate commits.
+concurrency:
+  group: migration-check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck and build
+        run: pnpm run build
+
+      - name: Verify staged production frontend
+        run: test -f artifacts/api-server/dist/public/index.html

@@ -1,5 +1,8 @@
 import { useParams, Link } from "wouter";
-import { useGetScan, getGetScanQueryKey, useGetScanProjects, getGetScanProjectsQueryKey } from "@workspace/api-client-react";
+import {
+  useGetScan, getGetScanQueryKey, useGetScanProjects, getGetScanProjectsQueryKey,
+  useGetScanSources, getGetScanSourcesQueryKey,
+} from "@workspace/api-client-react";
 import { Layout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -7,8 +10,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { format } from "date-fns";
 import { ArrowLeft, CheckCircle2 } from "lucide-react";
+import { useState } from "react";
+
+type ScanResultFilter = "scan_period" | "all" | "new" | "updated" | "inventory_observed";
 
 export default function ScanDetail() {
+  const [resultFilter, setResultFilter] = useState<ScanResultFilter>("scan_period");
   const params = useParams();
   const scanId = parseInt(params.id || "0", 10);
 
@@ -20,7 +27,11 @@ export default function ScanDetail() {
     query: { enabled: !!scanId, queryKey: getGetScanProjectsQueryKey(scanId) },
   });
 
-  const isLoading = scanLoading || projectsLoading;
+  const { data: sourceHealth, isLoading: sourceHealthLoading } = useGetScanSources(scanId, {
+    query: { enabled: !!scanId, queryKey: getGetScanSourcesQueryKey(scanId) },
+  });
+
+  const isLoading = scanLoading || projectsLoading || sourceHealthLoading;
 
   if (isLoading) {
     return (
@@ -47,16 +58,43 @@ export default function ScanDetail() {
     );
   }
 
-  const newCount = projects?.filter((p) => p.isNew).length ?? 0;
+  const newCount = projects?.filter((p) => p.eventType === "new" && p.effectiveDate).length ?? 0;
+  const updatedCount = projects?.filter((p) => p.eventType === "updated" && p.effectiveDate).length ?? 0;
+  const observedCount = projects?.filter((p) => p.dateEvidence === "altenergy_inventory_observation").length ?? 0;
+  const scanPeriodCount = newCount + updatedCount;
+  const successfulSources = sourceHealth?.filter((item) =>
+    item.outcome === "success-with-results" || item.outcome === "success-zero-results"
+  ).length ?? 0;
+  const healthCategory = (item: NonNullable<typeof sourceHealth>[number]) => {
+    if (item.outcome === "success-zero-results") return "Valid zero";
+    if (item.outcome === "success-with-results") {
+      if (item.acquisitionMethod === "firecrawl") return "Healthy Firecrawl";
+      if (item.acquisitionMethod === "apify") return "Healthy Apify";
+      if (item.acquisitionMethod === "brightdata") return "Healthy Bright Data";
+      return "Healthy direct";
+    }
+    if (item.outcome === "blocked") return "Blocked";
+    if (item.outcome === "timeout" || item.outcome === "rate-limited") return "Degraded";
+    return "Failed";
+  };
 
-  // Sort: new projects first, then existing
+  const visibleProjects = projects?.filter((project) =>
+    resultFilter === "all" ||
+    (resultFilter === "scan_period"
+      ? (project.eventType === "new" || project.eventType === "updated") && project.effectiveDate != null
+      : resultFilter === "inventory_observed"
+        ? project.dateEvidence === "altenergy_inventory_observation"
+        : project.eventType === resultFilter && project.effectiveDate != null)
+  ) ?? [];
+  // Sort: new projects, dated updates, then inventory observations.
+  const eventOrder = { new: 0, updated: 1, inventory_observed: 2 } as const;
   const sortedProjects = projects
-    ? [...projects].sort((a, b) => (b.isNew ? 1 : 0) - (a.isNew ? 1 : 0))
+    ? [...visibleProjects].sort((a, b) => eventOrder[a.eventType] - eventOrder[b.eventType])
     : [];
 
   return (
     <Layout>
-      <div className="max-w-6xl mx-auto space-y-6">
+      <div className="max-w-6xl mx-auto flex flex-col gap-6">
         {/* Header */}
         <div>
           <Button asChild variant="ghost" size="sm" className="mb-4 -ml-3 text-muted-foreground">
@@ -103,28 +141,111 @@ export default function ScanDetail() {
                 <div className="text-xl font-mono font-bold">{scan.sourcesScanned}</div>
               </div>
               <div className="text-right">
-                <div className="text-sm text-muted-foreground">Encountered</div>
+                <div className="text-sm text-muted-foreground">Projects in period</div>
                 <div className="text-xl font-mono font-bold">{scan.projectsFound ?? 0}</div>
               </div>
               <div className="text-right">
                 <div className="text-sm text-muted-foreground">New</div>
-                <div className="text-xl font-mono font-bold text-primary">+{projects?.length ?? 0}</div>
+                <div className="text-xl font-mono font-bold text-primary">+{newCount}</div>
+              </div>
+              <div className="text-right">
+                <div className="text-sm text-muted-foreground">Updated</div>
+                <div className="text-xl font-mono font-bold text-amber-600">{updatedCount}</div>
               </div>
             </div>
           </div>
         </div>
 
+        {/* Durable source acquisition health */}
+        <div className="order-3 border rounded-lg bg-card overflow-hidden shadow-sm">
+          <div className="px-4 py-3 border-b bg-muted/50 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="font-semibold text-sm">Source acquisition health</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {sourceHealth?.length ?? 0} sources attempted · {successfulSources} successfully acquired
+              </p>
+            </div>
+          </div>
+          {sourceHealth && sourceHealth.length > 0 ? (
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-muted/30 hover:bg-muted/30">
+                  <TableHead>Source</TableHead>
+                  <TableHead>Health</TableHead>
+                  <TableHead>Method</TableHead>
+                  <TableHead className="text-right">Candidates</TableHead>
+                  <TableHead className="text-right">Qualifying</TableHead>
+                  <TableHead className="text-right">Duration</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sourceHealth.map((item) => {
+                  const category = healthCategory(item);
+                  const healthy = category.startsWith("Healthy") || category === "Valid zero";
+                  return (
+                    <TableRow key={item.id}>
+                      <TableCell className="font-medium">{item.sourceName}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={healthy
+                          ? "border-green-200 text-green-700 bg-green-50"
+                          : category === "Degraded" ? "border-amber-200 text-amber-700 bg-amber-50"
+                          : "border-red-200 text-red-700 bg-red-50"}>
+                          {category}
+                        </Badge>
+                        {item.failureReason && <div className="text-xs text-muted-foreground mt-1">{item.failureReason}</div>}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        <div>{item.acquisitionMethod}</div>
+                        {item.openaiNormalisationAttempted && (
+                          <div className="mt-1 font-sans text-muted-foreground">
+                            OpenAI normalisation {item.openaiNormalisationSucceeded ? "completed" : "failed"}
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">{item.candidateCount}</TableCell>
+                      <TableCell className="text-right font-mono">{item.qualifyingProjectCount}</TableCell>
+                      <TableCell className="text-right font-mono text-xs">{(item.durationMs / 1000).toFixed(1)}s</TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          ) : (
+            <div className="px-4 py-6 text-sm text-muted-foreground">
+              Source health is unavailable for scans created before Issue #41.
+            </div>
+          )}
+        </div>
+
         {/* Projects table */}
-        <div className="border rounded-lg bg-card overflow-hidden shadow-sm">
-          <div className="px-4 py-3 border-b bg-muted/50 flex items-center justify-between">
+        <div className="order-2 border rounded-lg bg-card overflow-hidden shadow-sm">
+          <div className="px-4 py-3 border-b bg-muted/50 flex flex-wrap items-center justify-between gap-3">
             <h2 className="font-semibold text-sm">
-              All projects found in this scan ({sortedProjects.length})
+              Project results ({scanPeriodCount} in scan period)
               {newCount > 0 && (
                 <span className="ml-2 text-xs font-normal text-emerald-600">
                   · {newCount} new
                 </span>
               )}
             </h2>
+            <div className="flex flex-wrap gap-2" aria-label="Scan result categories">
+              {([
+                ["scan_period", "Scan Period", scanPeriodCount],
+                ["new", "New", newCount],
+                ["updated", "Updated", updatedCount],
+                ["inventory_observed", "Inventory Observed", observedCount],
+                ["all", "All", projects?.length ?? 0],
+              ] as const).map(([value, label, count]) => (
+                <Button
+                  key={value}
+                  size="sm"
+                  variant={resultFilter === value ? "default" : "outline"}
+                  onClick={() => setResultFilter(value)}
+                >
+                  {label}: {count}
+                </Button>
+              ))}
+            </div>
           </div>
 
           <Table>
@@ -157,6 +278,16 @@ export default function ScanDetail() {
                           {project.isNew && (
                             <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200 text-[10px] font-bold tracking-wider uppercase px-1.5 py-0">
                               New
+                            </Badge>
+                          )}
+                          {project.eventType === "updated" && (
+                            <Badge className="bg-amber-100 text-amber-800 border-amber-200 text-[10px] font-bold tracking-wider uppercase px-1.5 py-0">
+                              Updated
+                            </Badge>
+                          )}
+                          {project.dateEvidence === "altenergy_inventory_observation" && (
+                            <Badge variant="outline" className="text-[10px] font-bold tracking-wider uppercase px-1.5 py-0">
+                              Observed
                             </Badge>
                           )}
                         </div>
@@ -203,7 +334,9 @@ export default function ScanDetail() {
                     </TableCell>
                     <TableCell>
                       <Link href={projectHref} className="block text-sm text-muted-foreground">
-                        {project.announcedDate
+                        {project.effectiveDate
+                          ? format(new Date(project.effectiveDate), "MMM d, yyyy")
+                          : project.announcedDate
                           ? format(new Date(project.announcedDate), "MMM d, yyyy")
                           : "-"}
                       </Link>

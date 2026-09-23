@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useListProjects, getListProjectsQueryKey, useExportProjects, useGetContactEnrichment, getGetContactEnrichmentQueryKey } from "@workspace/api-client-react";
+import { exportProjects, getGetContactEnrichmentQueryKey, getListProjectsQueryKey, startContactEnrichment, useGetContactEnrichment, useListProjects, type ExportProjectsParams } from "@workspace/api-client-react";
 import { Layout } from "@/components/layout";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Link, useSearch, useLocation } from "wouter";
 import { Download, Search, SearchX, Mail, Phone, User, ContactRound, Sparkles, Loader2, X } from "lucide-react";
 import { format } from "date-fns";
+import { formatProtectedApiError } from "@/lib/protected-api-error";
+import { useDebounce } from "@/lib/use-debounce";
 
 export default function Projects() {
   const [search, setSearch] = useState("");
@@ -19,9 +21,13 @@ export default function Projects() {
   const [endDate, setEndDate] = useState("");
   const [contactOnly, setContactOnly] = useState(false);
   const [enrichRunId, setEnrichRunId] = useState<number | null>(null);
-  const [enrichResult, setEnrichResult] = useState<{ checked: number; updated: number } | null>(null);
+  const [enrichMessage, setEnrichMessage] = useState<string | null>(null);
+  const [isStartingEnrichment, setIsStartingEnrichment] = useState(false);
+  const [exportMessage, setExportMessage] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
+  const debouncedSearch = useDebounce(search, 300);
 
   // Read scanId from URL query string (set by Scan History "View new" button)
   const searchStr = useSearch();
@@ -45,31 +51,32 @@ export default function Projects() {
   useEffect(() => {
     if (enrichment && enrichment.status !== "running") {
       if (enrichment.status === "completed") {
-        setEnrichResult({ checked: enrichment.checked, updated: enrichment.updated });
+        setEnrichMessage(`Checked ${enrichment.checked} projects; updated ${enrichment.updated} contacts`);
       } else {
-        setEnrichResult({ checked: 0, updated: -1 });
+        setEnrichMessage(`Enrichment failed: ${enrichment.errorMessage ?? "The enrichment run did not complete"}`);
       }
       setEnrichRunId(null);
-      queryClient.invalidateQueries();
+      queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
     }
   }, [enrichment, queryClient]);
 
   async function handleEnrichContacts() {
-    setEnrichResult(null);
+    setEnrichMessage(null);
+    setIsStartingEnrichment(true);
     try {
-      const res = await fetch("/api/projects/enrich-contacts", { method: "POST" });
-      if (!res.ok) throw new Error("Enrichment failed");
-      const data = await res.json() as { runId: number };
+      const data = await startContactEnrichment();
       setEnrichRunId(data.runId);
-    } catch {
-      setEnrichResult({ checked: 0, updated: -1 });
+    } catch (error) {
+      setEnrichMessage(formatProtectedApiError(error, "start contact enrichment"));
+    } finally {
+      setIsStartingEnrichment(false);
     }
   }
 
-  const enriching = enrichRunId != null && enrichment?.status === "running";
+  const enriching = isStartingEnrichment || enrichRunId != null;
 
   const queryParams = {
-    search: search || undefined,
+    search: debouncedSearch || undefined,
     country: country !== "ALL" ? country : undefined,
     startDate: startDate || undefined,
     endDate: endDate || undefined,
@@ -83,28 +90,40 @@ export default function Projects() {
   );
 
   const handleExport = async () => {
+    setExportMessage(null);
+    setIsExporting(true);
     try {
-      const params: Record<string, string> = {};
+      const params: ExportProjectsParams = {};
       if (startDate) params.startDate = startDate;
       if (endDate) params.endDate = endDate;
       if (country !== "ALL") params.country = country;
       if (search) params.search = search;
-      if (scanId != null) params.scanId = String(scanId);
-      if (contactOnly) params.hasContact = "true";
+      if (scanId != null) params.scanId = scanId;
+      if (contactOnly) params.hasContact = true;
 
-      const url = `/api/projects/export?${new URLSearchParams(params).toString()}`;
-      window.location.href = url;
-    } catch (e) {
-      console.error(e);
+      const csv = await exportProjects(params, { headers: { Accept: "text/csv" } });
+      const blobUrl = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = `solar-projects-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      setExportMessage(formatProtectedApiError(error, "export projects"));
+    } finally {
+      setIsExporting(false);
     }
   };
 
   return (
     <Layout>
+      <TooltipProvider>
       <div className="flex flex-col gap-6">
         {scanId != null && (
           <div className="flex items-center gap-3 px-4 py-2.5 bg-primary/10 border border-primary/20 rounded-lg text-sm">
-            <span className="font-medium text-primary">Showing new projects from scan RUN-{scanId.toString().padStart(4, '0')}</span>
+            <span className="font-medium text-primary">Showing projects first created in scan RUN-{scanId.toString().padStart(4, '0')}</span>
             <Button
               variant="ghost"
               size="sm"
@@ -121,11 +140,14 @@ export default function Projects() {
             <p className="text-muted-foreground mt-1">Browse and filter all identified solar projects.</p>
           </div>
           <div className="flex items-center gap-2">
-            {enrichResult && (
+            {enrichMessage && (
               <span className="text-sm text-muted-foreground">
-                {enrichResult.updated === -1
-                  ? "Enrichment failed"
-                  : `Found ${enrichResult.updated} new contacts`}
+                {enrichMessage}
+              </span>
+            )}
+            {exportMessage && (
+              <span className="text-sm text-destructive">
+                {exportMessage}
               </span>
             )}
             <Button
@@ -140,9 +162,9 @@ export default function Projects() {
                 <><Sparkles className="h-4 w-4" /> Enrich Contacts</>
               )}
             </Button>
-            <Button onClick={handleExport} variant="outline" className="gap-2">
-              <Download className="h-4 w-4" />
-              Export CSV
+            <Button onClick={handleExport} disabled={isExporting} variant="outline" className="gap-2">
+              {isExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {isExporting ? "Exporting..." : "Export CSV"}
             </Button>
           </div>
         </div>
@@ -256,7 +278,6 @@ export default function Projects() {
                     </TableCell>
                     <TableCell>
                       <Link href={projectHref} className="block">
-                        <TooltipProvider>
                           {p.contactEmail || p.contactName || p.contactPhone ? (
                             <div className="flex flex-col gap-0.5">
                               {p.contactName && (
@@ -296,7 +317,6 @@ export default function Projects() {
                           ) : (
                             <span className="text-xs text-muted-foreground/50 italic">No contact</span>
                           )}
-                        </TooltipProvider>
                       </Link>
                     </TableCell>
                     <TableCell>
@@ -331,6 +351,7 @@ export default function Projects() {
           </Table>
         </div>
       </div>
+      </TooltipProvider>
     </Layout>
   );
 }

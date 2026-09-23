@@ -44,7 +44,9 @@ export const ListProjectsResponseItem = zod.object({
   "contactName": zod.string().nullish(),
   "contactEmail": zod.string().nullish(),
   "contactPhone": zod.string().nullish(),
-  "announcedDate": zod.string(),
+  "announcedDate": zod.string().nullish(),
+  "announcedDateEvidence": zod.string().nullish(),
+  "lastSeenAt": zod.string().nullish(),
   "createdAt": zod.string(),
   "updatedAt": zod.string(),
   "scanId": zod.number().nullish()
@@ -95,7 +97,9 @@ export const GetProjectResponse = zod.object({
   "contactName": zod.string().nullish(),
   "contactEmail": zod.string().nullish(),
   "contactPhone": zod.string().nullish(),
-  "announcedDate": zod.string(),
+  "announcedDate": zod.string().nullish(),
+  "announcedDateEvidence": zod.string().nullish(),
+  "lastSeenAt": zod.string().nullish(),
   "createdAt": zod.string(),
   "updatedAt": zod.string(),
   "scanId": zod.number().nullish()
@@ -141,7 +145,9 @@ export const UpdateProjectResponse = zod.object({
   "contactName": zod.string().nullish(),
   "contactEmail": zod.string().nullish(),
   "contactPhone": zod.string().nullish(),
-  "announcedDate": zod.string(),
+  "announcedDate": zod.string().nullish(),
+  "announcedDateEvidence": zod.string().nullish(),
+  "lastSeenAt": zod.string().nullish(),
   "createdAt": zod.string(),
   "updatedAt": zod.string(),
   "scanId": zod.number().nullish()
@@ -197,7 +203,9 @@ export const ListScansResponseItem = zod.object({
   "sourcesScanned": zod.number(),
   "projectsFound": zod.number(),
   "newProjects": zod.number().optional(),
-  "errorMessage": zod.string().nullish()
+  "errorMessage": zod.string().nullish(),
+  "startDate": zod.string().nullish(),
+  "endDate": zod.string().nullish()
 })
 export const ListScansResponse = zod.array(ListScansResponseItem)
 
@@ -226,12 +234,14 @@ export const GetScanResponse = zod.object({
   "sourcesScanned": zod.number(),
   "projectsFound": zod.number(),
   "newProjects": zod.number().optional(),
-  "errorMessage": zod.string().nullish()
+  "errorMessage": zod.string().nullish(),
+  "startDate": zod.string().nullish(),
+  "endDate": zod.string().nullish()
 })
 
 
 /**
- * Returns every project found by this scan run (both new and existing), with an isNew flag on each.
+ * Returns every qualifying project linked to this scan, including new projects, dated updates to canonical projects, and current inventory observations.
  * @summary List all projects discovered by a scan
  */
 export const GetScanProjectsParams = zod.object({
@@ -253,13 +263,55 @@ export const GetScanProjectsResponseItem = zod.object({
   "contactName": zod.string().nullish(),
   "contactEmail": zod.string().nullish(),
   "contactPhone": zod.string().nullish(),
-  "announcedDate": zod.string(),
+  "announcedDate": zod.string().nullish(),
+  "announcedDateEvidence": zod.string().nullish(),
+  "lastSeenAt": zod.string().nullish(),
   "createdAt": zod.string(),
   "updatedAt": zod.string(),
   "scanId": zod.number().nullish(),
-  "isNew": zod.boolean().describe('True if this project was newly inserted during this scan')
+  "isNew": zod.boolean().describe('True if this project was newly inserted during this scan'),
+  "eventType": zod.enum(['new', 'updated', 'inventory_observed']).describe('How the canonical project relates to this scan; this does not redefine isNew.'),
+  "effectiveDate": zod.coerce.date().nullable().describe('Date of the source event, or null for an undated inventory observation.'),
+  "dateEvidence": zod.string().describe('Provenance classification supporting the effective date.'),
+  "eventSourceUrl": zod.string().nullable().describe('Source URL for this scan event, which may differ from the canonical project\'s source URL.'),
+  "eventSourceName": zod.string().nullable()
 })
 export const GetScanProjectsResponse = zod.array(GetScanProjectsResponseItem)
+
+
+/**
+ * @summary List durable source-acquisition health for a scan
+ */
+export const GetScanSourcesParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const GetScanSourcesResponseItem = zod.object({
+  "id": zod.number(),
+  "scanId": zod.number(),
+  "sourceName": zod.string(),
+  "acquisitionMethod": zod.string(),
+  "directAttempted": zod.boolean(),
+  "firecrawlAttempted": zod.boolean(),
+  "firecrawlSucceeded": zod.boolean(),
+  "apifyAttempted": zod.boolean(),
+  "brightDataAttempted": zod.boolean(),
+  "openaiNormalisationAttempted": zod.boolean(),
+  "openaiNormalisationSucceeded": zod.boolean(),
+  "fallbackUsed": zod.boolean(),
+  "outcome": zod.enum(['success-with-results', 'success-zero-results', 'blocked', 'timeout', 'extraction-failed', 'missing-credentials', 'rate-limited', 'provider-error']),
+  "candidateCount": zod.number(),
+  "qualifyingProjectCount": zod.number(),
+  "durationMs": zod.number(),
+  "failureCategory": zod.string().nullish(),
+  "failureReason": zod.string().nullish(),
+  "contentFingerprint": zod.string().nullish(),
+  "firecrawlCalls": zod.number(),
+  "firecrawlPages": zod.number(),
+  "firecrawlCacheReused": zod.boolean(),
+  "createdAt": zod.string()
+})
+export const GetScanSourcesResponse = zod.array(GetScanSourcesResponseItem)
 
 
 /**

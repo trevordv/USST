@@ -2,7 +2,6 @@ import { Router, type IRouter } from "express";
 import { db, accessTokensTable } from "@workspace/db";
 import { eq, and, gt } from "drizzle-orm";
 import { logger } from "../lib/logger";
-import nodemailer from "nodemailer";
 
 const router: IRouter = Router();
 
@@ -20,12 +19,13 @@ function generateToken(): string {
 }
 
 function getAppUrl(): string {
-  const domains = process.env["REPLIT_DOMAINS"];
-  if (domains) {
-    const primary = domains.split(",")[0].trim();
-    return `https://${primary}`;
+  const configuredUrl = process.env["APP_URL"]?.trim();
+  if (configuredUrl) {
+    return configuredUrl.replace(/\/+$/, "");
   }
-  return "http://localhost:80";
+
+  const port = process.env["PORT"] || "5000";
+  return `http://localhost:${port}`;
 }
 
 async function sendInviteEmail(
@@ -44,6 +44,7 @@ async function sendInviteEmail(
     day: "numeric", month: "long", year: "numeric",
   });
 
+  const { default: nodemailer } = await import("nodemailer");
   const transporter = nodemailer.createTransport({
     service: "gmail",
     auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },

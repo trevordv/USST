@@ -50,7 +50,12 @@ export interface Project {
   contactEmail?: string | null;
   /** @nullable */
   contactPhone?: string | null;
-  announcedDate: string;
+  /** @nullable */
+  announcedDate?: string | null;
+  /** @nullable */
+  announcedDateEvidence?: string | null;
+  /** @nullable */
+  lastSeenAt?: string | null;
   createdAt: string;
   updatedAt: string;
   /** @nullable */
@@ -156,6 +161,10 @@ export interface ScanRun {
   newProjects?: number;
   /** @nullable */
   errorMessage?: string | null;
+  /** @nullable */
+  startDate?: string | null;
+  /** @nullable */
+  endDate?: string | null;
 }
 
 export interface ScanInput {
@@ -179,6 +188,18 @@ export type ScanProjectStatus = typeof ScanProjectStatus[keyof typeof ScanProjec
 export const ScanProjectStatus = {
   announced: 'announced',
   under_development: 'under_development',
+} as const;
+
+/**
+ * How the canonical project relates to this scan; this does not redefine isNew.
+ */
+export type ScanProjectEventType = typeof ScanProjectEventType[keyof typeof ScanProjectEventType];
+
+
+export const ScanProjectEventType = {
+  new: 'new',
+  updated: 'updated',
+  inventory_observed: 'inventory_observed',
 } as const;
 
 export interface ScanProject {
@@ -206,13 +227,77 @@ export interface ScanProject {
   contactEmail?: string | null;
   /** @nullable */
   contactPhone?: string | null;
-  announcedDate: string;
+  /** @nullable */
+  announcedDate?: string | null;
+  /** @nullable */
+  announcedDateEvidence?: string | null;
+  /** @nullable */
+  lastSeenAt?: string | null;
   createdAt: string;
   updatedAt: string;
   /** @nullable */
   scanId?: number | null;
   /** True if this project was newly inserted during this scan */
   isNew: boolean;
+  /** How the canonical project relates to this scan; this does not redefine isNew. */
+  eventType: ScanProjectEventType;
+  /**
+     * Date of the source event, or null for an undated inventory observation.
+     * @nullable
+     */
+  effectiveDate: string | null;
+  /** Provenance classification supporting the effective date. */
+  dateEvidence: string;
+  /**
+     * Source URL for this scan event, which may differ from the canonical project's source URL.
+     * @nullable
+     */
+  eventSourceUrl: string | null;
+  /** @nullable */
+  eventSourceName: string | null;
+}
+
+export type ScanSourceHealthOutcome = typeof ScanSourceHealthOutcome[keyof typeof ScanSourceHealthOutcome];
+
+
+export const ScanSourceHealthOutcome = {
+  'success-with-results': 'success-with-results',
+  'success-zero-results': 'success-zero-results',
+  blocked: 'blocked',
+  timeout: 'timeout',
+  'extraction-failed': 'extraction-failed',
+  'missing-credentials': 'missing-credentials',
+  'rate-limited': 'rate-limited',
+  'provider-error': 'provider-error',
+} as const;
+
+export interface ScanSourceHealth {
+  id: number;
+  scanId: number;
+  sourceName: string;
+  acquisitionMethod: string;
+  directAttempted: boolean;
+  firecrawlAttempted: boolean;
+  firecrawlSucceeded: boolean;
+  apifyAttempted: boolean;
+  brightDataAttempted: boolean;
+  openaiNormalisationAttempted: boolean;
+  openaiNormalisationSucceeded: boolean;
+  fallbackUsed: boolean;
+  outcome: ScanSourceHealthOutcome;
+  candidateCount: number;
+  qualifyingProjectCount: number;
+  durationMs: number;
+  /** @nullable */
+  failureCategory?: string | null;
+  /** @nullable */
+  failureReason?: string | null;
+  /** @nullable */
+  contentFingerprint?: string | null;
+  firecrawlCalls: number;
+  firecrawlPages: number;
+  firecrawlCacheReused: boolean;
+  createdAt: string;
 }
 
 export type ContactEnrichmentStatus = typeof ContactEnrichmentStatus[keyof typeof ContactEnrichmentStatus];
@@ -234,6 +319,18 @@ export interface ContactEnrichment {
   updated: number;
   /** @nullable */
   errorMessage?: string | null;
+}
+
+export type ContactEnrichmentStartStatus = typeof ContactEnrichmentStartStatus[keyof typeof ContactEnrichmentStartStatus];
+
+
+export const ContactEnrichmentStartStatus = {
+  running: 'running',
+} as const;
+
+export interface ContactEnrichmentStart {
+  runId: number;
+  status: ContactEnrichmentStartStatus;
 }
 
 export interface AccessToken {

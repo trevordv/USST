@@ -227,6 +227,25 @@ paths:
               schema:
                 type: string
 
+  /projects/enrich-contacts:
+    post:
+      operationId: startContactEnrichment
+      tags: [contact-enrichments]
+      summary: Start a contact enrichment run
+      responses:
+        "202":
+          description: Contact enrichment started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactEnrichmentStart"
+        "401":
+          description: Authentication required
+        "403":
+          description: Account is not authorized
+        "500":
+          description: Contact enrichment could not be started
+
   /scans:
     get:
       operationId: listScans
@@ -285,7 +304,7 @@ paths:
       operationId: getScanProjects
       tags: [scans]
       summary: List all projects discovered by a scan
-      description: Returns every project found by this scan run (both new and existing), with an isNew flag on each.
+      description: Returns every qualifying project linked to this scan, including new projects, dated updates to canonical projects, and current inventory observations.
       parameters:
         - name: id
           in: path
@@ -301,6 +320,29 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/ScanProject"
+        "404":
+          description: Scan not found
+
+  /scans/{id}/sources:
+    get:
+      operationId: getScanSources
+      tags: [scans]
+      summary: List durable source-acquisition health for a scan
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: One safe acquisition outcome per attempted approved source
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScanSourceHealth"
         "404":
           description: Scan not found
 
@@ -523,7 +565,7 @@ components:
 
     Project:
       type: object
-      required: [id, name, country, status, announcedDate, createdAt, updatedAt]
+      required: [id, name, country, status, createdAt, updatedAt]
       properties:
         id:
           type: integer
@@ -556,7 +598,11 @@ components:
         contactPhone:
           type: ["string", "null"]
         announcedDate:
-          type: string
+          type: ["string", "null"]
+        announcedDateEvidence:
+          type: ["string", "null"]
+        lastSeenAt:
+          type: ["string", "null"]
         createdAt:
           type: string
         updatedAt:
@@ -674,6 +720,10 @@ components:
           type: integer
         errorMessage:
           type: ["string", "null"]
+        startDate:
+          type: ["string", "null"]
+        endDate:
+          type: ["string", "null"]
 
     ScanInput:
       type: object
@@ -687,7 +737,7 @@ components:
 
     ScanProject:
       type: object
-      required: [id, name, country, status, announcedDate, createdAt, updatedAt, isNew]
+      required: [id, name, country, status, createdAt, updatedAt, isNew, eventType, effectiveDate, dateEvidence, eventSourceUrl, eventSourceName]
       properties:
         id:
           type: integer
@@ -720,7 +770,11 @@ components:
         contactPhone:
           type: ["string", "null"]
         announcedDate:
-          type: string
+          type: ["string", "null"]
+        announcedDateEvidence:
+          type: ["string", "null"]
+        lastSeenAt:
+          type: ["string", "null"]
         createdAt:
           type: string
         updatedAt:
@@ -730,6 +784,76 @@ components:
         isNew:
           type: boolean
           description: True if this project was newly inserted during this scan
+        eventType:
+          type: string
+          enum: [new, updated, inventory_observed]
+          description: How the canonical project relates to this scan; this does not redefine isNew.
+        effectiveDate:
+          type: ["string", "null"]
+          format: date
+          description: Date of the source event, or null for an undated inventory observation.
+        dateEvidence:
+          type: string
+          description: Provenance classification supporting the effective date.
+        eventSourceUrl:
+          type: ["string", "null"]
+          description: Source URL for this scan event, which may differ from the canonical project's source URL.
+        eventSourceName:
+          type: ["string", "null"]
+
+    ScanSourceHealth:
+      type: object
+      required:
+        - id
+        - scanId
+        - sourceName
+        - acquisitionMethod
+        - directAttempted
+        - firecrawlAttempted
+        - firecrawlSucceeded
+        - apifyAttempted
+        - brightDataAttempted
+        - openaiNormalisationAttempted
+        - openaiNormalisationSucceeded
+        - fallbackUsed
+        - outcome
+        - candidateCount
+        - qualifyingProjectCount
+        - durationMs
+        - firecrawlCalls
+        - firecrawlPages
+        - firecrawlCacheReused
+        - createdAt
+      properties:
+        id: { type: integer }
+        scanId: { type: integer }
+        sourceName: { type: string }
+        acquisitionMethod:
+          type: string
+        directAttempted: { type: boolean }
+        firecrawlAttempted: { type: boolean }
+        firecrawlSucceeded: { type: boolean }
+        apifyAttempted: { type: boolean }
+        brightDataAttempted: { type: boolean }
+        openaiNormalisationAttempted: { type: boolean }
+        openaiNormalisationSucceeded: { type: boolean }
+        fallbackUsed: { type: boolean }
+        outcome:
+          type: string
+          enum: [success-with-results, success-zero-results, blocked, timeout, extraction-failed, missing-credentials, rate-limited, provider-error]
+        candidateCount: { type: integer }
+        qualifyingProjectCount: { type: integer }
+        durationMs: { type: integer }
+        failureCategory:
+          type: ["string", "null"]
+        failureReason:
+          type: ["string", "null"]
+        contentFingerprint:
+          type: ["string", "null"]
+        firecrawlCalls: { type: integer }
+        firecrawlPages: { type: integer }
+        firecrawlCacheReused: { type: boolean }
+        createdAt: { type: string }
 
     ContactEnrichment:
       type: object
@@ -750,6 +874,16 @@ components:
           type: integer
         errorMessage:
           type: ["string", "null"]
+
+    ContactEnrichmentStart:
+      type: object
+      required: [runId, status]
+      properties:
+        runId:
+          type: integer
+        status:
+          type: string
+          enum: [running]
 
     AccessToken:
       type: object
