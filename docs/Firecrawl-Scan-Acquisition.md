@@ -21,6 +21,7 @@ A valid empty result is successful acquisition and stops escalation. AltEnergy, 
 - Exact HTTPS host allowlist derived from each approved source's configured URLs; credentials, custom ports, cross-host redirects and external links are rejected.
 - Scrape mode: one page. Crawl mode: at most three pages, discovery depth one, one provider worker.
 - Global Firecrawl concurrency: two; request timeout: 35 seconds; total crawl budget: 55 seconds.
+- The three approved NZ EPA sources are serialized per host. Firecrawl API-level HTTP 429 responses set a process-wide cooldown from the provider's `Retry-After` header. `FIRECRAWL_MIN_REQUEST_INTERVAL_MS` is an optional operator-set dispatch interval (default `0`); it must be set from the account's documented plan limit, not guessed.
 - Response cap: 2 MiB; retained content cap: 1 MiB per page; at most 100 approved-host links.
 - Provider cache age: one hour; in-process successful-result cache and in-flight deduplication: 15 minutes.
 - Source content is normalized and SHA-256 hashed for provenance and cost control; raw content, cookies and credentials are not persisted in source health.
