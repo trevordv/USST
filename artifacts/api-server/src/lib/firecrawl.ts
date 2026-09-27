@@ -12,6 +12,16 @@ const PROVIDER_CACHE_MAX_AGE_MS = 60 * 60 * 1000;
 const MEMORY_CACHE_TTL_MS = 15 * 60 * 1000;
 const MAX_CONCURRENCY = 2;
 
+// RUN-0118 recorded two simultaneous Firecrawl 429 responses for separate,
+// approved NZ EPA endpoints. Keep those public pages within the existing
+// provider and source bounds, but never start two of them at once. This is a
+// targeted pacing control, not a retry or an access-control bypass.
+const NZ_EPA_SOURCE_NAMES = new Set([
+  "NZ EPA – Fast-track Projects",
+  "NZ EPA – RMA Proposals",
+  "NZ EPA – Public Consultations",
+]);
+
 export type FirecrawlFailureCategory =
   | "missing-credentials"
   | "auth-failed"
@@ -77,6 +87,7 @@ interface CachedResult {
 
 const resultCache = new Map<string, CachedResult>();
 const inFlight = new Map<string, Promise<FirecrawlAcquisitionResult>>();
+const sourceHostTails = new Map<string, Promise<void>>();
 let activeRequests = 0;
 const waiters: Array<() => void> = [];
 
@@ -93,9 +104,32 @@ async function withConcurrency<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
+async function withSourceHostPacing<T>(
+  sourceName: string,
+  url: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (!NZ_EPA_SOURCE_NAMES.has(sourceName)) return operation();
+
+  const host = new URL(url).hostname;
+  const previous = sourceHostTails.get(host) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  const tail = previous.then(() => current);
+  sourceHostTails.set(host, tail);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (sourceHostTails.get(host) === tail) sourceHostTails.delete(host);
+  }
+}
+
 export function clearFirecrawlMemoryCacheForTests(): void {
   resultCache.clear();
   inFlight.clear();
+  sourceHostTails.clear();
 }
 
 export function firecrawlConfigured(environment: NodeJS.ProcessEnv = process.env): boolean {
@@ -295,7 +329,7 @@ export async function firecrawlScrapeApprovedSource(
   if (!key) throw new FirecrawlAcquisitionError("missing-credentials", "FIRECRAWL_API_KEY is not configured");
   const now = options.now ?? Date.now;
   const id = cacheKey(sourceName, url, "scrape", 1, 0);
-  return cachedOperation(id, now, options.bypassMemoryCache ?? false, async () => {
+  return withSourceHostPacing(sourceName, url, () => cachedOperation(id, now, options.bypassMemoryCache ?? false, async () => {
     const started = now();
     const body = await providerRequest("/scrape", {
       method: "POST",
@@ -314,7 +348,7 @@ export async function firecrawlScrapeApprovedSource(
       requestedUrl: url, pages: [page], pagesFetched: 1,
       durationMs: Math.max(0, now() - started), cacheReuse: page.metadata.cacheState === "hit",
     };
-  });
+  }));
 }
 
 export async function firecrawlCrawlApprovedSource(
@@ -335,7 +369,7 @@ export async function firecrawlCrawlApprovedSource(
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const id = cacheKey(sourceName, url, "crawl", pages, depth);
-  return cachedOperation(id, now, options.bypassMemoryCache ?? false, async () => {
+  return withSourceHostPacing(sourceName, url, () => cachedOperation(id, now, options.bypassMemoryCache ?? false, async () => {
     const started = now();
     const submitted = await providerRequest("/crawl", {
       method: "POST",
@@ -377,7 +411,7 @@ export async function firecrawlCrawlApprovedSource(
       };
     }
     throw new FirecrawlAcquisitionError("timeout", "Firecrawl crawl exceeded the total source budget");
-  });
+  }));
 }
 
 export async function acquireApprovedSourceWithFirecrawl(

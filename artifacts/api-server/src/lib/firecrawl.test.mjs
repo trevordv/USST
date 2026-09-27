@@ -14,6 +14,11 @@ import {
 const environment = { FIRECRAWL_API_KEY: "fc-test-secret" };
 const nswUrl = "https://www.planningportal.nsw.gov.au/major-projects/projects";
 const energyUrl = "https://www.energymagazine.com.au/?s=solar+project";
+const nzEpaUrls = [
+  ["NZ EPA – Fast-track Projects", "https://www.epa.govt.nz/fast-track-consenting/fast-track-projects/"],
+  ["NZ EPA – RMA Proposals", "https://www.epa.govt.nz/industry-areas/rma-proposals/"],
+  ["NZ EPA – Public Consultations", "https://www.epa.govt.nz/public-consultations/"],
+];
 
 function scrapeResponse(overrides = {}) {
   return {
@@ -137,6 +142,38 @@ test("duplicate identical requests share one provider call, including cache reus
   assert.equal(first.cacheReuse, false);
   assert.equal(concurrent.cacheReuse, true);
   assert.equal(cached.cacheReuse, true);
+});
+
+test("NZ EPA Firecrawl requests are host-paced after RUN-0118 rate limits", async () => {
+  let active = 0;
+  let maximumActive = 0;
+  const calls = [];
+  const fetcher = async (_endpoint, options) => {
+    const url = JSON.parse(options.body).url;
+    calls.push(url);
+    active++;
+    maximumActive = Math.max(maximumActive, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    active--;
+    return Response.json({
+      success: true,
+      data: {
+        markdown: "# Current projects\n50 MW solar farm",
+        metadata: { sourceURL: url, statusCode: 200 },
+      },
+    });
+  };
+
+  await Promise.all(nzEpaUrls.map(([sourceName, url]) =>
+    firecrawlScrapeApprovedSource(sourceName, url, {
+      environment,
+      fetcher,
+      bypassMemoryCache: true,
+    }),
+  ));
+
+  assert.equal(maximumActive, 1);
+  assert.deepEqual(new Set(calls), new Set(nzEpaUrls.map(([, url]) => url)));
 });
 
 test("crawl enforces max pages/depth and polls the current v2 endpoint", async () => {
