@@ -1,5 +1,7 @@
 export const WATTS_NEWS_UPDATE_EVIDENCE = "altenergy_watts_news_update" as const;
 
+import { extractProjectCapacityEvidence } from "./source-text.ts";
+
 const PROJECT_CATEGORIES = new Set([
   "NEW PROJECT",
   "PROJECT UPDATE",
@@ -152,36 +154,17 @@ export function parseWattNewsSections(html: string, newsletterUrl: string): Watt
   return sections;
 }
 
-function toMw(value: string, unit: string): number {
-  const number = Number.parseFloat(value);
-  return unit.toLowerCase().startsWith("g") ? number * 1000 : number;
-}
-
-function firstCapacity(text: string, patterns: RegExp[]): number | null {
-  for (const pattern of patterns) {
-    const match = pattern.exec(text);
-    pattern.lastIndex = 0;
-    if (match) return toMw(match[1], match[2]);
-  }
-  return null;
-}
-
 export function extractWattsNewsCapacities(text: string): {
   solarCapacityMw: number | null;
   bessPowerMw: number | null;
   bessEnergyMwh: number | null;
 } {
-  const solarCapacityMw = firstCapacity(text, [
-    /(\d+(?:\.\d+)?)\s*(MW|GW)\s*(?:AC\s*)?(?:of\s+)?(?:solar|solar\s+PV|photovoltaic|PV)\b/i,
-    /\b(?:solar|solar\s+PV|photovoltaic|PV)\b(?:\s+(?:generation|component|capacity|farm|project|stage))*\s*(?:of|is|at|:|-)?\s*(\d+(?:\.\d+)?)\s*(MW|GW)\b/i,
-  ]);
+  const evidence = extractProjectCapacityEvidence(text);
   const bessPair = text.match(/(\d+(?:\.\d+)?)\s*MW\s*\/\s*(\d+(?:\.\d+)?)\s*MWh\s*(?:BESS|battery)?/i);
-  const bessPowerOnly = text.match(/(\d+(?:\.\d+)?)\s*MW\s*(?:BESS|battery(?:\s+storage)?)/i);
-  const bessEnergyOnly = text.match(/(\d+(?:\.\d+)?)\s*MWh\s*(?:BESS|battery(?:\s+storage)?)/i);
   return {
-    solarCapacityMw,
-    bessPowerMw: bessPair ? Number.parseFloat(bessPair[1]) : bessPowerOnly ? Number.parseFloat(bessPowerOnly[1]) : null,
-    bessEnergyMwh: bessPair ? Number.parseFloat(bessPair[2]) : bessEnergyOnly ? Number.parseFloat(bessEnergyOnly[1]) : null,
+    solarCapacityMw: evidence.solarMw,
+    bessPowerMw: evidence.bessMw ?? (bessPair ? Number.parseFloat(bessPair[1]) : null),
+    bessEnergyMwh: evidence.bessMwh ?? (bessPair ? Number.parseFloat(bessPair[2]) : null),
   };
 }
 

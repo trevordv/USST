@@ -1,11 +1,10 @@
 import {
-  extractCapacity,
   extractLocation,
   EXCLUDE_KEYWORDS,
 } from "./source-heuristics.ts";
 import {
   deriveProjectNames,
-  findCapacityMentions,
+  extractProjectCapacityEvidence,
   normalizeProjectName,
 } from "./source-text.ts";
 
@@ -73,20 +72,10 @@ function capacityNearName(
       Math.max(0, index - 120),
       Math.min(text.length, index + name.length + 420),
     );
-    const localNameIndex = local.toLowerCase().indexOf(name.toLowerCase());
-    const mentions = findCapacityMentions(local).filter(
-      (mention) => mention.score > -5,
-    );
-    if (mentions.length) {
-      mentions.sort(
-        (a, b) =>
-          Math.abs(a.index - localNameIndex) -
-            Math.abs(b.index - localNameIndex) || b.score - a.score,
-      );
-      return mentions[0].valueMw;
-    }
+    const solarMw = extractProjectCapacityEvidence(local).solarMw;
+    if (solarMw != null) return solarMw;
   }
-  return onlyName ? extractCapacity(text) : null;
+  return onlyName ? extractProjectCapacityEvidence(text).solarMw : null;
 }
 
 function canonicalProjectName(name: string): string {

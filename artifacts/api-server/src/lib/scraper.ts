@@ -20,8 +20,8 @@
  * paths first, then Firecrawl, Apify and Bright Data where explicitly allowed.
  */
 
-import { db, pool, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable, pvhContactsTable, type PvhContact } from "@workspace/db";
-import { and, eq } from "drizzle-orm";
+import { db, pool, projectsTable, scansTable, scanProjectsTable, projectSourceEventsTable, contactEnrichmentsTable, pvhContactsTable, type PvhContact } from "@workspace/db";
+import { and, eq, inArray, like } from "drizzle-orm";
 import { logger } from "./logger";
 import {
   getProjectIneligibilityReason,
@@ -79,6 +79,7 @@ import { parseHtmlPage, parseRssFeed, parseRssFeedPage, type FeedPageResult } fr
 import { extractNamedProjectEvidence } from "./news-project-evidence.ts";
 import { classifyManagedZeroResult } from "./managed-source-extraction.ts";
 import { assignProjectIdentityUrls } from "./project-identity.ts";
+import { matchKnownCanonicalAlias, reviewedLegacyIdsForCanonical } from "./project-reconciliation.ts";
 import { enrichProjectsFromArticles as enrichFromArticles } from "./article-enrichment.ts";
 import { parseSourceFallbackArray, sourceAcquisitionOutcome } from "./source-access-outcome";
 import { browseAiConfigurationProblem, runBrowseAiTask, type BrowseAiResult } from "./browse-ai-task";
@@ -299,7 +300,7 @@ interface ScrapedProject {
   announcedDate: string | null;
   announcedDateEvidence?: "source_reported" | "unknown";
   sourceEventDate?: string | null;
-  sourceEventEvidence?: "source_update" | "altenergy_source_update" | "altenergy_watts_news_update";
+  sourceEventEvidence?: "source_update" | "altenergy_source_update" | "altenergy_watts_news_update" | null;
   inventoryObservation?: boolean;
   eventType?: "new" | "updated" | "inventory_observed";
   wattsNewsEvidence?: WattsNewsProjectEvidence;
@@ -1454,6 +1455,8 @@ function parseFirecrawlMarkdown(
         sourceUrl,
         sourceName: source.name,
         announcedDate,
+        sourceEventDate: announcedDate,
+        sourceEventEvidence: announcedDate ? "source_update" : null,
         contactName: null,
         contactEmail: null,
         contactPhone: null,
@@ -3092,10 +3095,16 @@ Example shape:
 Rules:
 - Use ONLY the acquired content below and cite only these approved official hostnames: ${officialHosts.join(", ")}
 - Do not search the web, infer missing records, or treat this content as complete
+- For each article, return its specific primary project subject only. A project
+  mentioned only as context, comparison, history or a nearby development is not
+  an event; include a secondary project only when the article states its own
+  dated, project-specific change.
 - Do not use news aggregators, developer sites, social media, cached copies, or unofficial mirrors
 - country: "AU" or "NZ" only
 - status: "announced" or "under_development"
 - capacity_mw: number or null if unknown — only include projects ≥5 MW or where size is unknown
+- capacity_mw is explicit solar/PV generation MW only. Never use a hybrid/portfolio
+  total, wind MW, BESS MW, or BESS MWh as solar capacity.
 - source_url: direct URL to the specific project page/article if known, otherwise use ${source.searchUrl}
 - announced_date: YYYY-MM-DD format, null if unknown
 - Exclude wind-only projects, mining, roads, housing
@@ -4028,7 +4037,13 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       const nameMatchedProjectId = urlMatchedProjectId == null && !project.wattsNewsEvidence && project.sourceUrl?.includes("#")
         ? existingByNameKey.get(`${project.sourceName}|${normalizeProjectName(project.name)}`)
         : undefined;
-      let existingProjectId = wattsMatch?.project.id ?? urlMatchedProjectId ?? nameMatchedProjectId ?? null;
+      const knownAlias = wattsMatch == null
+        ? matchKnownCanonicalAlias(project, existingRows)
+        : null;
+      let existingProjectId = wattsMatch?.project.id ?? knownAlias?.canonicalProjectId ?? urlMatchedProjectId ?? nameMatchedProjectId ?? null;
+      if (knownAlias) {
+        logger.info({ project: project.name, projectId: knownAlias.canonicalProjectId, reason: knownAlias.reason }, "Known canonical project alias matched");
+      }
       if (wattsMatch) {
         wattsPersistenceDiagnostics.canonicalUpdatesMatched++;
         if (project.capacityMw == null) project.capacityMw = Number(wattsMatch.project.capacityMw);
@@ -4080,15 +4095,12 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       // for undated items, which would otherwise let old March/May records slip
       // through. For new projects, use the scraped date directly.
       const isExisting = existingProjectId != null;
-      if (existingProjectId != null && existingProjectId !== -1) {
-        await db.update(projectsTable).set({ lastSeenAt: new Date() }).where(eq(projectsTable.id, existingProjectId));
-      }
       const dateDecision = decideScanDateWindow({
         startDate,
         endDate,
         scrapedAnnouncedDate: project.announcedDate,
         sourceEventDate: project.sourceEventDate,
-        sourceEventEvidence: project.sourceEventEvidence,
+        sourceEventEvidence: project.sourceEventEvidence ?? undefined,
         inventoryObservation: project.inventoryObservation,
         persistedAnnouncedDate: existingProjectId != null
           ? existingDateById.get(existingProjectId)
@@ -4100,10 +4112,43 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         continue;
       }
 
+      // A source article is evidence once per canonical project and event day.
+      // Re-reading unchanged RSS/listing content must not manufacture another
+      // dated update in a later scan. The unique DB key closes the race below.
+      if (existingProjectId != null && project.sourceEventDate && project.sourceUrl && !project.inventoryObservation) {
+        const articleUrl = project.sourceUrl.split("#")[0].replace(/\/$/, "");
+        const prior = await db.select({ id: projectSourceEventsTable.id }).from(projectSourceEventsTable).where(and(
+          eq(projectSourceEventsTable.canonicalProjectId, existingProjectId),
+          eq(projectSourceEventsTable.sourceUrl, articleUrl),
+          eq(projectSourceEventsTable.eventDate, project.sourceEventDate),
+        )).limit(1);
+        if (prior.length) {
+          logger.info({ projectId: existingProjectId, sourceUrl: articleUrl, eventDate: project.sourceEventDate }, "Duplicate source event skipped");
+          continue;
+        }
+        // Transition guard: the ledger is introduced after historical scans.
+        // Check reviewed predecessor IDs too, so the known 23 September article
+        // cannot surface once merely because the new ledger began empty.
+        const historicalIds = [existingProjectId, ...reviewedLegacyIdsForCanonical(existingProjectId)];
+        const historical = await db.select({ id: scanProjectsTable.id }).from(scanProjectsTable).where(and(
+          inArray(scanProjectsTable.projectId, historicalIds),
+          eq(scanProjectsTable.effectiveDate, project.sourceEventDate),
+          like(scanProjectsTable.sourceUrl, `${articleUrl}%`),
+        )).limit(1);
+        if (historical.length) {
+          logger.info({ projectId: existingProjectId, sourceUrl: articleUrl, eventDate: project.sourceEventDate }, "Historical source event transition guard skipped duplicate");
+          continue;
+        }
+      }
+
+      if (existingProjectId != null && existingProjectId !== -1) {
+        await db.update(projectsTable).set({ lastSeenAt: new Date() }).where(eq(projectsTable.id, existingProjectId));
+      }
+
       const isNew = !isExisting;
       const eventType = isNew
         ? "new"
-        : project.eventType ?? (project.inventoryObservation ? "inventory_observed" : "updated");
+        : project.eventType ?? (project.inventoryObservation || !project.sourceEventDate ? "inventory_observed" : "updated");
 
       try {
         if (existingProjectId != null && !eligibleExistingProjectIds.has(existingProjectId) && !wattsMatch) {
@@ -4164,6 +4209,19 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
             throw new Error("Project insert did not return an id");
           }
 
+          if (project.sourceEventDate && project.sourceUrl && !project.inventoryObservation) {
+            const articleUrl = project.sourceUrl.split("#")[0].replace(/\/$/, "");
+            const insertedEvent = await tx.insert(projectSourceEventsTable).values({
+              canonicalProjectId: persistedProjectId,
+              sourceUrl: articleUrl,
+              eventDate: project.sourceEventDate,
+              sourceName: project.sourceName,
+            }).onConflictDoNothing().returning({ id: projectSourceEventsTable.id });
+            if (!insertedEvent.length) {
+              logger.info({ projectId: persistedProjectId, sourceUrl: articleUrl, eventDate: project.sourceEventDate }, "Concurrent duplicate source event skipped");
+              return null;
+            }
+          }
           if (wattsMatch && project.wattsNewsEvidence) {
             const canonical = wattsMatch.project;
             const { updates: fieldUpdates, decisions } = planWattsNewsCanonicalUpdates(project.wattsNewsEvidence, canonical);
@@ -4196,6 +4254,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
           return persistedProjectId;
         });
 
+        if (projectId == null) continue;
         linkedProjectIds.add(projectId);
         persistedLineage.push({
           projectId,

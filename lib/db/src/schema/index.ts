@@ -7,3 +7,4 @@ export * from "./app-users";
 export * from "./ai-source-cache";
 export * from "./openai-usage";
 export * from "./scan-source-health";
+export * from "./project-source-events";
