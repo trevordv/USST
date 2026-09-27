@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - migration/railway-supabase
+      - codex/**
   pull_request:
     branches:
       - migration/railway-supabase
