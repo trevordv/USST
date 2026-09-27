@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { extractProjectCapacityEvidence } from "./source-text.ts";
-import { matchKnownCanonicalAlias, sourceEventKey } from "./project-reconciliation.ts";
+import { filterPrimaryArticleSubjects, matchKnownCanonicalAlias, sourceEventKey } from "./project-reconciliation.ts";
 
 const canonical = [
   { id: 570, name: "Narrogin East Hybrid Project", developer: "Lightsource bp", location: "Narrogin, WA", country: "AU" },
@@ -27,4 +27,11 @@ test("source event identity deduplicates the same canonical article/date but not
   const first = sourceEventKey(570, "https://www.pv-magazine-australia.com/2026/09/23/story/#narrogin-east", "2026-09-23");
   assert.equal(first, sourceEventKey(570, "https://www.pv-magazine-australia.com/2026/09/23/story/", "2026-09-23"));
   assert.notEqual(first, sourceEventKey(570, "https://www.pv-magazine-australia.com/2026/09/23/story/", "2026-09-24"));
+});
+
+test("a contextual Narrogin reference is not an independent event, but an explicitly dated secondary change is retained", () => {
+  const candidates = [{ name: "Narrogin East Renewable Energy Project" }, { name: "Ace Power's approved Narrogin Solar Farm" }];
+  assert.deepEqual(filterPrimaryArticleSubjects(candidates, "Lightsource bp seeks green light", article).map((row) => row.name), ["Narrogin East Renewable Energy Project"]);
+  const dated = "Narrogin East Renewable Energy Project is under assessment. On 23 September 2026, Ace Power's approved Narrogin Solar Farm received a separate amended approval.";
+  assert.deepEqual(filterPrimaryArticleSubjects(candidates, "Narrogin update", dated).map((row) => row.name), candidates.map((row) => row.name));
 });

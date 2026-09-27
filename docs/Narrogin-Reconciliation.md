@@ -11,5 +11,7 @@ No project row, ID, scan lineage, external ID or source evidence is deleted.
 
 The schema adds `project_reconciliations` for a reviewed future mapping and
 `project_source_events` for canonical-project/article/date deduplication. The
-migration deliberately contains no data manipulation statement. Any historical
-mapping must be separately reviewed and inserted reversibly.
+migration deliberately contains no data manipulation statement. A separately
+reviewable, rollback-only plan is at
+`supabase/reconciliation/20260927_narrogin_legacy_review.sql`; it includes
+pre/post checks and inserts mappings only after explicit approval.
