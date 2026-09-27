@@ -5,6 +5,7 @@ import {
   clearFirecrawlMemoryCacheForTests,
   firecrawlConfigured,
   firecrawlContentHash,
+  firecrawlMinimumRequestIntervalMs,
   firecrawlCrawlApprovedSource,
   firecrawlScrapeApprovedSource,
   FirecrawlAcquisitionError,
@@ -14,6 +15,11 @@ import {
 const environment = { FIRECRAWL_API_KEY: "fc-test-secret" };
 const nswUrl = "https://www.planningportal.nsw.gov.au/major-projects/projects";
 const energyUrl = "https://www.energymagazine.com.au/?s=solar+project";
+const nzEpaUrls = [
+  ["NZ EPA – Fast-track Projects", "https://www.epa.govt.nz/fast-track-consenting/fast-track-projects/"],
+  ["NZ EPA – RMA Proposals", "https://www.epa.govt.nz/industry-areas/rma-proposals/"],
+  ["NZ EPA – Public Consultations", "https://www.epa.govt.nz/public-consultations/"],
+];
 
 function scrapeResponse(overrides = {}) {
   return {
@@ -40,6 +46,9 @@ test("configuration and stable meaningful-content hashes are safe", () => {
   assert.equal(firecrawlConfigured({}), false);
   assert.equal(firecrawlContentHash("a  b\r\n\r\n\r\nc"), firecrawlContentHash("a b\n\nc"));
   assert.notEqual(firecrawlContentHash("5 MW solar"), firecrawlContentHash("6 MW solar"));
+  assert.equal(firecrawlMinimumRequestIntervalMs({}), 0);
+  assert.equal(firecrawlMinimumRequestIntervalMs({ FIRECRAWL_MIN_REQUEST_INTERVAL_MS: "125" }), 125);
+  assert.equal(firecrawlMinimumRequestIntervalMs({ FIRECRAWL_MIN_REQUEST_INTERVAL_MS: "not-a-number" }), 0);
 });
 
 test("v2 scrape is bounded, accepts JS-rendered content and preserves provenance", async () => {
@@ -137,6 +146,176 @@ test("duplicate identical requests share one provider call, including cache reus
   assert.equal(first.cacheReuse, false);
   assert.equal(concurrent.cacheReuse, true);
   assert.equal(cached.cacheReuse, true);
+});
+
+test("NZ EPA Firecrawl requests are host-paced after RUN-0118 rate limits", async () => {
+  let active = 0;
+  let maximumActive = 0;
+  const calls = [];
+  const fetcher = async (_endpoint, options) => {
+    const url = JSON.parse(options.body).url;
+    calls.push(url);
+    active++;
+    maximumActive = Math.max(maximumActive, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    active--;
+    return Response.json({
+      success: true,
+      data: {
+        markdown: "# Current projects\n50 MW solar farm",
+        metadata: { sourceURL: url, statusCode: 200 },
+      },
+    });
+  };
+
+  await Promise.all(nzEpaUrls.map(([sourceName, url]) =>
+    firecrawlScrapeApprovedSource(sourceName, url, {
+      environment,
+      fetcher,
+      bypassMemoryCache: true,
+    }),
+  ));
+
+  assert.equal(maximumActive, 1);
+  assert.deepEqual(new Set(calls), new Set(nzEpaUrls.map(([, url]) => url)));
+});
+
+test("provider pacing spaces sequential requests without serializing unrelated work by default", async () => {
+  const planningVictoriaUrl = "https://www.planning.vic.gov.au/guides-and-resources/guides/all-guides/renewable-energy-facilities/solar-energy-facilities";
+  let clock = 0;
+  const waits = [];
+  const requestTimes = [];
+  const fetcher = async (_endpoint, options) => {
+    const url = JSON.parse(options.body).url;
+    requestTimes.push(clock);
+    return Response.json({ success: true, data: {
+      markdown: "# Current projects\n50 MW solar farm",
+      metadata: { sourceURL: url, statusCode: 200 },
+    } });
+  };
+  const options = {
+    environment: { ...environment, FIRECRAWL_MIN_REQUEST_INTERVAL_MS: "125" },
+    fetcher,
+    now: () => clock,
+    sleep: async (ms) => { waits.push(ms); clock += ms; },
+    bypassMemoryCache: true,
+  };
+
+  await Promise.all([
+    firecrawlScrapeApprovedSource("Energy Magazine", energyUrl, options),
+    firecrawlScrapeApprovedSource("Planning Victoria", planningVictoriaUrl, options),
+  ]);
+
+  assert.equal(requestTimes.length, 2);
+  assert.deepEqual(waits, [125]);
+});
+
+test("provider Retry-After delays later requests after a rate-limit failure", async () => {
+  const planningVictoriaUrl = "https://www.planning.vic.gov.au/guides-and-resources/guides/all-guides/renewable-energy-facilities/solar-energy-facilities";
+  let clock = 0;
+  const waits = [];
+  await assert.rejects(
+    firecrawlScrapeApprovedSource("Energy Magazine", energyUrl, {
+      environment,
+      now: () => clock,
+      sleep: async (ms) => { waits.push(ms); clock += ms; },
+      fetcher: async () => Response.json({ success: false, error: "rate limit" }, {
+        status: 429,
+        headers: { "Retry-After": "2" },
+      }),
+      bypassMemoryCache: true,
+    }),
+    (error) => error instanceof FirecrawlAcquisitionError && error.category === "rate-limited",
+  );
+
+  await firecrawlScrapeApprovedSource("Planning Victoria", planningVictoriaUrl, {
+    environment,
+    now: () => clock,
+    sleep: async (ms) => { waits.push(ms); clock += ms; },
+    fetcher: async () => Response.json({ success: true, data: {
+      markdown: "# Current projects\n50 MW solar farm",
+      metadata: { sourceURL: planningVictoriaUrl, statusCode: 200 },
+    } }),
+    bypassMemoryCache: true,
+  });
+  assert.deepEqual(waits, [2_000]);
+});
+
+test("target-page 429 metadata does not impose a provider-wide cooldown", async () => {
+  const planningVictoriaUrl = "https://www.planning.vic.gov.au/guides-and-resources/guides/all-guides/renewable-energy-facilities/solar-energy-facilities";
+  let clock = 0;
+  const waits = [];
+  await assert.rejects(
+    firecrawlScrapeApprovedSource("Energy Magazine", energyUrl, {
+      environment,
+      now: () => clock,
+      sleep: async (ms) => { waits.push(ms); clock += ms; },
+      fetcher: async () => Response.json(scrapeResponse({ metadata: { sourceURL: energyUrl, statusCode: 429 } })),
+      bypassMemoryCache: true,
+    }),
+    (error) => error instanceof FirecrawlAcquisitionError && error.category === "rate-limited",
+  );
+  await firecrawlScrapeApprovedSource("Planning Victoria", planningVictoriaUrl, {
+    environment,
+    now: () => clock,
+    sleep: async (ms) => { waits.push(ms); clock += ms; },
+    fetcher: async () => Response.json({ success: true, data: {
+      markdown: "# Current projects\n50 MW solar farm",
+      metadata: { sourceURL: planningVictoriaUrl, statusCode: 200 },
+    } }),
+    bypassMemoryCache: true,
+  });
+  assert.deepEqual(waits, []);
+});
+
+test("NZ EPA host pacing covers mixed crawl and scrape operations", async () => {
+  const [fastTrackName, fastTrackUrl] = nzEpaUrls[0];
+  const [rmaName, rmaUrl] = nzEpaUrls[1];
+  let active = 0;
+  let maximumActive = 0;
+  const fetcher = async (endpoint, options) => {
+    active++;
+    maximumActive = Math.max(maximumActive, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    active--;
+    if (endpoint.endsWith("/crawl")) return Response.json({ success: true, id: "job_123" });
+    if (endpoint.endsWith("/crawl/job_123")) return Response.json({ status: "completed", data: [
+      { markdown: "# Current projects\n50 MW solar farm", metadata: { sourceURL: fastTrackUrl, statusCode: 200 } },
+    ] });
+    const url = JSON.parse(options.body).url;
+    return Response.json({ success: true, data: {
+      markdown: "# Current projects\n50 MW solar farm",
+      metadata: { sourceURL: url, statusCode: 200 },
+    } });
+  };
+
+  await Promise.all([
+    firecrawlCrawlApprovedSource(fastTrackName, fastTrackUrl, { environment, fetcher, sleep: async () => undefined, bypassMemoryCache: true }),
+    firecrawlScrapeApprovedSource(rmaName, rmaUrl, { environment, fetcher, bypassMemoryCache: true }),
+  ]);
+  assert.equal(maximumActive, 1);
+});
+
+test("NZ EPA pacing releases the host queue after a provider failure", async () => {
+  const [failedName, failedUrl] = nzEpaUrls[1];
+  const [recoveredName, recoveredUrl] = nzEpaUrls[2];
+  await assert.rejects(
+    firecrawlScrapeApprovedSource(failedName, failedUrl, {
+      environment,
+      fetcher: async () => Response.json({ success: false }, { status: 500 }),
+      bypassMemoryCache: true,
+    }),
+    (error) => error instanceof FirecrawlAcquisitionError && error.category === "provider-error",
+  );
+  const recovered = await firecrawlScrapeApprovedSource(recoveredName, recoveredUrl, {
+    environment,
+    fetcher: async () => Response.json({ success: true, data: {
+      markdown: "# Current projects\n50 MW solar farm",
+      metadata: { sourceURL: recoveredUrl, statusCode: 200 },
+    } }),
+    bypassMemoryCache: true,
+  });
+  assert.equal(recovered.pagesFetched, 1);
 });
 
 test("crawl enforces max pages/depth and polls the current v2 endpoint", async () => {

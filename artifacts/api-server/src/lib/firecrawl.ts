@@ -11,6 +11,17 @@ const MAX_LINKS = 100;
 const PROVIDER_CACHE_MAX_AGE_MS = 60 * 60 * 1000;
 const MEMORY_CACHE_TTL_MS = 15 * 60 * 1000;
 const MAX_CONCURRENCY = 2;
+const DEFAULT_MIN_REQUEST_INTERVAL_MS = 0;
+
+// RUN-0118 recorded two simultaneous Firecrawl 429 responses for separate,
+// approved NZ EPA endpoints. Keep those public pages within the existing
+// provider and source bounds, but never start two of them at once. This is a
+// targeted pacing control, not a retry or an access-control bypass.
+const NZ_EPA_SOURCE_NAMES = new Set([
+  "NZ EPA – Fast-track Projects",
+  "NZ EPA – RMA Proposals",
+  "NZ EPA – Public Consultations",
+]);
 
 export type FirecrawlFailureCategory =
   | "missing-credentials"
@@ -77,6 +88,9 @@ interface CachedResult {
 
 const resultCache = new Map<string, CachedResult>();
 const inFlight = new Map<string, Promise<FirecrawlAcquisitionResult>>();
+const sourceHostTails = new Map<string, Promise<void>>();
+let providerRequestTail: Promise<void> = Promise.resolve();
+let providerNotBeforeMs = 0;
 let activeRequests = 0;
 const waiters: Array<() => void> = [];
 
@@ -93,9 +107,73 @@ async function withConcurrency<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
+async function withSourceHostPacing<T>(
+  sourceName: string,
+  url: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (!NZ_EPA_SOURCE_NAMES.has(sourceName)) return operation();
+
+  const host = new URL(url).hostname;
+  const previous = sourceHostTails.get(host) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  const tail = previous.then(() => current);
+  sourceHostTails.set(host, tail);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (sourceHostTails.get(host) === tail) sourceHostTails.delete(host);
+  }
+}
+
+/**
+ * Firecrawl's HTTP 429 describes the API plan/account's rate or concurrency
+ * limit, not necessarily the target website. Dispatch pacing is therefore
+ * global to this process. Operators may configure a small minimum interval
+ * once their plan's documented limit is known; zero preserves current timing.
+ */
+export function firecrawlMinimumRequestIntervalMs(
+  environment: NodeJS.ProcessEnv = process.env,
+): number {
+  const value = environment.FIRECRAWL_MIN_REQUEST_INTERVAL_MS?.trim();
+  if (!value) return DEFAULT_MIN_REQUEST_INTERVAL_MS;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : DEFAULT_MIN_REQUEST_INTERVAL_MS;
+}
+
+function retryAfterMs(value: string | null): number | null {
+  if (!value) return null;
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.ceil(seconds * 1_000) : null;
+}
+
+async function waitForProviderRequestSlot(
+  now: () => number,
+  sleep: (ms: number) => Promise<void>,
+  minimumIntervalMs: number,
+): Promise<void> {
+  const previous = providerRequestTail;
+  let release!: () => void;
+  providerRequestTail = new Promise<void>((resolve) => { release = resolve; });
+  await previous;
+  try {
+    const waitMs = Math.max(0, providerNotBeforeMs - now());
+    if (waitMs) await sleep(waitMs);
+    providerNotBeforeMs = Math.max(providerNotBeforeMs, now() + minimumIntervalMs);
+  } finally {
+    release();
+  }
+}
+
 export function clearFirecrawlMemoryCacheForTests(): void {
   resultCache.clear();
   inFlight.clear();
+  sourceHostTails.clear();
+  providerRequestTail = Promise.resolve();
+  providerNotBeforeMs = 0;
 }
 
 export function firecrawlConfigured(environment: NodeJS.ProcessEnv = process.env): boolean {
@@ -179,9 +257,13 @@ async function providerRequest(
   init: RequestInit,
   key: string,
   fetcher: typeof fetch,
+  now: () => number,
+  sleep: (ms: number) => Promise<void>,
+  minimumIntervalMs: number,
 ): Promise<unknown> {
   let response: Response;
   try {
+    await waitForProviderRequestSlot(now, sleep, minimumIntervalMs);
     response = await fetcher(`${FIRECRAWL_API_ORIGIN}/${FIRECRAWL_API_VERSION}${path}`, {
       ...init,
       headers: {
@@ -198,6 +280,10 @@ async function providerRequest(
   }
   const body = await readLimitedJson(response);
   if (!response.ok) {
+    if (response.status === 429) {
+      const delayMs = retryAfterMs(response.headers.get("Retry-After"));
+      if (delayMs !== null) providerNotBeforeMs = Math.max(providerNotBeforeMs, now() + delayMs);
+    }
     throw new FirecrawlAcquisitionError(
       classifyHttpFailure(response.status),
       `Firecrawl request failed with HTTP ${response.status}`,
@@ -294,8 +380,10 @@ export async function firecrawlScrapeApprovedSource(
   const key = environment.FIRECRAWL_API_KEY?.trim();
   if (!key) throw new FirecrawlAcquisitionError("missing-credentials", "FIRECRAWL_API_KEY is not configured");
   const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const minimumIntervalMs = firecrawlMinimumRequestIntervalMs(environment);
   const id = cacheKey(sourceName, url, "scrape", 1, 0);
-  return cachedOperation(id, now, options.bypassMemoryCache ?? false, async () => {
+  return withSourceHostPacing(sourceName, url, () => cachedOperation(id, now, options.bypassMemoryCache ?? false, async () => {
     const started = now();
     const body = await providerRequest("/scrape", {
       method: "POST",
@@ -307,14 +395,14 @@ export async function firecrawlScrapeApprovedSource(
         storeInCache: true,
         timeout: 30_000,
       }),
-    }, key, options.fetcher ?? fetch);
+    }, key, options.fetcher ?? fetch, now, sleep, minimumIntervalMs);
     const page = normalizePage(sourceName, url, unwrapScrapeData(body));
     return {
       provider: "firecrawl", apiVersion: "v2", mode: "scrape", status: "success",
       requestedUrl: url, pages: [page], pagesFetched: 1,
       durationMs: Math.max(0, now() - started), cacheReuse: page.metadata.cacheState === "hit",
     };
-  });
+  }));
 }
 
 export async function firecrawlCrawlApprovedSource(
@@ -334,8 +422,9 @@ export async function firecrawlCrawlApprovedSource(
   if (!key) throw new FirecrawlAcquisitionError("missing-credentials", "FIRECRAWL_API_KEY is not configured");
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const minimumIntervalMs = firecrawlMinimumRequestIntervalMs(environment);
   const id = cacheKey(sourceName, url, "crawl", pages, depth);
-  return cachedOperation(id, now, options.bypassMemoryCache ?? false, async () => {
+  return withSourceHostPacing(sourceName, url, () => cachedOperation(id, now, options.bypassMemoryCache ?? false, async () => {
     const started = now();
     const submitted = await providerRequest("/crawl", {
       method: "POST",
@@ -354,14 +443,22 @@ export async function firecrawlCrawlApprovedSource(
           maxAge: PROVIDER_CACHE_MAX_AGE_MS, storeInCache: true, timeout: 30_000,
         },
       }),
-    }, key, options.fetcher ?? fetch) as Record<string, unknown>;
+    }, key, options.fetcher ?? fetch, now, sleep, minimumIntervalMs) as Record<string, unknown>;
     const jobId = typeof submitted.id === "string" ? submitted.id : null;
     if (submitted.success !== true || !jobId || !/^[a-zA-Z0-9_-]{1,200}$/.test(jobId)) {
       throw new FirecrawlAcquisitionError("malformed-response", "Firecrawl crawl response has no valid job ID");
     }
     while (now() - started < CRAWL_TOTAL_BUDGET_MS) {
       await sleep(500);
-      const polled = await providerRequest(`/crawl/${jobId}`, { method: "GET" }, key, options.fetcher ?? fetch) as Record<string, unknown>;
+      const polled = await providerRequest(
+        `/crawl/${jobId}`,
+        { method: "GET" },
+        key,
+        options.fetcher ?? fetch,
+        now,
+        sleep,
+        minimumIntervalMs,
+      ) as Record<string, unknown>;
       if (polled.status === "failed" || polled.success === false) {
         throw new FirecrawlAcquisitionError("provider-error", "Firecrawl crawl job failed");
       }
@@ -377,7 +474,7 @@ export async function firecrawlCrawlApprovedSource(
       };
     }
     throw new FirecrawlAcquisitionError("timeout", "Firecrawl crawl exceeded the total source budget");
-  });
+  }));
 }
 
 export async function acquireApprovedSourceWithFirecrawl(
