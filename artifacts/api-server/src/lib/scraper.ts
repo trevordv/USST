@@ -90,6 +90,12 @@ import {
 } from "./firecrawl";
 import { apifySourceConfigured, fetchApprovedSourceWithApify } from "./apify-source";
 import {
+  isExactPersonMatch,
+  isProfessionalCompanyEmail,
+  normalizeLushaRunOptions,
+  type LushaRunOptions,
+} from "./lusha-validation";
+import {
   combineContentFingerprints,
   persistScanSourceHealth,
   safeSourceFailureReason,
@@ -2307,7 +2313,8 @@ interface LushaResponse {
 }
 
 /**
- * Call Lusha v3 search-and-enrich in batches of up to 100 contacts.
+ * Call Lusha v3 search-and-enrich one named contact at a time. This avoids
+ * treating a partial provider response as positionally correlated.
  *
  * Real API shape (confirmed):
  *   POST https://api.lusha.com/v3/contacts/search-and-enrich
@@ -2315,7 +2322,6 @@ interface LushaResponse {
  *   Body:   { contacts: [...], reveal: ["emails", "phones"] }
  *   Response: { results: [ { emails: [{email, type, confidence}], phones: [{number, type}], firstName, lastName }, ... ] }
  *
- * Results are positionally aligned with the input contacts array.
  * Phone numbers may be partially masked (e.g. "+61 415...") on lower-tier plans —
  * those are discarded so we never save truncated data.
  *
@@ -2328,7 +2334,7 @@ async function callLushaBulkEnrich(
   if (!apiKey || contacts.length === 0) return new Map();
 
   const results = new Map<number, ContactResult>();
-  const BATCH_SIZE = 100;
+  const BATCH_SIZE = 1;
 
   for (let start = 0; start < contacts.length; start += BATCH_SIZE) {
     const batch = contacts.slice(start, start + BATCH_SIZE);
@@ -2347,8 +2353,7 @@ async function callLushaBulkEnrich(
       });
 
       if (!resp.ok) {
-        const body = await resp.text();
-        logger.warn({ status: resp.status, body }, "Lusha API error response");
+        logger.warn({ provider: "lusha", status: resp.status }, "Lusha API error response");
         continue;
       }
 
@@ -2390,7 +2395,7 @@ async function callLushaBulkEnrich(
         "Lusha batch enrichment complete",
       );
     } catch (err) {
-      logger.warn({ err, batchStart: start }, "Lusha bulk enrich request failed");
+      logger.warn({ provider: "lusha", batchStart: start }, "Lusha bulk enrich request failed");
     }
   }
 
@@ -2447,7 +2452,12 @@ async function callLushaProspecting(
     const companies = (await compResp.json()) as Array<{
       companyId?: number; name?: string; fqdn?: string; has_prospecting_contacts?: boolean;
     }>;
-    const co = companies[0];
+    const expectedDomain = companyDomain?.toLowerCase().replace(/^www\./, "");
+    const expectedName = companyName.trim().toLowerCase();
+    const co = companies.find((company) => {
+      const domain = company.fqdn?.toLowerCase().replace(/^www\./, "");
+      return expectedDomain ? domain === expectedDomain : company.name?.trim().toLowerCase() === expectedName;
+    });
     if (!co?.companyId || !co.has_prospecting_contacts) return null;
 
     // Step 2 — search contacts at this company (no PII returned, no credits charged)
@@ -2517,7 +2527,12 @@ async function callLushaProspecting(
       phones.find((p) => p.number && !p.number.includes("..."))?.number ??
       null;
 
-    const name = [enriched.firstName ?? best.firstName, enriched.lastName ?? best.lastName]
+    const resolvedFirst = enriched.firstName ?? best.firstName;
+    const resolvedLast = enriched.lastName ?? best.lastName;
+    if (!isExactPersonMatch(`${best.firstName} ${best.lastName}`, resolvedFirst, resolvedLast) ||
+        !isProfessionalCompanyEmail(bestEmail, co.fqdn ?? companyDomain) ||
+        !isEmailDomainRelated(bestEmail, companyName)) return null;
+    const name = [resolvedFirst, resolvedLast]
       .filter(Boolean).join(" ") || null;
 
     return { name, email: bestEmail, phone: fullPhone ?? null };
@@ -2535,8 +2550,9 @@ async function callLushaProspecting(
  * Phase 2.5b: Lusha Prospecting for companies where we have no person name at all.
  * Phase 3:    LinkedIn profile search for developers with generic contacts.
  */
-export async function enrichMissingContacts(runId?: number): Promise<{ checked: number; updated: number }> {
+export async function enrichMissingContacts(runId?: number, requestedOptions: Partial<LushaRunOptions> = {}): Promise<{ checked: number; updated: number }> {
   const enrichmentStartedAt = performance.now();
+  const lushaOptions = normalizeLushaRunOptions(requestedOptions);
   const GENERIC_PREFIXES = [
     "info@", "admin@", "contact@", "hello@", "enquiries@", "enquiry@",
     "general@", "mail@", "projects@", "team@", "reception@", "office@",
@@ -2613,22 +2629,42 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
   ];
 
   let updated = 0;
+  let verifiedNewContacts = 0;
+  let tentativeLeads = 0;
+  let rejectedMatches = 0;
+  let providerRequests = 0;
+  const apifyBudget = Math.max(1, Number(process.env.CONTACT_APIFY_QUERY_BUDGET ?? 25));
+  const linkedInBudget = Math.max(0, Number(process.env.CONTACT_LINKEDIN_QUERY_BUDGET ?? 20));
+  const lushaCreditBudget = lushaOptions.dryRun ? 0 : lushaOptions.maxLushaCredits;
   const enrichedKeys = new Set<string>();
   const noDomainGroups: Array<[string, GroupEntry]> = [];
 
-  async function applyContact(g: GroupEntry, contact: ContactResult): Promise<void> {
+  async function applyContact(g: GroupEntry, contact: ContactResult): Promise<boolean> {
+    const email = contact.email?.trim().toLowerCase();
+    if (!email || !isPersonalEmail(email) || !isEmailDomainRelated(email, g.projects[0].developer ?? null)) {
+      rejectedMatches++;
+      return false;
+    }
+    // A verified address is authoritative and must never be replaced by a
+    // provider or search result for another contact in the same developer group.
+    if (g.projects.some((proj) => proj.contactEmail && isValidProjectContact(proj.contactEmail, proj.developer ?? null))) {
+      return false;
+    }
     for (const proj of g.projects) {
+      const isNewVerified = !proj.contactEmail;
       await db
         .update(projectsTable)
         .set({
           contactName: contact.name ?? g.existingName ?? proj.contactName,
-          contactEmail: contact.email,
+          contactEmail: email,
           contactPhone: contact.phone ?? proj.contactPhone,
           updatedAt: new Date(),
         })
         .where(eq(projectsTable.id, proj.id));
       updated++;
+      if (isNewVerified) verifiedNewContacts++;
     }
+    return true;
   }
 
   // ── Phase 1: Scrape known domains ─────────────────────────
@@ -2646,10 +2682,11 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
           g.projects[0].developer ?? null,
         );
         if (contact) {
-          await applyContact(g, contact);
-          enrichedKeys.add(devKey);
-          logger.info({ devKey, email: contact.email }, "Contact enriched via domain scrape");
-          return null;
+          if (await applyContact(g, contact)) {
+            enrichedKeys.add(devKey);
+            logger.info({ devKey }, "Contact enriched via domain scrape");
+            return null;
+          }
         }
       }
       return [devKey, g];
@@ -2658,6 +2695,12 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
   noDomainGroups.push(
     ...phaseOneMisses.filter((entry): entry is [string, GroupEntry] => entry !== null),
   );
+
+  // Lusha is the primary paid contact provider. Run it before the existing
+  // Apify/LinkedIn fallback paths; dry runs deliberately make no Lusha calls.
+  const lushaKey = process.env.LUSHA_API_KEY;
+  const lushaPool = noDomainGroups.filter(([key]) => !enrichedKeys.has(key));
+  await runLushaFirst();
 
   // ── Phase 2: Apify Google Search for developers without a known domain ────
   const token = process.env.APIFY_API_TOKEN;
@@ -2668,7 +2711,7 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
       "Contact enrichment integration outcome",
     );
   }
-  if (phaseTwo.length > 0 && token) {
+  if (phaseTwo.length > 0 && token && !lushaOptions.dryRun) {
     logger.info({ count: phaseTwo.length }, "Contact enrichment: Phase 2 Apify search");
 
     const queries = phaseTwo.map(([, g]) => {
@@ -2681,7 +2724,8 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     });
 
     try {
-      const runId = await startApifySearchRun(queries.slice(0, 25));
+      const runId = await startApifySearchRun(queries.slice(0, apifyBudget));
+      providerRequests++;
       await waitForApifyRun(runId);
       const items = await fetchApifyResults(runId);
 
@@ -2699,10 +2743,11 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
             const email = em[0].toLowerCase();
             if (isPersonalEmail(email) && isEmailDomainRelated(email, companyName)) {
               const name = extractNameNearEmail(text) ?? g.existingName;
-              await applyContact(g, { name: name ?? null, email, phone: null });
-              enrichedKeys.add(devKey);
-              logger.info({ devKey, email }, "Contact enriched via Apify snippet");
-              break;
+              if (await applyContact(g, { name: name ?? null, email, phone: null })) {
+                enrichedKeys.add(devKey);
+                logger.info({ devKey }, "Contact enriched via Apify snippet");
+                break;
+              }
             }
           }
           if (enrichedKeys.has(devKey)) break;
@@ -2714,14 +2759,15 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
             if (!result.url) continue;
             const contact = await scrapeUrlForContact(result.url, companyName);
             if (contact) {
-              await applyContact(g, {
+              if (await applyContact(g, {
                 name: contact.name ?? g.existingName,
                 email: contact.email,
                 phone: contact.phone,
-              });
-              enrichedKeys.add(devKey);
-              logger.info({ devKey, email: contact.email, url: result.url }, "Contact enriched via Apify URL");
-              break;
+              })) {
+                enrichedKeys.add(devKey);
+                logger.info({ devKey }, "Contact enriched via Apify URL");
+                break;
+              }
             }
           }
         }
@@ -2731,11 +2777,9 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     }
   }
 
-  // ── Phase 2.5a: Lusha search-and-enrich (contacts with a known person name) ─
-  //   search-and-enrich REQUIRES firstName + lastName — sending company-only returns 400.
-  const lushaKey = process.env.LUSHA_API_KEY;
-  const lushaPool = noDomainGroups.filter(([k]) => !enrichedKeys.has(k));
-
+  // Lusha implementation is declared below but invoked before the existing
+  // fallback providers above, keeping their behavior otherwise unchanged.
+  async function runLushaFirst(): Promise<void> {
   if (lushaPool.length > 0 && !lushaKey) {
     logger.warn(
       { phase: "Lusha enrichment", outcome: "skipped-missing-credentials", missing: ["LUSHA_API_KEY"] },
@@ -2743,7 +2787,7 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     );
   }
 
-  if (lushaPool.length > 0 && lushaKey) {
+  if (lushaPool.length > 0 && lushaKey && lushaCreditBudget > 0) {
     // Split: known-name entries go to bulk search-and-enrich; nameless entries go to prospecting
     type NamedEntry  = { idx: number; devKey: string; g: GroupEntry; contact: LushaContact };
     const namedEntries: NamedEntry[] = [];
@@ -2777,49 +2821,54 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     );
 
     // 2.5a — bulk search-and-enrich for contacts we already have a name for
-    if (namedEntries.length > 0) {
+    let remainingCredits = lushaCreditBudget;
+    if (namedEntries.length > 0 && remainingCredits > 0) {
       try {
-        const lushaResults = await callLushaBulkEnrich(namedEntries.map((e) => e.contact));
+        const selectedNamed = namedEntries.slice(0, remainingCredits);
+        const lushaResults = await callLushaBulkEnrich(selectedNamed.map((e) => e.contact));
         for (const [batchIdx, result] of lushaResults) {
-          const entry = namedEntries[batchIdx];
+          const entry = selectedNamed[batchIdx];
           if (!entry || enrichedKeys.has(entry.devKey)) continue;
-          await applyContact(entry.g, {
+          const parts = result.name?.trim().split(/\s+/) ?? [];
+          const firstName = parts.shift();
+          const lastName = parts.join(" ");
+          if (!isExactPersonMatch(`${entry.contact.firstName ?? ""} ${entry.contact.lastName ?? ""}`, firstName, lastName) ||
+              !isProfessionalCompanyEmail(result.email, entry.g.domain) ||
+              !isEmailDomainRelated(result.email, entry.g.projects[0].developer ?? null)) {
+            rejectedMatches++;
+            continue;
+          }
+          if (await applyContact(entry.g, {
             name: result.name ?? entry.g.existingName ?? null,
             email: result.email,
             phone: result.phone,
-          });
-          enrichedKeys.add(entry.devKey);
-          logger.info(
-            { devKey: entry.devKey, email: result.email, phone: result.phone },
-            "Contact enriched via Lusha search-and-enrich",
-          );
+          })) {
+            enrichedKeys.add(entry.devKey);
+            logger.info({ devKey: entry.devKey }, "Contact enriched via Lusha search-and-enrich");
+          }
         }
+        remainingCredits = Math.max(0, remainingCredits - selectedNamed.length);
       } catch (err) {
         logger.warn({ err }, "Contact enrichment: Phase 2.5a Lusha search-and-enrich failed");
       }
     }
 
     // 2.5b — prospecting for companies where we have no person name at all
-    // DISABLED by default: Lusha free plans have a 100 API calls/day limit.
-    // Prospecting uses 3 calls per company (company lookup + contact search + enrich),
-    // which exhausts the quota after ~33 companies. Enable with
-    // LUSHA_PROSPECTING_ENABLED=true if on a paid plan.
-    if (namelessEntries.length > 0 && process.env.LUSHA_PROSPECTING_ENABLED === "true") {
-      logger.info({ count: namelessEntries.length }, "Contact enrichment: Phase 2.5b Lusha prospecting");
-      for (const [devKey, g] of namelessEntries) {
+    // The same explicit per-run budget covers company prospecting. One company
+    // consumes at most one planned reveal; lookup/search requests do not reveal contacts.
+    if (namelessEntries.length > 0 && remainingCredits > 0) {
+      logger.info({ eligible: namelessEntries.length, budget: remainingCredits }, "Contact enrichment: Lusha company prospecting");
+      for (const [devKey, g] of namelessEntries.slice(0, remainingCredits)) {
         if (enrichedKeys.has(devKey)) continue;
         const dev    = g.projects[0].developer;
         const domain = g.domain;
         if (!dev) continue;
         try {
           const result = await callLushaProspecting(dev, domain);
-          if (result) {
-            await applyContact(g, result);
+          providerRequests += 3;
+          if (result && await applyContact(g, result)) {
             enrichedKeys.add(devKey);
-            logger.info(
-              { devKey, email: result.email, phone: result.phone, name: result.name },
-              "Contact enriched via Lusha prospecting",
-            );
+            logger.info({ devKey }, "Contact enriched via Lusha prospecting");
           }
         } catch (err) {
           logger.warn({ err, devKey }, "Contact enrichment: Phase 2.5b prospecting entry failed");
@@ -2827,10 +2876,11 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
       }
     }
   }
+  }
 
   // ── Phase 3: LinkedIn profile search for developers with generic contacts ──
   const phaseThree = noDomainGroups.filter(([k]) => !enrichedKeys.has(k));
-  if (phaseThree.length > 0 && token) {
+  if (phaseThree.length > 0 && token && !lushaOptions.dryRun) {
     logger.info({ count: phaseThree.length }, "Contact enrichment: Phase 3 LinkedIn search");
 
     // Relevant job titles that indicate the person who would handle project enquiries
@@ -2851,7 +2901,8 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     });
 
     try {
-      const runId = await startApifySearchRun(linkedInQueries.slice(0, 20));
+      const runId = await startApifySearchRun(linkedInQueries.slice(0, linkedInBudget));
+      providerRequests++;
       await waitForApifyRun(runId);
       const items = await fetchApifyResults(runId);
 
@@ -2913,13 +2964,10 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
           }
 
           // Apply the LinkedIn contact
-          await applyContact(g, {
-            name: bestMatch.name,
-            email: bestMatch.email ?? g.projects[0].contactEmail ?? "",
-            phone: bestMatch.phone,
-          });
-          enrichedKeys.add(devKey);
-          logger.info({ devKey, name: bestMatch.name, title: bestMatch.title, email: bestMatch.email }, "Contact enriched via LinkedIn");
+          if (bestMatch.email) {
+            if (await applyContact(g, { name: bestMatch.name, email: bestMatch.email, phone: bestMatch.phone })) enrichedKeys.add(devKey);
+          } else tentativeLeads++;
+          logger.info({ devKey, verifiedEmail: Boolean(bestMatch.email) }, "LinkedIn lead evaluated");
         }
       }
     } catch (err) {
@@ -2931,6 +2979,7 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     {
       checked: toEnrich.length,
       updated,
+      verifiedNewContacts, tentativeLeads, rejectedMatches, providerRequests,
       runId,
       durationMs: Math.round(performance.now() - enrichmentStartedAt),
     },
@@ -2948,7 +2997,7 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
  * Start an enrichment run in the background and return the run ID.
  * The caller receives 202 Accepted immediately; the enrichment runs asynchronously.
  */
-export async function startEnrichment(): Promise<{ runId: number; completion: Promise<unknown> }> {
+export async function startEnrichment(options: Partial<LushaRunOptions> = {}): Promise<{ runId: number; completion: Promise<unknown> }> {
   const [run] = await db.insert(contactEnrichmentsTable)
     .values({ status: "running", checked: 0, updated: 0 })
     .returning();
@@ -2956,7 +3005,7 @@ export async function startEnrichment(): Promise<{ runId: number; completion: Pr
   const runId = run.id;
 
   // Kick off the long-running work without awaiting
-  const completion = enrichMissingContacts(runId).catch((err: Error) => {
+  const completion = enrichMissingContacts(runId, options).catch((err: Error) => {
     logger.error({ err, runId }, "Contact enrichment background task failed");
     db.update(contactEnrichmentsTable)
       .set({ status: "failed", completedAt: new Date(), errorMessage: err.message })

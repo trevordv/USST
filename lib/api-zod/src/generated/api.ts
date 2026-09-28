@@ -193,6 +193,21 @@ export const ExportProjectsQueryParams = zod.object({
 
 
 /**
+ * @summary Start a contact enrichment run
+ */
+export const startContactEnrichmentBodyMaxLushaCreditsMin = 0;
+export const startContactEnrichmentBodyMaxLushaCreditsMax = 100;
+
+
+
+export const StartContactEnrichmentBody = zod.object({
+  "approvedPaidProspecting": zod.boolean(),
+  "maxLushaCredits": zod.number().min(startContactEnrichmentBodyMaxLushaCreditsMin).max(startContactEnrichmentBodyMaxLushaCreditsMax),
+  "dryRun": zod.boolean()
+})
+
+
+/**
  * @summary List scan history
  */
 export const ListScansResponseItem = zod.object({

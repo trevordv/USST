@@ -333,6 +333,16 @@ export interface ContactEnrichmentStart {
   status: ContactEnrichmentStartStatus;
 }
 
+export interface ContactEnrichmentInput {
+  approvedPaidProspecting: boolean;
+  /**
+     * @minimum 0
+     * @maximum 100
+     */
+  maxLushaCredits: number;
+  dryRun: boolean;
+}
+
 export interface AccessToken {
   id: number;
   token: string;

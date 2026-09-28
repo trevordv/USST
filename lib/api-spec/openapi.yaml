@@ -232,6 +232,12 @@ paths:
       operationId: startContactEnrichment
       tags: [contact-enrichments]
       summary: Start a contact enrichment run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContactEnrichmentInput"
       responses:
         "202":
           description: Contact enrichment started
@@ -884,6 +890,20 @@ components:
         status:
           type: string
           enum: [running]
+
+    ContactEnrichmentInput:
+      type: object
+      additionalProperties: false
+      required: [approvedPaidProspecting, maxLushaCredits, dryRun]
+      properties:
+        approvedPaidProspecting:
+          type: boolean
+        maxLushaCredits:
+          type: integer
+          minimum: 0
+          maximum: 100
+        dryRun:
+          type: boolean
 
     AccessToken:
       type: object

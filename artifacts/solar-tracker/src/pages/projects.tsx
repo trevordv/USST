@@ -23,6 +23,9 @@ export default function Projects() {
   const [enrichRunId, setEnrichRunId] = useState<number | null>(null);
   const [enrichMessage, setEnrichMessage] = useState<string | null>(null);
   const [isStartingEnrichment, setIsStartingEnrichment] = useState(false);
+  const [approveLusha, setApproveLusha] = useState(false);
+  const [lushaCredits, setLushaCredits] = useState(10);
+  const [dryRun, setDryRun] = useState(false);
   const [exportMessage, setExportMessage] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const queryClient = useQueryClient();
@@ -64,7 +67,11 @@ export default function Projects() {
     setEnrichMessage(null);
     setIsStartingEnrichment(true);
     try {
-      const data = await startContactEnrichment();
+      const data = await startContactEnrichment({
+        approvedPaidProspecting: approveLusha,
+        maxLushaCredits: approveLusha ? lushaCredits : 0,
+        dryRun,
+      });
       setEnrichRunId(data.runId);
     } catch (error) {
       setEnrichMessage(formatProtectedApiError(error, "start contact enrichment"));
@@ -150,9 +157,20 @@ export default function Projects() {
                 {exportMessage}
               </span>
             )}
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <input type="checkbox" checked={approveLusha} onChange={(event) => setApproveLusha(event.target.checked)} />
+              Approve Lusha prospecting
+            </label>
+            <Input aria-label="Lusha credit budget" type="number" min={1} max={100} className="w-20"
+              disabled={!approveLusha} value={lushaCredits}
+              onChange={(event) => setLushaCredits(Math.max(1, Math.min(100, Number(event.target.value) || 1)))} />
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <input type="checkbox" checked={dryRun} onChange={(event) => setDryRun(event.target.checked)} />
+              Dry run
+            </label>
             <Button
               onClick={handleEnrichContacts}
-              disabled={enriching}
+              disabled={enriching || (approveLusha && lushaCredits < 1)}
               variant="outline"
               className="gap-2"
             >
