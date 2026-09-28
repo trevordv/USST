@@ -1,10 +1,10 @@
 import {
-  extractCapacity,
   extractLocation,
   EXCLUDE_KEYWORDS,
 } from "./source-heuristics.ts";
 import {
   deriveProjectNames,
+  extractProjectCapacityEvidence,
   findCapacityMentions,
   normalizeProjectName,
 } from "./source-text.ts";
@@ -73,20 +73,28 @@ function capacityNearName(
       Math.max(0, index - 120),
       Math.min(text.length, index + name.length + 420),
     );
+    const solarMw = extractProjectCapacityEvidence(local).solarMw;
+    if (solarMw != null) return solarMw;
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const directPrefix = local.match(new RegExp(`\\b([0-9][0-9,.]*)\\s*(MW|GW)\\s+${escapedName}\\b`, "i"));
+    if (directPrefix) {
+      const value = Number.parseFloat(directPrefix[1].replace(/,/g, ""));
+      if (Number.isFinite(value)) return /^g/i.test(directPrefix[2]) ? value * 1_000 : value;
+    }
+    // A named solar asset can be written as “100 MW West Mokoan Solar Farm”.
+    // Accept its local MW only when that same evidence window is not hybrid,
+    // wind or storage context; aggregate hybrid totals remain ineligible.
     const localNameIndex = local.toLowerCase().indexOf(name.toLowerCase());
-    const mentions = findCapacityMentions(local).filter(
-      (mention) => mention.score > -5,
-    );
+    const mentions = findCapacityMentions(local).filter((mention) => mention.score > -5);
     if (mentions.length) {
-      mentions.sort(
-        (a, b) =>
-          Math.abs(a.index - localNameIndex) -
-            Math.abs(b.index - localNameIndex) || b.score - a.score,
-      );
-      return mentions[0].valueMw;
+      mentions.sort((a, b) => Math.abs(a.index - localNameIndex) - Math.abs(b.index - localNameIndex) || b.score - a.score);
+      const closest = mentions[0];
+      const directNamedSolar = Math.abs(closest.index - localNameIndex) <= 80
+        && !/\b(?:wind|bess|battery|storage)\b/i.test(local.slice(Math.max(0, closest.index - 30), closest.index + closest.raw.length + 30));
+      if (directNamedSolar) return closest.valueMw;
     }
   }
-  return onlyName ? extractCapacity(text) : null;
+  return onlyName ? extractProjectCapacityEvidence(text).solarMw : null;
 }
 
 function canonicalProjectName(name: string): string {

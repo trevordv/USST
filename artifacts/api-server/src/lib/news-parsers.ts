@@ -22,6 +22,7 @@ import {
   resolveHttpUrl,
 } from "./source-text.ts";
 import { extractNamedProjectEvidence, resolveTargetCountry } from "./news-project-evidence.ts";
+import { filterPrimaryArticleSubjects } from "./project-reconciliation.ts";
 
 export interface NewsSource {
   name: string;
@@ -41,6 +42,8 @@ export interface NewsProject {
   sourceName: string;
   announcedDate: string | null;
   announcedDateEvidence: "source_reported" | "unknown";
+  sourceEventDate: string | null;
+  sourceEventEvidence: "source_update" | null;
   /** Capacity unknown after the excerpt: read the same-site article page. */
   needsArticleEnrichment: boolean;
   contactName: null;
@@ -97,7 +100,7 @@ export function parseRssFeedPage(xml: string, source: NewsSource, startDate?: st
       fallbackCountry: source.country,
       requireCountryEvidence: !articleCanEnrich,
     });
-    for (const candidate of evidence) {
+    for (const candidate of filterPrimaryArticleSubjects(evidence, item.title, `${item.summary} ${body}`)) {
       projects.push({
         name: candidate.name,
         description: `${item.title}. ${excerpt}`.slice(0, 800),
@@ -110,6 +113,8 @@ export function parseRssFeedPage(xml: string, source: NewsSource, startDate?: st
         sourceName: source.name,
         announcedDate: item.date,
         announcedDateEvidence: item.date ? "source_reported" : "unknown",
+        sourceEventDate: item.date,
+        sourceEventEvidence: item.date ? "source_update" : null,
         needsArticleEnrichment: articleCanEnrich && (candidate.capacityMw == null || !hasCountryEvidence),
         contactName: null,
         contactEmail: null,
@@ -180,7 +185,7 @@ export function parseHtmlPage(
       fallbackCountry: source.country,
       requireCountryEvidence: !articleCanEnrich,
     });
-    for (const candidate of evidence) {
+    for (const candidate of filterPrimaryArticleSubjects(evidence, rawTitle, text)) {
       const key = `${link ?? pageUrl}|${normalizeProjectName(candidate.name)}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -199,6 +204,8 @@ export function parseHtmlPage(
         sourceName: source.name,
         announcedDate,
         announcedDateEvidence: announcedDate ? "source_reported" : "unknown",
+        sourceEventDate: announcedDate,
+        sourceEventEvidence: announcedDate ? "source_update" : null,
         needsArticleEnrichment: articleCanEnrich && (candidate.capacityMw == null || !hasCountryEvidence),
         contactName: null,
         contactEmail: null,
