@@ -23,6 +23,8 @@ export default function Projects() {
   const [enrichRunId, setEnrichRunId] = useState<number | null>(null);
   const [enrichMessage, setEnrichMessage] = useState<string | null>(null);
   const [isStartingEnrichment, setIsStartingEnrichment] = useState(false);
+  const [approvePaidProspecting, setApprovePaidProspecting] = useState(false);
+  const [lushaCreditBudget, setLushaCreditBudget] = useState(0);
   const [exportMessage, setExportMessage] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const queryClient = useQueryClient();
@@ -51,7 +53,7 @@ export default function Projects() {
   useEffect(() => {
     if (enrichment && enrichment.status !== "running") {
       if (enrichment.status === "completed") {
-        setEnrichMessage(`Checked ${enrichment.checked} projects; updated ${enrichment.updated} contacts`);
+        setEnrichMessage(`Verified ${enrichment.verifiedContacts} unique contacts; updated ${enrichment.projectsUpdated} project records; rejected ${enrichment.rejectedMatches} matches`);
       } else {
         setEnrichMessage(`Enrichment failed: ${enrichment.errorMessage ?? "The enrichment run did not complete"}`);
       }
@@ -64,7 +66,14 @@ export default function Projects() {
     setEnrichMessage(null);
     setIsStartingEnrichment(true);
     try {
-      const data = await startContactEnrichment();
+      const data = await startContactEnrichment({
+        approvedPaidProspecting: approvePaidProspecting,
+        maxLushaCredits: approvePaidProspecting ? lushaCreditBudget : 0,
+        companyBatchSize: 10,
+        maxApifyQueries: 25,
+        maxLinkedInQueries: 20,
+        dryRun: false,
+      });
       setEnrichRunId(data.runId);
     } catch (error) {
       setEnrichMessage(formatProtectedApiError(error, "start contact enrichment"));
@@ -150,9 +159,23 @@ export default function Projects() {
                 {exportMessage}
               </span>
             )}
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <input type="checkbox" checked={approvePaidProspecting} onChange={(event) => setApprovePaidProspecting(event.target.checked)} />
+              Approve paid Lusha prospecting
+            </label>
+            <Input
+              aria-label="Maximum Lusha credits"
+              type="number"
+              min={0}
+              max={100}
+              className="w-24"
+              value={lushaCreditBudget}
+              disabled={!approvePaidProspecting}
+              onChange={(event) => setLushaCreditBudget(Math.max(0, Math.min(100, Number(event.target.value) || 0)))}
+            />
             <Button
               onClick={handleEnrichContacts}
-              disabled={enriching}
+              disabled={enriching || (approvePaidProspecting && lushaCreditBudget < 1)}
               variant="outline"
               className="gap-2"
             >

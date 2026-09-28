@@ -193,6 +193,33 @@ export const ExportProjectsQueryParams = zod.object({
 
 
 /**
+ * @summary Start a contact enrichment run
+ */
+export const startContactEnrichmentBodyMaxLushaCreditsMin = 0;
+export const startContactEnrichmentBodyMaxLushaCreditsMax = 100;
+
+export const startContactEnrichmentBodyCompanyBatchSizeMin = 0;
+export const startContactEnrichmentBodyCompanyBatchSizeMax = 25;
+
+export const startContactEnrichmentBodyMaxApifyQueriesMin = 0;
+export const startContactEnrichmentBodyMaxApifyQueriesMax = 50;
+
+export const startContactEnrichmentBodyMaxLinkedInQueriesMin = 0;
+export const startContactEnrichmentBodyMaxLinkedInQueriesMax = 40;
+
+
+
+export const StartContactEnrichmentBody = zod.object({
+  "approvedPaidProspecting": zod.boolean(),
+  "maxLushaCredits": zod.number().min(startContactEnrichmentBodyMaxLushaCreditsMin).max(startContactEnrichmentBodyMaxLushaCreditsMax),
+  "companyBatchSize": zod.number().min(startContactEnrichmentBodyCompanyBatchSizeMin).max(startContactEnrichmentBodyCompanyBatchSizeMax),
+  "maxApifyQueries": zod.number().min(startContactEnrichmentBodyMaxApifyQueriesMin).max(startContactEnrichmentBodyMaxApifyQueriesMax),
+  "maxLinkedInQueries": zod.number().min(startContactEnrichmentBodyMaxLinkedInQueriesMin).max(startContactEnrichmentBodyMaxLinkedInQueriesMax),
+  "dryRun": zod.boolean()
+})
+
+
+/**
  * @summary List scan history
  */
 export const ListScansResponseItem = zod.object({
@@ -328,6 +355,16 @@ export const GetContactEnrichmentResponse = zod.object({
   "completedAt": zod.string().nullish(),
   "checked": zod.number(),
   "updated": zod.number(),
+  "verifiedContacts": zod.number(),
+  "tentativeLeads": zod.number(),
+  "rejectedMatches": zod.number(),
+  "projectsUpdated": zod.number(),
+  "providerRequests": zod.number(),
+  "creditsEstimated": zod.number(),
+  "creditsConsumed": zod.number(),
+  "approvedCreditBudget": zod.number(),
+  "paidProspectingApproved": zod.boolean(),
+  "dryRun": zod.boolean(),
   "errorMessage": zod.string().nullish()
 })
 

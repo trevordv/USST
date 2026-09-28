@@ -20,8 +20,8 @@
  * paths first, then Firecrawl, Apify and Bright Data where explicitly allowed.
  */
 
-import { db, pool, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable, pvhContactsTable, type PvhContact } from "@workspace/db";
-import { and, eq } from "drizzle-orm";
+import { db, pool, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable, contactEnrichmentAttemptsTable, contactEnrichmentProvenanceTable, pvhContactsTable, type PvhContact } from "@workspace/db";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import {
   getProjectIneligibilityReason,
@@ -86,8 +86,19 @@ import { brightDataConfigured, fetchApprovedBrightData, planBrightDataTargets } 
 import {
   acquireApprovedSourceWithFirecrawl,
   firecrawlConfigured,
+  firecrawlScrapeDeveloperContactPage,
   FirecrawlAcquisitionError,
 } from "./firecrawl";
+import { safeFetchPublicText } from "./safe-public-text";
+import {
+  ENRICHMENT_LIMITS,
+  normalizeEnrichmentOptions,
+  safeProviderError,
+  selectResumableBatch,
+  validateProviderCandidate,
+  type EnrichmentRunOptions,
+  type ProviderContactCandidate,
+} from "./contact-enrichment-policy";
 import { apifySourceConfigured, fetchApprovedSourceWithApify } from "./apify-source";
 import {
   combineContentFingerprints,
@@ -2248,26 +2259,30 @@ function extractNameNearEmail(context: string): string | null {
   return null;
 }
 
-async function scrapeUrlForContact(url: string, companyName?: string | null): Promise<{ name: string | null; email: string; phone: string | null } | null> {
-  try {
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(10000),
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      },
-    });
-    if (!res.ok) return null;
-    const html = await res.text();
-    const matches = extractEmailsFromHtml(html);
-    for (const { email, context } of matches) {
-      if (isPersonalEmail(email) && isEmailDomainRelated(email, companyName)) {
-        const name = extractNameNearEmail(context);
-        const phoneRaw = context.match(/\(?\+?[\d]{1,4}[\s\-.]?\(?\d{2,4}\)?[\s\-.]?\d{3,4}[\s\-.]?\d{3,4}/);
-        return { name, email, phone: phoneRaw?.[0]?.replace(/\s+/g, " ").trim() ?? null };
-      }
+function contactFromContent(html: string, companyName?: string | null): ContactResult | null {
+  const matches = extractEmailsFromHtml(html);
+  for (const { email, context } of matches) {
+    if (isPersonalEmail(email) && isEmailDomainRelated(email, companyName)) {
+      const name = extractNameNearEmail(context);
+      const phoneRaw = context.match(/\(?\+?[\d]{1,4}[\s\-.]?\(?\d{2,4}\)?[\s\-.]?\d{3,4}[\s\-.]?\d{3,4}/);
+      return { name, email, phone: phoneRaw?.[0]?.replace(/\s+/g, " ").trim() ?? null };
     }
-  } catch { /* timeout / network */ }
+  }
+  return null;
+}
+
+async function scrapeUrlForContact(url: string, companyName?: string | null): Promise<ContactResult | null> {
+  try {
+    const parsed = new URL(url);
+    const html = await safeFetchPublicText(parsed.href, { allowedHostname: parsed.hostname });
+    return contactFromContent(html, companyName);
+  } catch {
+    try {
+      const parsed = new URL(url);
+      const result = await firecrawlScrapeDeveloperContactPage(parsed.href, parsed.hostname);
+      return contactFromContent(result.content, companyName);
+    } catch { /* bounded direct and Firecrawl acquisition failed */ }
+  }
   return null;
 }
 
@@ -2283,9 +2298,12 @@ interface LushaContact {
 }
 
 interface LushaProspectingContact {
+  id?: string;
   firstName?: string;
   lastName?: string;
   jobTitle?: string;
+  companyName?: string;
+  companyId?: string | number;
 }
 
 interface LushaProspectingResponse {
@@ -2295,8 +2313,12 @@ interface LushaProspectingResponse {
 }
 
 interface LushaEnrichedContact {
+  id?: string;
   firstName?: string;
   lastName?: string;
+  jobTitle?: string;
+  companyName?: string;
+  company?: { id?: string | number; name?: string; domain?: string };
   emails?: Array<{ email: string; type?: string; confidence?: string }>;
   phones?: Array<{ number?: string; type?: string; doNotCall?: boolean }>;
 }
@@ -2315,24 +2337,31 @@ interface LushaResponse {
  *   Body:   { contacts: [...], reveal: ["emails", "phones"] }
  *   Response: { results: [ { emails: [{email, type, confidence}], phones: [{number, type}], firstName, lastName }, ... ] }
  *
- * Results are positionally aligned with the input contacts array.
+ * USST does not trust positional response alignment. Each request contains one
+ * person and the returned identity/employer/domain is validated independently.
  * Phone numbers may be partially masked (e.g. "+61 415...") on lower-tier plans —
  * those are discarded so we never save truncated data.
  *
- * Returns a map from input index → enriched result (email + phone + name).
+ * Returns provider candidates plus actual request/credit diagnostics.
  */
 async function callLushaBulkEnrich(
   contacts: LushaContact[],
-): Promise<Map<number, ContactResult>> {
+): Promise<{ candidates: ProviderContactCandidate[]; requests: number; credits: number; quotaLimited: boolean }> {
   const apiKey = process.env.LUSHA_API_KEY;
-  if (!apiKey || contacts.length === 0) return new Map();
+  if (!apiKey || contacts.length === 0) return { candidates: [], requests: 0, credits: 0, quotaLimited: false };
 
-  const results = new Map<number, ContactResult>();
-  const BATCH_SIZE = 100;
+  const results: ProviderContactCandidate[] = [];
+  let requests = 0;
+  let credits = 0;
+  let quotaLimited = false;
+  // One person per request avoids unsafe positional correlation when the
+  // provider omits/reorders failed entries.
+  const BATCH_SIZE = 1;
 
   for (let start = 0; start < contacts.length; start += BATCH_SIZE) {
     const batch = contacts.slice(start, start + BATCH_SIZE);
     try {
+      requests++;
       const resp = await fetch("https://api.lusha.com/v3/contacts/search-and-enrich", {
         method: "POST",
         headers: {
@@ -2347,8 +2376,8 @@ async function callLushaBulkEnrich(
       });
 
       if (!resp.ok) {
-        const body = await resp.text();
-        logger.warn({ status: resp.status, body }, "Lusha API error response");
+        quotaLimited ||= resp.status === 429 || resp.status === 402;
+        logger.warn({ provider: "lusha", status: resp.status, category: quotaLimited ? "quota-or-rate-limit" : "provider-error" }, "Lusha API request failed");
         continue;
       }
 
@@ -2356,8 +2385,8 @@ async function callLushaBulkEnrich(
       const enrichedList = json?.results ?? [];
 
       let batchFound = 0;
-      for (let i = 0; i < enrichedList.length; i++) {
-        const contact = enrichedList[i];
+      credits += Math.max(0, Number(json?.billing?.creditsCharged ?? 0));
+      for (const contact of enrichedList) {
         if (!contact) continue;
 
         const emails = contact.emails ?? [];
@@ -2381,7 +2410,17 @@ async function callLushaBulkEnrich(
         const lastName = contact.lastName ?? "";
         const name = [firstName, lastName].filter(Boolean).join(" ") || null;
 
-        results.set(start + i, { name, email: bestEmail, phone: fullPhone ?? null });
+        results.push({
+          firstName: contact.firstName,
+          lastName: contact.lastName,
+          email: bestEmail,
+          phone: fullPhone ?? null,
+          jobTitle: contact.jobTitle,
+          currentCompany: contact.company?.name ?? contact.companyName,
+          companyDomain: contact.company?.domain,
+          providerPersonId: contact.id,
+          providerCompanyId: contact.company?.id != null ? String(contact.company.id) : null,
+        });
         batchFound++;
       }
 
@@ -2390,11 +2429,11 @@ async function callLushaBulkEnrich(
         "Lusha batch enrichment complete",
       );
     } catch (err) {
-      logger.warn({ err, batchStart: start }, "Lusha bulk enrich request failed");
+      logger.warn({ provider: "lusha", ...safeProviderError(err), batchStart: start }, "Lusha bulk enrich request failed");
     }
   }
 
-  return results;
+  return { candidates: results, requests, credits, quotaLimited };
 }
 
 /**
@@ -2411,9 +2450,10 @@ async function callLushaBulkEnrich(
 async function callLushaProspecting(
   companyName: string,
   companyDomain: string | null,
-): Promise<ContactResult | null> {
+): Promise<{ candidate: ProviderContactCandidate | null; requests: number; credits: number; quotaLimited: boolean }> {
   const apiKey = process.env.LUSHA_API_KEY;
-  if (!apiKey) return null;
+  if (!apiKey) return { candidate: null, requests: 0, credits: 0, quotaLimited: false };
+  let requests = 0;
 
   // Job-title relevance scores — higher = better sales contact
   const TITLE_SCORES: Array<[RegExp, number]> = [
@@ -2435,22 +2475,28 @@ async function callLushaProspecting(
 
   try {
     // Step 1 — resolve company ID
+    requests++;
     const compResp = await fetch("https://api.lusha.com/prospecting/filters/companies/names", {
       method: "POST",
       headers: { "Content-Type": "application/json", "api_key": apiKey },
       body: JSON.stringify({ text: companyName }),
     });
     if (!compResp.ok) {
-      logger.warn({ status: compResp.status, companyName }, "Lusha: company name lookup failed");
-      return null;
+      logger.warn({ provider: "lusha", status: compResp.status, category: compResp.status === 429 ? "quota-or-rate-limit" : "provider-error" }, "Lusha company lookup failed");
+      return { candidate: null, requests, credits: 0, quotaLimited: compResp.status === 429 || compResp.status === 402 };
     }
     const companies = (await compResp.json()) as Array<{
       companyId?: number; name?: string; fqdn?: string; has_prospecting_contacts?: boolean;
     }>;
-    const co = companies[0];
-    if (!co?.companyId || !co.has_prospecting_contacts) return null;
+    const requestedDomain = companyDomain?.toLowerCase().replace(/^www\./, "") ?? null;
+    const co = companies.find((candidate) => {
+      const domain = candidate.fqdn?.toLowerCase().replace(/^www\./, "") ?? null;
+      return requestedDomain ? domain === requestedDomain : candidate.name?.trim().toLowerCase() === companyName.trim().toLowerCase();
+    });
+    if (!co?.companyId || !co.has_prospecting_contacts) return { candidate: null, requests, credits: 0, quotaLimited: false };
 
     // Step 2 — search contacts at this company (no PII returned, no credits charged)
+    requests++;
     const searchResp = await fetch("https://api.lusha.com/prospecting/contact/search", {
       method: "POST",
       headers: { "Content-Type": "application/json", "api_key": apiKey },
@@ -2462,26 +2508,24 @@ async function callLushaProspecting(
       }),
     });
     if (!searchResp.ok) {
-      logger.warn({ status: searchResp.status, companyName }, "Lusha: prospecting contact search failed");
-      return null;
+      logger.warn({ provider: "lusha", status: searchResp.status, category: searchResp.status === 429 ? "quota-or-rate-limit" : "provider-error" }, "Lusha contact search failed");
+      return { candidate: null, requests, credits: 0, quotaLimited: searchResp.status === 429 || searchResp.status === 402 };
     }
     const searchData = (await searchResp.json()) as LushaProspectingResponse;
     const candidates: LushaProspectingContact[] =
       searchData.data?.contacts ?? searchData.contacts ?? searchData.results ?? [];
-    if (candidates.length === 0) return null;
+    if (candidates.length === 0) return { candidate: null, requests, credits: 0, quotaLimited: false };
 
     // Pick the most sales-relevant contact
     const best = candidates
       .filter((c) => c.firstName && c.lastName)
       .sort((a, b) => titleScore(b.jobTitle ?? "") - titleScore(a.jobTitle ?? ""))[0];
-    if (!best?.firstName || !best.lastName) return null;
+    if (!best?.firstName || !best.lastName) return { candidate: null, requests, credits: 0, quotaLimited: false };
 
-    logger.info(
-      { companyName, firstName: best.firstName, lastName: best.lastName, title: best.jobTitle },
-      "Lusha prospecting: enriching best contact",
-    );
+    logger.info({ provider: "lusha", stage: "person-enrich" }, "Lusha prospecting candidate selected");
 
     // Step 3 — enrich that specific person to reveal email + phone
+    requests++;
     const enrichResp = await fetch("https://api.lusha.com/v3/contacts/search-and-enrich", {
       method: "POST",
       headers: { "Content-Type": "application/json", "api_key": apiKey },
@@ -2496,12 +2540,12 @@ async function callLushaProspecting(
       }),
     });
     if (!enrichResp.ok) {
-      logger.warn({ status: enrichResp.status, companyName }, "Lusha: prospecting enrich step failed");
-      return null;
+      logger.warn({ provider: "lusha", status: enrichResp.status, category: enrichResp.status === 429 ? "quota-or-rate-limit" : "provider-error" }, "Lusha person enrich failed");
+      return { candidate: null, requests, credits: 0, quotaLimited: enrichResp.status === 429 || enrichResp.status === 402 };
     }
     const enrichData = (await enrichResp.json()) as LushaResponse;
     const enriched = enrichData.results?.[0];
-    if (!enriched || ("error" in enriched)) return null;
+    if (!enriched || ("error" in enriched)) return { candidate: null, requests, credits: 0, quotaLimited: false };
 
     const emails = enriched.emails ?? [];
     const phones = enriched.phones ?? [];
@@ -2510,20 +2554,32 @@ async function callLushaProspecting(
       emails.find((e) => e.confidence === "A+" && e.type === "work")?.email ??
       emails.find((e) => e.type === "work")?.email ??
       emails[0]?.email;
-    if (!bestEmail) return null;
+    if (!bestEmail) return { candidate: null, requests, credits: Number(enrichData.billing?.creditsCharged ?? 0), quotaLimited: false };
 
     const fullPhone =
       phones.find((p) => p.type === "mobile" && p.number && !p.number.includes("..."))?.number ??
       phones.find((p) => p.number && !p.number.includes("..."))?.number ??
       null;
 
-    const name = [enriched.firstName ?? best.firstName, enriched.lastName ?? best.lastName]
-      .filter(Boolean).join(" ") || null;
-
-    return { name, email: bestEmail, phone: fullPhone ?? null };
+    return {
+      candidate: {
+        firstName: enriched.firstName ?? best.firstName,
+        lastName: enriched.lastName ?? best.lastName,
+        email: bestEmail,
+        phone: fullPhone ?? null,
+        jobTitle: enriched.jobTitle ?? best.jobTitle,
+        currentCompany: enriched.company?.name ?? enriched.companyName ?? co.name,
+        companyDomain: enriched.company?.domain ?? co.fqdn,
+        providerPersonId: enriched.id ?? best.id,
+        providerCompanyId: String(enriched.company?.id ?? best.companyId ?? co.companyId),
+      },
+      requests,
+      credits: Math.max(0, Number(enrichData.billing?.creditsCharged ?? 0)),
+      quotaLimited: false,
+    };
   } catch (err) {
-    logger.warn({ err, companyName }, "Lusha prospecting threw");
-    return null;
+    logger.warn({ provider: "lusha", ...safeProviderError(err) }, "Lusha prospecting failed");
+    return { candidate: null, requests, credits: 0, quotaLimited: false };
   }
 }
 
@@ -2535,8 +2591,9 @@ async function callLushaProspecting(
  * Phase 2.5b: Lusha Prospecting for companies where we have no person name at all.
  * Phase 3:    LinkedIn profile search for developers with generic contacts.
  */
-export async function enrichMissingContacts(runId?: number): Promise<{ checked: number; updated: number }> {
+export async function enrichMissingContacts(runId?: number, requestedOptions: Partial<EnrichmentRunOptions> = {}): Promise<{ checked: number; updated: number; verifiedContacts: number; projectsUpdated: number }> {
   const enrichmentStartedAt = performance.now();
+  const options = normalizeEnrichmentOptions(requestedOptions);
   const GENERIC_PREFIXES = [
     "info@", "admin@", "contact@", "hello@", "enquiries@", "enquiry@",
     "general@", "mail@", "projects@", "team@", "reception@", "office@",
@@ -2568,7 +2625,7 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
         .set({ status: "completed", completedAt: new Date(), checked: 0, updated: 0 })
         .where(eq(contactEnrichmentsTable.id, runId));
     }
-    return { checked: 0, updated: 0 };
+    return { checked: 0, updated: 0, verifiedContacts: 0, projectsUpdated: 0 };
   }
 
   type GroupEntry = {
@@ -2602,14 +2659,13 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
           "linkedin.com", "facebook.com", "twitter.com", "instagram.com", "reddit.com",
           "theaustralian.com.au", "afr.com", "smh.com.au", "theage.com.au", "heraldsun.com.au",
         ]);
-        if (!nonDeveloperDomains.has(host)) g.domain = host;
+        if (!nonDeveloperDomains.has(host) && isEmailDomainRelated(`contact@${host}`, proj.developer ?? null)) g.domain = host;
       } catch { /* ignore */ }
     }
   }
 
   const CONTACT_PATHS = [
-    "/team", "/our-team", "/about", "/about-us", "/people",
-    "/contact", "/contact-us", "/meet-the-team", "/who-we-are", "/staff",
+    "/team", "/about-us", "/contact-us",
   ];
 
   let updated = 0;
@@ -2617,32 +2673,48 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
   let tentativeLeads = 0;
   let rejectedMatches = 0;
   let providerRequests = 0;
-  const apifyBudget = Math.max(1, Number(process.env.CONTACT_APIFY_QUERY_BUDGET ?? 25));
-  const linkedInBudget = Math.max(0, Number(process.env.CONTACT_LINKEDIN_QUERY_BUDGET ?? 20));
-  const lushaCompanyBudget = Math.max(0, Number(process.env.LUSHA_COMPANY_CREDIT_BUDGET ?? 0));
+  let creditsConsumed = 0;
+  let creditsEstimated = 0;
+  const uniqueContactFingerprints = new Set<string>();
+  const apifyBudget = options.maxApifyQueries;
+  const linkedInBudget = options.maxLinkedInQueries;
+  const lushaCompanyBudget = options.companyBatchSize;
   const enrichedKeys = new Set<string>();
   const noDomainGroups: Array<[string, GroupEntry]> = [];
 
-  async function applyContact(g: GroupEntry, contact: ContactResult): Promise<void> {
+  type ApplyOutcome = { accepted: boolean; projectsUpdated: number; fingerprint?: string; reason?: string };
+  async function applyContact(g: GroupEntry, contact: ContactResult, provenance: { provider: string; fingerprint?: string; sourceUrl?: string | null }): Promise<ApplyOutcome> {
     const email = contact.email?.trim().toLowerCase();
     if (!email || !isPersonalEmail(email) || !isEmailDomainRelated(email, g.projects[0].developer ?? null)) {
       rejectedMatches++;
-      return;
+      return { accepted: false, projectsUpdated: 0, reason: "invalid-professional-contact" };
     }
+    if (g.projects.some((project) => project.contactEmail && isValidProjectContact(project.contactEmail, project.developer ?? null))) {
+      return { accepted: false, projectsUpdated: 0, reason: "verified-contact-preserved" };
+    }
+    let projectsUpdated = 0;
     for (const proj of g.projects) {
-      const isNewVerified = !proj.contactEmail;
-      await db
-        .update(projectsTable)
-        .set({
+      if (!options.dryRun) {
+        await db.update(projectsTable).set({
           contactName: contact.name ?? g.existingName ?? proj.contactName,
-          contactEmail: proj.contactEmail?.trim() || email,
+          contactEmail: email,
           contactPhone: contact.phone ?? proj.contactPhone,
           updatedAt: new Date(),
-        })
-        .where(eq(projectsTable.id, proj.id));
-      updated++;
-      if (isNewVerified) verifiedNewContacts++;
+        }).where(eq(projectsTable.id, proj.id));
+      }
+      projectsUpdated++;
+      if (runId && !options.dryRun) await db.insert(contactEnrichmentProvenanceTable).values({
+        runId, projectId: proj.id, developerKey: (proj.developer ?? `id:${proj.id}`).toLowerCase().trim(),
+        provider: provenance.provider, verificationStatus: "verified", sourceUrl: provenance.sourceUrl ?? null,
+        contactFingerprint: provenance.fingerprint ?? null, creditsConsumed: 0,
+      });
     }
+    updated += projectsUpdated;
+    if (provenance.fingerprint && !uniqueContactFingerprints.has(provenance.fingerprint)) {
+      uniqueContactFingerprints.add(provenance.fingerprint);
+      verifiedNewContacts++;
+    }
+    return { accepted: true, projectsUpdated, fingerprint: provenance.fingerprint };
   }
 
   // ── Phase 1: Scrape known domains ─────────────────────────
@@ -2660,10 +2732,12 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
           g.projects[0].developer ?? null,
         );
         if (contact) {
-          await applyContact(g, contact);
-          enrichedKeys.add(devKey);
-          logger.info({ devKey }, "Contact enriched via domain scrape");
-          return null;
+          const outcome = await applyContact(g, contact, { provider: "official-domain", fingerprint: hashSourceContent(`${contact.name ?? ""}|${contact.email}`), sourceUrl: `https://${g.domain}${path}` });
+          if (outcome.accepted) {
+            enrichedKeys.add(devKey);
+            logger.info({ provider: "official-domain", projectsUpdated: outcome.projectsUpdated }, "Verified contact accepted");
+            return null;
+          }
         }
       }
       return [devKey, g];
@@ -2682,10 +2756,14 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
       "Contact enrichment integration outcome",
     );
   }
-  if (phaseTwo.length > 0 && token) {
-    logger.info({ count: phaseTwo.length }, "Contact enrichment: Phase 2 Apify search");
+  if (phaseTwo.length > 0 && token && !process.env.LUSHA_API_KEY && apifyBudget > 0) {
+    const attempts = await db.select().from(contactEnrichmentAttemptsTable)
+      .where(and(eq(contactEnrichmentAttemptsTable.provider, "apify"), inArray(contactEnrichmentAttemptsTable.developerKey, phaseTwo.map(([key]) => key))));
+    const byKey = new Map(attempts.map((attempt) => [attempt.developerKey, attempt]));
+    const selectedPhaseTwo = selectResumableBatch(phaseTwo.map(([key, group]) => ({ key, group, ...byKey.get(key) })), apifyBudget);
+    logger.info({ eligible: phaseTwo.length, selected: selectedPhaseTwo.length }, "Contact enrichment: Phase 2 Apify search");
 
-    const queries = phaseTwo.map(([, g]) => {
+    const queries = selectedPhaseTwo.map(({ group: g }) => {
       const dev = g.projects[0].developer ?? "solar developer";
       const person = g.existingName;
       if (person && !/team|group|office|crew/i.test(person)) {
@@ -2695,13 +2773,13 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     });
 
     try {
-      const runId = await startApifySearchRun(queries.slice(0, apifyBudget));
+      const apifyRunId = await startApifySearchRun(queries);
       providerRequests++;
-      await waitForApifyRun(runId);
-      const items = await fetchApifyResults(runId);
+      await waitForApifyRun(apifyRunId);
+      const items = await fetchApifyResults(apifyRunId);
 
-      for (let i = 0; i < Math.min(phaseTwo.length, items.length); i++) {
-        const [devKey, g] = phaseTwo[i];
+      for (let i = 0; i < Math.min(selectedPhaseTwo.length, items.length); i++) {
+        const { key: devKey, group: g } = selectedPhaseTwo[i];
         if (enrichedKeys.has(devKey)) continue;
         const results = (items[i] as ApifyDatasetItem)?.organicResults ?? [];
 
@@ -2714,10 +2792,8 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
             const email = em[0].toLowerCase();
             if (isPersonalEmail(email) && isEmailDomainRelated(email, companyName)) {
               const name = extractNameNearEmail(text) ?? g.existingName;
-              await applyContact(g, { name: name ?? null, email, phone: null });
-              enrichedKeys.add(devKey);
-              logger.info({ devKey }, "Contact enriched via Apify snippet");
-              break;
+              const outcome = await applyContact(g, { name: name ?? null, email, phone: null }, { provider: "apify", fingerprint: hashSourceContent(`${name ?? ""}|${email}`) });
+              if (outcome.accepted) { enrichedKeys.add(devKey); logger.info({ provider: "apify", projectsUpdated: outcome.projectsUpdated }, "Verified contact accepted"); break; }
             }
           }
           if (enrichedKeys.has(devKey)) break;
@@ -2729,20 +2805,20 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
             if (!result.url) continue;
             const contact = await scrapeUrlForContact(result.url, companyName);
             if (contact) {
-              await applyContact(g, {
+              const outcome = await applyContact(g, {
                 name: contact.name ?? g.existingName,
                 email: contact.email,
                 phone: contact.phone,
-              });
-              enrichedKeys.add(devKey);
-              logger.info({ devKey }, "Contact enriched via Apify URL");
-              break;
+              }, { provider: "apify", fingerprint: hashSourceContent(`${contact.name ?? ""}|${contact.email}`), sourceUrl: result.url });
+              if (outcome.accepted) { enrichedKeys.add(devKey); logger.info({ provider: "apify", projectsUpdated: outcome.projectsUpdated }, "Verified contact accepted"); break; }
             }
           }
         }
+        if (!options.dryRun) await db.insert(contactEnrichmentAttemptsTable).values({ provider: "apify", developerKey: devKey, status: enrichedKeys.has(devKey) ? "verified" : "no-match", attemptCount: 1, lastRunId: runId ?? null, nextEligibleAt: new Date(Date.now() + ENRICHMENT_LIMITS.cooldownHours * 3_600_000) })
+          .onConflictDoUpdate({ target: [contactEnrichmentAttemptsTable.provider, contactEnrichmentAttemptsTable.developerKey], set: { status: enrichedKeys.has(devKey) ? "verified" : "no-match", attemptCount: sql`${contactEnrichmentAttemptsTable.attemptCount} + 1`, lastRunId: runId ?? null, lastAttemptAt: new Date(), nextEligibleAt: new Date(Date.now() + ENRICHMENT_LIMITS.cooldownHours * 3_600_000), updatedAt: new Date() } });
       }
     } catch (err) {
-      logger.warn({ err }, "Contact enrichment: Phase 2 Apify failed");
+      logger.warn({ provider: "apify", ...safeProviderError(err) }, "Contact enrichment Apify discovery failed");
     }
   }
 
@@ -2792,29 +2868,38 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     );
 
     // 2.5a — bulk search-and-enrich for contacts we already have a name for
-    if (namedEntries.length > 0) {
+    if (namedEntries.length > 0 && options.approvedPaidProspecting && options.maxLushaCredits > 0) {
       try {
-        const lushaResults = await callLushaBulkEnrich(namedEntries.map((e) => e.contact));
-        for (const [batchIdx, result] of lushaResults) {
-          const entry = namedEntries[batchIdx];
-          if (!entry || enrichedKeys.has(entry.devKey)) continue;
-          // Lusha does not guarantee positional correlation. Require the returned
-          // person to agree with the requested name and only then apply its email.
-          const requested = `${entry.contact.firstName ?? ""} ${entry.contact.lastName ?? ""}`.trim().toLowerCase();
-          if (!result.name || !result.email || !result.name.toLowerCase().includes(requested.split(" ")[0])) {
-            rejectedMatches++;
-            continue;
+        const attempts = await db.select().from(contactEnrichmentAttemptsTable)
+          .where(and(eq(contactEnrichmentAttemptsTable.provider, "lusha"), inArray(contactEnrichmentAttemptsTable.developerKey, namedEntries.map((entry) => entry.devKey))));
+        const byKey = new Map(attempts.map((attempt) => [attempt.developerKey, attempt]));
+        const selectedNamed = selectResumableBatch(namedEntries.map((entry) => ({ key: entry.devKey, entry, ...byKey.get(entry.devKey) })), Math.min(options.companyBatchSize, options.maxLushaCredits));
+        creditsEstimated += selectedNamed.length;
+        const lushaResults = await callLushaBulkEnrich(selectedNamed.map(({ entry }) => entry.contact));
+        providerRequests += lushaResults.requests;
+        creditsConsumed += lushaResults.credits;
+        for (const result of lushaResults.candidates) {
+          const matching = selectedNamed.map(({ entry }) => ({ entry, decision: validateProviderCandidate({
+            candidate: result,
+            developer: entry.g.projects[0].developer ?? "",
+            developerDomain: entry.g.domain,
+            expectedName: entry.g.existingName,
+          }) })).filter(({ decision }) => decision.accepted);
+          if (matching.length !== 1) { rejectedMatches++; continue; }
+          const { entry, decision } = matching[0];
+          if (!decision.accepted || enrichedKeys.has(entry.devKey)) continue;
+          const outcome = await applyContact(entry.g, { name: decision.name, email: decision.email, phone: decision.phone }, { provider: "lusha", fingerprint: decision.fingerprint });
+          if (outcome.accepted) {
+            enrichedKeys.add(entry.devKey);
+            logger.info({ provider: "lusha", projectsUpdated: outcome.projectsUpdated }, "Verified contact accepted");
           }
-          await applyContact(entry.g, {
-            name: result.name ?? entry.g.existingName ?? null,
-            email: result.email,
-            phone: result.phone,
-          });
-          enrichedKeys.add(entry.devKey);
-          logger.info({ devKey: entry.devKey }, "Contact enriched via Lusha search-and-enrich");
+        }
+        for (const { key } of selectedNamed) {
+          if (!options.dryRun) await db.insert(contactEnrichmentAttemptsTable).values({ provider: "lusha", developerKey: key, status: enrichedKeys.has(key) ? "verified" : "no-match", attemptCount: 1, lastRunId: runId ?? null, nextEligibleAt: new Date(Date.now() + ENRICHMENT_LIMITS.cooldownHours * 3_600_000) })
+            .onConflictDoUpdate({ target: [contactEnrichmentAttemptsTable.provider, contactEnrichmentAttemptsTable.developerKey], set: { status: enrichedKeys.has(key) ? "verified" : "no-match", attemptCount: sql`${contactEnrichmentAttemptsTable.attemptCount} + 1`, lastRunId: runId ?? null, lastAttemptAt: new Date(), nextEligibleAt: new Date(Date.now() + ENRICHMENT_LIMITS.cooldownHours * 3_600_000), updatedAt: new Date() } });
         }
       } catch (err) {
-        logger.warn({ err }, "Contact enrichment: Phase 2.5a Lusha search-and-enrich failed");
+        logger.warn({ provider: "lusha", ...safeProviderError(err) }, "Lusha named-contact enrichment failed");
       }
     }
 
@@ -2823,23 +2908,37 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
     // Prospecting uses 3 calls per company (company lookup + contact search + enrich),
     // which exhausts the quota after ~33 companies. Enable with
     // LUSHA_PROSPECTING_ENABLED=true if on a paid plan.
-    if (namelessEntries.length > 0 && process.env.LUSHA_PROSPECTING_ENABLED === "true" && lushaCompanyBudget > 0) {
-      logger.info({ eligible: namelessEntries.length, budget: lushaCompanyBudget }, "Contact enrichment: Phase 2.5b Lusha prospecting");
-      for (const [devKey, g] of namelessEntries.slice(0, lushaCompanyBudget)) {
+    if (namelessEntries.length > 0 && options.approvedPaidProspecting && options.maxLushaCredits > 0 && lushaCompanyBudget > 0) {
+      const priorAttempts = await db.select().from(contactEnrichmentAttemptsTable)
+        .where(and(eq(contactEnrichmentAttemptsTable.provider, "lusha"), inArray(contactEnrichmentAttemptsTable.developerKey, namelessEntries.map(([key]) => key))));
+      const attemptByKey = new Map(priorAttempts.map((attempt) => [attempt.developerKey, attempt]));
+      const selected = selectResumableBatch(namelessEntries.map(([key, group]) => ({ key, group, ...attemptByKey.get(key) })), lushaCompanyBudget);
+      logger.info({ eligible: namelessEntries.length, selected: selected.length, approvedCreditBudget: options.maxLushaCredits }, "Lusha paid prospecting batch approved");
+      for (const { key: devKey, group: g } of selected) {
         if (enrichedKeys.has(devKey)) continue;
         const dev    = g.projects[0].developer;
         const domain = g.domain;
         if (!dev) continue;
+        if (creditsEstimated + 1 > options.maxLushaCredits) break;
+        creditsEstimated++;
         try {
           const result = await callLushaProspecting(dev, domain);
-          providerRequests += 3;
-          if (result) {
-            await applyContact(g, result);
-            enrichedKeys.add(devKey);
-            logger.info({ devKey }, "Contact enriched via Lusha prospecting");
+          providerRequests += result.requests;
+          creditsConsumed += result.credits;
+          let status = "no-match";
+          let failureCategory: string | null = result.quotaLimited ? "quota-or-rate-limit" : null;
+          if (result.candidate) {
+            const decision = validateProviderCandidate({ candidate: result.candidate, developer: dev, developerDomain: domain });
+            if (decision.accepted) {
+              const outcome = await applyContact(g, { name: decision.name, email: decision.email, phone: decision.phone }, { provider: "lusha", fingerprint: decision.fingerprint });
+              if (outcome.accepted) { enrichedKeys.add(devKey); status = "verified"; logger.info({ provider: "lusha", projectsUpdated: outcome.projectsUpdated }, "Verified contact accepted"); }
+            } else { rejectedMatches++; status = "rejected"; failureCategory = decision.reason; }
           }
+          if (!options.dryRun) await db.insert(contactEnrichmentAttemptsTable).values({ provider: "lusha", developerKey: devKey, status, attemptCount: 1, lastRunId: runId ?? null, failureCategory, nextEligibleAt: new Date(Date.now() + ENRICHMENT_LIMITS.cooldownHours * 3_600_000) })
+            .onConflictDoUpdate({ target: [contactEnrichmentAttemptsTable.provider, contactEnrichmentAttemptsTable.developerKey], set: { status, attemptCount: sql`${contactEnrichmentAttemptsTable.attemptCount} + 1`, lastRunId: runId ?? null, failureCategory, lastAttemptAt: new Date(), nextEligibleAt: new Date(Date.now() + ENRICHMENT_LIMITS.cooldownHours * 3_600_000), updatedAt: new Date() } });
+          if (result.quotaLimited) break;
         } catch (err) {
-          logger.warn({ err, devKey }, "Contact enrichment: Phase 2.5b prospecting entry failed");
+          logger.warn({ provider: "lusha", ...safeProviderError(err) }, "Lusha prospecting entry failed");
         }
       }
     }
@@ -2847,8 +2946,12 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
 
   // ── Phase 3: LinkedIn profile search for developers with generic contacts ──
   const phaseThree = noDomainGroups.filter(([k]) => !enrichedKeys.has(k));
-  if (phaseThree.length > 0 && token) {
-    logger.info({ count: phaseThree.length }, "Contact enrichment: Phase 3 LinkedIn search");
+  if (phaseThree.length > 0 && token && linkedInBudget > 0) {
+    const attempts = await db.select().from(contactEnrichmentAttemptsTable)
+      .where(and(eq(contactEnrichmentAttemptsTable.provider, "apify-linkedin"), inArray(contactEnrichmentAttemptsTable.developerKey, phaseThree.map(([key]) => key))));
+    const byKey = new Map(attempts.map((attempt) => [attempt.developerKey, attempt]));
+    const selectedPhaseThree = selectResumableBatch(phaseThree.map(([key, group]) => ({ key, group, ...byKey.get(key) })), linkedInBudget);
+    logger.info({ eligible: phaseThree.length, selected: selectedPhaseThree.length }, "Contact enrichment: Phase 3 LinkedIn search");
 
     // Relevant job titles that indicate the person who would handle project enquiries
     const RELEVANT_TITLES = [
@@ -2862,19 +2965,19 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
 
     const titleQuery = RELEVANT_TITLES.map(t => `"${t}"`).join(" OR ");
 
-    const linkedInQueries = phaseThree.map(([, g]) => {
+    const linkedInQueries = selectedPhaseThree.map(({ group: g }) => {
       const dev = g.projects[0].developer ?? "solar developer";
       return `"${dev}" LinkedIn (${titleQuery})`;
     });
 
     try {
-      const runId = await startApifySearchRun(linkedInQueries.slice(0, linkedInBudget));
+      const apifyRunId = await startApifySearchRun(linkedInQueries);
       providerRequests++;
-      await waitForApifyRun(runId);
-      const items = await fetchApifyResults(runId);
+      await waitForApifyRun(apifyRunId);
+      const items = await fetchApifyResults(apifyRunId);
 
-      for (let i = 0; i < Math.min(phaseThree.length, items.length); i++) {
-        const [devKey, g] = phaseThree[i];
+      for (let i = 0; i < Math.min(selectedPhaseThree.length, items.length); i++) {
+        const { key: devKey, group: g } = selectedPhaseThree[i];
         if (enrichedKeys.has(devKey)) continue;
         const results = (items[i] as ApifyDatasetItem)?.organicResults ?? [];
 
@@ -2912,6 +3015,7 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
           // Try to find email/phone for this person via a targeted search
           const personQuery = `"${bestMatch.name}" "${bestMatch.title}" "${g.projects[0].developer ?? ""}" email contact Australia`;
           const personRunId = await startApifySearchRun([personQuery]);
+          providerRequests++;
           await waitForApifyRun(personRunId);
           const personItems = await fetchApifyResults(personRunId);
           const personResults = (personItems[0] as ApifyDatasetItem)?.organicResults ?? [];
@@ -2932,14 +3036,16 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
 
           // Apply the LinkedIn contact
           if (bestMatch.email) {
-            await applyContact(g, { name: bestMatch.name, email: bestMatch.email, phone: bestMatch.phone });
-            enrichedKeys.add(devKey);
+            const outcome = await applyContact(g, { name: bestMatch.name, email: bestMatch.email, phone: bestMatch.phone }, { provider: "apify-linkedin", fingerprint: hashSourceContent(`${bestMatch.name}|${bestMatch.email}`) });
+            if (outcome.accepted) enrichedKeys.add(devKey);
           } else tentativeLeads++;
-          logger.info({ devKey, verifiedEmail: Boolean(bestMatch.email) }, "LinkedIn lead evaluated");
+          logger.info({ provider: "apify-linkedin", verified: Boolean(bestMatch.email) }, "LinkedIn lead evaluated");
         }
+        if (!options.dryRun) await db.insert(contactEnrichmentAttemptsTable).values({ provider: "apify-linkedin", developerKey: devKey, status: enrichedKeys.has(devKey) ? "verified" : "no-match", attemptCount: 1, lastRunId: runId, nextEligibleAt: new Date(Date.now() + ENRICHMENT_LIMITS.cooldownHours * 3_600_000) })
+          .onConflictDoUpdate({ target: [contactEnrichmentAttemptsTable.provider, contactEnrichmentAttemptsTable.developerKey], set: { status: enrichedKeys.has(devKey) ? "verified" : "no-match", attemptCount: sql`${contactEnrichmentAttemptsTable.attemptCount} + 1`, lastRunId: runId, lastAttemptAt: new Date(), nextEligibleAt: new Date(Date.now() + ENRICHMENT_LIMITS.cooldownHours * 3_600_000), updatedAt: new Date() } });
       }
     } catch (err) {
-      logger.warn({ err }, "Contact enrichment: Phase 3 LinkedIn failed");
+      logger.warn({ provider: "apify-linkedin", ...safeProviderError(err) }, "Contact enrichment LinkedIn discovery failed");
     }
   }
 
@@ -2955,26 +3061,27 @@ export async function enrichMissingContacts(runId?: number): Promise<{ checked: 
   );
   if (runId) {
     await db.update(contactEnrichmentsTable)
-      .set({ status: "completed", completedAt: new Date(), checked: toEnrich.length, updated })
+      .set({ status: "completed", completedAt: new Date(), checked: toEnrich.length, updated, verifiedContacts: verifiedNewContacts, tentativeLeads, rejectedMatches, projectsUpdated: updated, providerRequests, creditsEstimated, creditsConsumed, approvedCreditBudget: options.maxLushaCredits, paidProspectingApproved: options.approvedPaidProspecting, dryRun: options.dryRun })
       .where(eq(contactEnrichmentsTable.id, runId));
   }
-  return { checked: toEnrich.length, updated };
+  return { checked: toEnrich.length, updated, verifiedContacts: verifiedNewContacts, projectsUpdated: updated };
 }
 
 /**
  * Start an enrichment run in the background and return the run ID.
  * The caller receives 202 Accepted immediately; the enrichment runs asynchronously.
  */
-export async function startEnrichment(): Promise<{ runId: number; completion: Promise<unknown> }> {
+export async function startEnrichment(requestedOptions: Partial<EnrichmentRunOptions> = {}): Promise<{ runId: number; completion: Promise<unknown> }> {
+  const options = normalizeEnrichmentOptions(requestedOptions);
   const [run] = await db.insert(contactEnrichmentsTable)
-    .values({ status: "running", checked: 0, updated: 0 })
+    .values({ status: "running", checked: 0, updated: 0, approvedCreditBudget: options.maxLushaCredits, paidProspectingApproved: options.approvedPaidProspecting, dryRun: options.dryRun })
     .returning();
 
   const runId = run.id;
 
   // Kick off the long-running work without awaiting
-  const completion = enrichMissingContacts(runId).catch((err: Error) => {
-    logger.error({ err, runId }, "Contact enrichment background task failed");
+  const completion = enrichMissingContacts(runId, options).catch((err: Error) => {
+    logger.error({ runId, category: "enrichment-failed" }, "Contact enrichment background task failed");
     db.update(contactEnrichmentsTable)
       .set({ status: "failed", completedAt: new Date(), errorMessage: err.message })
       .where(eq(contactEnrichmentsTable.id, runId))

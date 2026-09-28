@@ -232,6 +232,12 @@ paths:
       operationId: startContactEnrichment
       tags: [contact-enrichments]
       summary: Start a contact enrichment run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContactEnrichmentInput"
       responses:
         "202":
           description: Contact enrichment started
@@ -857,7 +863,7 @@ components:
 
     ContactEnrichment:
       type: object
-      required: [id, status, startedAt, checked, updated]
+      required: [id, status, startedAt, checked, updated, verifiedContacts, tentativeLeads, rejectedMatches, projectsUpdated, providerRequests, creditsEstimated, creditsConsumed, approvedCreditBudget, paidProspectingApproved, dryRun]
       properties:
         id:
           type: integer
@@ -872,8 +878,54 @@ components:
           type: integer
         updated:
           type: integer
+        verifiedContacts:
+          type: integer
+        tentativeLeads:
+          type: integer
+        rejectedMatches:
+          type: integer
+        projectsUpdated:
+          type: integer
+        providerRequests:
+          type: integer
+        creditsEstimated:
+          type: integer
+        creditsConsumed:
+          type: integer
+        approvedCreditBudget:
+          type: integer
+        paidProspectingApproved:
+          type: boolean
+        dryRun:
+          type: boolean
         errorMessage:
           type: ["string", "null"]
+
+    ContactEnrichmentInput:
+      type: object
+      additionalProperties: false
+      required: [approvedPaidProspecting, maxLushaCredits, companyBatchSize, maxApifyQueries, maxLinkedInQueries, dryRun]
+      properties:
+        approvedPaidProspecting:
+          type: boolean
+        maxLushaCredits:
+          type: integer
+          minimum: 0
+          maximum: 100
+        companyBatchSize:
+          type: integer
+          minimum: 0
+          maximum: 25
+        maxApifyQueries:
+          type: integer
+          minimum: 0
+          maximum: 50
+        maxLinkedInQueries:
+          type: integer
+          minimum: 0
+          maximum: 40
+        dryRun:
+          type: boolean
 
     ContactEnrichmentStart:
       type: object

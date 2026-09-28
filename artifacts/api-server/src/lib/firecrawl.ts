@@ -81,6 +81,13 @@ export interface FirecrawlRequestOptions {
   bypassMemoryCache?: boolean;
 }
 
+export interface FirecrawlContactResult {
+  content: string;
+  finalUrl: string;
+  contentHash: string;
+  cacheReuse: boolean;
+}
+
 interface CachedResult {
   expiresAt: number;
   result: FirecrawlAcquisitionResult;
@@ -486,6 +493,52 @@ export async function acquireApprovedSourceWithFirecrawl(
   return plan.firecrawlMode === "crawl"
     ? firecrawlCrawlApprovedSource(sourceName, requestedUrl, options)
     : firecrawlScrapeApprovedSource(sourceName, requestedUrl, options);
+}
+
+/**
+ * Bounded fallback for an already-approved official developer hostname.
+ * This deliberately does not discover or broaden domains and does not enable
+ * Firecrawl AI extraction, screenshots, crawl, or external links.
+ */
+export async function firecrawlScrapeDeveloperContactPage(
+  requestedUrl: string,
+  approvedHostname: string,
+  options: FirecrawlRequestOptions = {},
+): Promise<FirecrawlContactResult> {
+  const parsed = new URL(requestedUrl);
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port ||
+      parsed.hostname.toLowerCase() !== approvedHostname.toLowerCase()) {
+    throw new FirecrawlAcquisitionError("unsafe-final-url", "Developer contact URL is outside the approved hostname");
+  }
+  const environment = options.environment ?? process.env;
+  const key = environment.FIRECRAWL_API_KEY?.trim();
+  if (!key) throw new FirecrawlAcquisitionError("missing-credentials", "FIRECRAWL_API_KEY is not configured");
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const body = await providerRequest("/scrape", {
+    method: "POST",
+    body: JSON.stringify({
+      url: parsed.href,
+      formats: ["markdown"],
+      onlyMainContent: true,
+      maxAge: PROVIDER_CACHE_MAX_AGE_MS,
+      storeInCache: true,
+      timeout: 20_000,
+    }),
+  }, key, options.fetcher ?? fetch, now, sleep, firecrawlMinimumRequestIntervalMs(environment));
+  const raw = unwrapScrapeData(body);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new FirecrawlAcquisitionError("malformed-response", "Firecrawl contact response is invalid");
+  const record = raw as Record<string, unknown>;
+  const metadata = safeMetadata(record.metadata);
+  const finalValue = typeof metadata.url === "string" ? metadata.url : typeof metadata.sourceURL === "string" ? metadata.sourceURL : parsed.href;
+  const finalUrl = new URL(finalValue, parsed).href;
+  const final = new URL(finalUrl);
+  if (final.protocol !== "https:" || final.username || final.password || final.port || final.hostname.toLowerCase() !== approvedHostname.toLowerCase()) {
+    throw new FirecrawlAcquisitionError("unsafe-final-url", "Firecrawl redirected outside the approved developer hostname");
+  }
+  const content = (typeof record.markdown === "string" ? record.markdown : "").slice(0, MAX_CONTENT_BYTES).trim();
+  if (!content) throw new FirecrawlAcquisitionError("empty-content", "Firecrawl returned empty developer contact content");
+  return { content, finalUrl, contentHash: firecrawlContentHash(content), cacheReuse: metadata.cacheState === "hit" };
 }
 
 export const FIRECRAWL_INTEGRATION_LIMITS = Object.freeze({

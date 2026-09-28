@@ -24,6 +24,7 @@ import type {
   AccessTokenInput,
   AccessTokenValidation,
   ContactEnrichment,
+  ContactEnrichmentInput,
   ContactEnrichmentStart,
   EpbcImportResult,
   EpbcMeta,
@@ -689,14 +690,15 @@ export const getStartContactEnrichmentUrl = () => {
 /**
  * @summary Start a contact enrichment run
  */
-export const startContactEnrichment = async ( options?: RequestInit): Promise<ContactEnrichmentStart> => {
+export const startContactEnrichment = async (contactEnrichmentInput: ContactEnrichmentInput, options?: RequestInit): Promise<ContactEnrichmentStart> => {
 
   return customFetch<ContactEnrichmentStart>(getStartContactEnrichmentUrl(),
   {
     ...options,
-    method: 'POST'
-
-
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      contactEnrichmentInput,)
   }
 );}
 
@@ -704,8 +706,8 @@ export const startContactEnrichment = async ( options?: RequestInit): Promise<Co
 
 
 export const getStartContactEnrichmentMutationOptions = <TError = ErrorType<void>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof startContactEnrichment>>, TError,void, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof startContactEnrichment>>, TError,void, TContext> => {
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof startContactEnrichment>>, TError,{data: BodyType<ContactEnrichmentInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof startContactEnrichment>>, TError,{data: BodyType<ContactEnrichmentInput>}, TContext> => {
 
 const mutationKey = ['startContactEnrichment'];
 const {mutation: mutationOptions, request: requestOptions} = options ?
@@ -717,10 +719,10 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
 
 
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof startContactEnrichment>>, void> = () => {
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof startContactEnrichment>>, {data: BodyType<ContactEnrichmentInput>}> = (props) => {
+          const {data} = props ?? {};
 
-
-          return  startContactEnrichment(requestOptions)
+          return  startContactEnrichment(data,requestOptions)
         }
 
 
@@ -731,18 +733,18 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
   return  { mutationFn, ...mutationOptions }}
 
     export type StartContactEnrichmentMutationResult = NonNullable<Awaited<ReturnType<typeof startContactEnrichment>>>
-
+    export type StartContactEnrichmentMutationBody = BodyType<ContactEnrichmentInput>
     export type StartContactEnrichmentMutationError = ErrorType<void>
 
     /**
  * @summary Start a contact enrichment run
  */
 export const useStartContactEnrichment = <TError = ErrorType<void>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof startContactEnrichment>>, TError,void, TContext>, request?: SecondParameter<typeof customFetch>}
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof startContactEnrichment>>, TError,{data: BodyType<ContactEnrichmentInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
  ): UseMutationResult<
         Awaited<ReturnType<typeof startContactEnrichment>>,
         TError,
-        void,
+        {data: BodyType<ContactEnrichmentInput>},
         TContext
       > => {
       return useMutation(getStartContactEnrichmentMutationOptions(options));

@@ -8,6 +8,7 @@ import {
   firecrawlMinimumRequestIntervalMs,
   firecrawlCrawlApprovedSource,
   firecrawlScrapeApprovedSource,
+  firecrawlScrapeDeveloperContactPage,
   FirecrawlAcquisitionError,
   FIRECRAWL_INTEGRATION_LIMITS,
 } from "./firecrawl.ts";
@@ -49,6 +50,29 @@ test("configuration and stable meaningful-content hashes are safe", () => {
   assert.equal(firecrawlMinimumRequestIntervalMs({}), 0);
   assert.equal(firecrawlMinimumRequestIntervalMs({ FIRECRAWL_MIN_REQUEST_INTERVAL_MS: "125" }), 125);
   assert.equal(firecrawlMinimumRequestIntervalMs({ FIRECRAWL_MIN_REQUEST_INTERVAL_MS: "not-a-number" }), 0);
+});
+
+test("developer contact fallback is one bounded scrape on the exact approved hostname", async () => {
+  const requests = [];
+  const result = await firecrawlScrapeDeveloperContactPage("https://developer.example/team", "developer.example", {
+    environment,
+    fetcher: async (url, init) => {
+      requests.push({ url, body: JSON.parse(init.body) });
+      return new Response(JSON.stringify({ success: true, data: { markdown: "Project Director\ncontact@developer.example", metadata: { url: "https://developer.example/team" } } }), { status: 200 });
+    },
+  });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "https://api.firecrawl.dev/v2/scrape");
+  assert.deepEqual(requests[0].body.formats, ["markdown"]);
+  assert.equal(result.finalUrl, "https://developer.example/team");
+});
+
+test("developer contact fallback rejects domain expansion and unsafe final URLs", async () => {
+  await assert.rejects(() => firecrawlScrapeDeveloperContactPage("https://attacker.example/team", "developer.example", { environment }), /approved hostname/);
+  await assert.rejects(() => firecrawlScrapeDeveloperContactPage("https://developer.example/team", "developer.example", {
+    environment,
+    fetcher: async () => new Response(JSON.stringify({ success: true, data: { markdown: "content", metadata: { url: "https://attacker.example/" } } }), { status: 200 }),
+  }), /outside the approved developer hostname/);
 });
 
 test("v2 scrape is bounded, accepts JS-rendered content and preserves provenance", async () => {

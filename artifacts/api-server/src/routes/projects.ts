@@ -11,6 +11,7 @@ import {
   GetProjectStatsQueryParams,
   ExportProjectsQueryParams,
   GetContactEnrichmentParams,
+  StartContactEnrichmentBody,
 } from "@workspace/api-zod";
 import { MINIMUM_SOLAR_CAPACITY_MW } from "../lib/project-eligibility";
 import { requireAdmin } from "../middlewares/supabase-auth";
@@ -287,11 +288,16 @@ router.patch("/projects/:id", requireAdmin, async (req, res): Promise<void> => {
 
 // POST /projects/enrich-contacts
 router.post("/projects/enrich-contacts", requireAdmin, async (req, res): Promise<void> => {
+  const parsed = StartContactEnrichmentBody.safeParse(req.body);
+  if (!parsed.success || (parsed.data.approvedPaidProspecting && parsed.data.maxLushaCredits < 1)) {
+    res.status(400).json({ error: "Valid per-run enrichment controls and an explicit positive Lusha credit budget are required for paid prospecting" });
+    return;
+  }
   const admission = admitCostlyOperation("enrichment", res.locals.usstUser.id);
   if (!admission) { req.log.warn({ operation: "enrichment" }, "Costly operation rejected"); res.status(429).json({ error: "Operation already running or recently started" }); return; }
   try {
     const { startEnrichment } = await import("../lib/scraper");
-    const { runId, completion } = await startEnrichment();
+    const { runId, completion } = await startEnrichment(parsed.data);
     void completion.finally(admission.release);
     res.status(202).json({ runId, status: "running" });
   } catch (err) {
