@@ -75,6 +75,12 @@ function capacityNearName(
     );
     const solarMw = extractProjectCapacityEvidence(local).solarMw;
     if (solarMw != null) return solarMw;
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const directPrefix = local.match(new RegExp(`\\b([0-9][0-9,.]*)\\s*(MW|GW)\\s+${escapedName}\\b`, "i"));
+    if (directPrefix) {
+      const value = Number.parseFloat(directPrefix[1].replace(/,/g, ""));
+      if (Number.isFinite(value)) return /^g/i.test(directPrefix[2]) ? value * 1_000 : value;
+    }
     // A named solar asset can be written as “100 MW West Mokoan Solar Farm”.
     // Accept its local MW only when that same evidence window is not hybrid,
     // wind or storage context; aggregate hybrid totals remain ineligible.
