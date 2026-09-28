@@ -10,10 +10,11 @@ export const projectSourceEventsTable = pgTable("project_source_events", {
   canonicalProjectId: integer("canonical_project_id").notNull(),
   sourceUrl: text("source_url").notNull(),
   eventDate: date("event_date", { mode: "string" }).notNull(),
+  evidenceFingerprint: text("evidence_fingerprint").notNull(),
   sourceName: text("source_name").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
-  uniqueIndex("project_source_events_identity_idx").on(table.canonicalProjectId, table.sourceUrl, table.eventDate),
+  uniqueIndex("project_source_events_identity_idx").on(table.canonicalProjectId, table.sourceUrl, table.eventDate, table.evidenceFingerprint),
 ]);
 
 /** Reversible, additive mapping for legacy duplicate records; no row is deleted. */

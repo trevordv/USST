@@ -4117,10 +4117,15 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       // dated update in a later scan. The unique DB key closes the race below.
       if (existingProjectId != null && project.sourceEventDate && project.sourceUrl && !project.inventoryObservation) {
         const articleUrl = project.sourceUrl.split("#")[0].replace(/\/$/, "");
+        const evidenceFingerprint = hashSourceContent(JSON.stringify({
+          name: project.name, description: project.description, capacityMw: project.capacityMw,
+          developer: project.developer, status: project.status, country: project.country,
+        }));
         const prior = await db.select({ id: projectSourceEventsTable.id }).from(projectSourceEventsTable).where(and(
           eq(projectSourceEventsTable.canonicalProjectId, existingProjectId),
           eq(projectSourceEventsTable.sourceUrl, articleUrl),
           eq(projectSourceEventsTable.eventDate, project.sourceEventDate),
+          eq(projectSourceEventsTable.evidenceFingerprint, evidenceFingerprint),
         )).limit(1);
         if (prior.length) {
           logger.info({ projectId: existingProjectId, sourceUrl: articleUrl, eventDate: project.sourceEventDate }, "Duplicate source event skipped");
@@ -4211,10 +4216,15 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
 
           if (project.sourceEventDate && project.sourceUrl && !project.inventoryObservation) {
             const articleUrl = project.sourceUrl.split("#")[0].replace(/\/$/, "");
+            const evidenceFingerprint = hashSourceContent(JSON.stringify({
+              name: project.name, description: project.description, capacityMw: project.capacityMw,
+              developer: project.developer, status: project.status, country: project.country,
+            }));
             const insertedEvent = await tx.insert(projectSourceEventsTable).values({
               canonicalProjectId: persistedProjectId,
               sourceUrl: articleUrl,
               eventDate: project.sourceEventDate,
+              evidenceFingerprint,
               sourceName: project.sourceName,
             }).onConflictDoNothing().returning({ id: projectSourceEventsTable.id });
             if (!insertedEvent.length) {

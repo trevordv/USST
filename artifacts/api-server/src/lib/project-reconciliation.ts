@@ -19,18 +19,6 @@ export const REVIEWED_NARROGIN_RECONCILIATIONS = [
   { legacyProjectId: 1565, canonicalProjectId: 554, aliases: ["Ace Power's approved Narrogin Solar Farm"], developer: /tagenergy|arp australian solar/i },
 ] as const;
 
-const NARROGIN_EAST_ALIASES = new Set([
-  "narrogin east renewable energy project",
-  "narrogin east renewable energy precinct",
-  "narrogin east hybrid project",
-].map(normalizeProjectName));
-const NARROGIN_SOLAR_ALIASES = new Set([
-  "narrogin solar farm and bess",
-  "narrogin solar farm bess",
-  "ace powers approved narrogin solar farm",
-  "ace power narrogin solar farm",
-].map(normalizeProjectName));
-
 function developerMatches(value: string | null | undefined, expected: RegExp): boolean {
   return expected.test(value ?? "");
 }
@@ -47,14 +35,12 @@ export function matchKnownCanonicalAlias(
 ): CanonicalAliasMatch | null {
   if (candidate.country && candidate.country !== "AU") return null;
   const name = normalizeProjectName(candidate.name);
-  if (NARROGIN_EAST_ALIASES.has(name)) {
-    const canonical = existing.find((project) => project.id === 570 && /narrogin east/i.test(project.name)
-      && developerMatches(project.developer, /lightsource\s*bp/i));
-    if (canonical) return { canonicalProjectId: canonical.id, reason: "known-alias-with-corroboration" };
-  }
-  if (NARROGIN_SOLAR_ALIASES.has(name)) {
-    const canonical = existing.find((project) => project.id === 554 && /^narrogin solar/i.test(project.name)
-      && developerMatches(project.developer, /tagenergy|arp australian solar/i));
+  const reviewed = REVIEWED_NARROGIN_RECONCILIATIONS.find((entry) =>
+    entry.aliases.some((alias) => normalizeProjectName(alias) === name),
+  );
+  if (reviewed) {
+    const canonical = existing.find((project) => project.id === reviewed.canonicalProjectId
+      && developerMatches(project.developer, reviewed.developer));
     if (canonical) return { canonicalProjectId: canonical.id, reason: "known-alias-with-corroboration" };
   }
   return null;

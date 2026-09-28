@@ -5,9 +5,10 @@ create table if not exists public.project_source_events (
   canonical_project_id integer not null references public.projects(id),
   source_url text not null,
   event_date date not null,
+  evidence_fingerprint text not null,
   source_name text not null,
   created_at timestamptz not null default now(),
-  constraint project_source_events_identity_unique unique (canonical_project_id, source_url, event_date)
+  constraint project_source_events_identity_unique unique (canonical_project_id, source_url, event_date, evidence_fingerprint)
 );
 
 create table if not exists public.project_reconciliations (
