@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp, integer, boolean, date, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, integer, boolean, date } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -46,48 +46,8 @@ export const contactEnrichmentsTable = pgTable("contact_enrichments", {
   completedAt: timestamp("completed_at", { withTimezone: true }),
   checked: integer("checked").notNull().default(0),
   updated: integer("updated").notNull().default(0),
-  verifiedContacts: integer("verified_contacts").notNull().default(0),
-  tentativeLeads: integer("tentative_leads").notNull().default(0),
-  rejectedMatches: integer("rejected_matches").notNull().default(0),
-  projectsUpdated: integer("projects_updated").notNull().default(0),
-  providerRequests: integer("provider_requests").notNull().default(0),
-  creditsEstimated: integer("credits_estimated").notNull().default(0),
-  creditsConsumed: integer("credits_consumed").notNull().default(0),
-  approvedCreditBudget: integer("approved_credit_budget").notNull().default(0),
-  paidProspectingApproved: boolean("paid_prospecting_approved").notNull().default(false),
-  dryRun: boolean("dry_run").notNull().default(false),
   errorMessage: text("error_message"),
 });
-
-export const contactEnrichmentAttemptsTable = pgTable("contact_enrichment_attempts", {
-  id: serial("id").primaryKey(),
-  provider: text("provider").notNull(),
-  developerKey: text("developer_key").notNull(),
-  status: text("status").notNull(),
-  attemptCount: integer("attempt_count").notNull().default(0),
-  lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }).notNull().defaultNow(),
-  nextEligibleAt: timestamp("next_eligible_at", { withTimezone: true }),
-  lastRunId: integer("last_run_id"),
-  failureCategory: text("failure_category"),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [
-  uniqueIndex("contact_enrichment_attempt_provider_developer_uidx").on(table.provider, table.developerKey),
-  index("contact_enrichment_attempt_provider_next_idx").on(table.provider, table.nextEligibleAt),
-]);
-
-export const contactEnrichmentProvenanceTable = pgTable("contact_enrichment_provenance", {
-  id: serial("id").primaryKey(),
-  runId: integer("run_id").notNull(),
-  projectId: integer("project_id").notNull(),
-  developerKey: text("developer_key").notNull(),
-  provider: text("provider").notNull(),
-  verificationStatus: text("verification_status").notNull(),
-  validationReason: text("validation_reason"),
-  sourceUrl: text("source_url"),
-  contactFingerprint: text("contact_fingerprint"),
-  creditsConsumed: integer("credits_consumed").notNull().default(0),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [index("contact_enrichment_provenance_run_idx").on(table.runId)]);
 
 export const insertContactEnrichmentSchema = createInsertSchema(contactEnrichmentsTable).omit({
   id: true,

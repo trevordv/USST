@@ -863,7 +863,7 @@ components:
 
     ContactEnrichment:
       type: object
-      required: [id, status, startedAt, checked, updated, verifiedContacts, tentativeLeads, rejectedMatches, projectsUpdated, providerRequests, creditsEstimated, creditsConsumed, approvedCreditBudget, paidProspectingApproved, dryRun]
+      required: [id, status, startedAt, checked, updated]
       properties:
         id:
           type: integer
@@ -878,54 +878,8 @@ components:
           type: integer
         updated:
           type: integer
-        verifiedContacts:
-          type: integer
-        tentativeLeads:
-          type: integer
-        rejectedMatches:
-          type: integer
-        projectsUpdated:
-          type: integer
-        providerRequests:
-          type: integer
-        creditsEstimated:
-          type: integer
-        creditsConsumed:
-          type: integer
-        approvedCreditBudget:
-          type: integer
-        paidProspectingApproved:
-          type: boolean
-        dryRun:
-          type: boolean
         errorMessage:
           type: ["string", "null"]
-
-    ContactEnrichmentInput:
-      type: object
-      additionalProperties: false
-      required: [approvedPaidProspecting, maxLushaCredits, companyBatchSize, maxApifyQueries, maxLinkedInQueries, dryRun]
-      properties:
-        approvedPaidProspecting:
-          type: boolean
-        maxLushaCredits:
-          type: integer
-          minimum: 0
-          maximum: 100
-        companyBatchSize:
-          type: integer
-          minimum: 0
-          maximum: 25
-        maxApifyQueries:
-          type: integer
-          minimum: 0
-          maximum: 50
-        maxLinkedInQueries:
-          type: integer
-          minimum: 0
-          maximum: 40
-        dryRun:
-          type: boolean
 
     ContactEnrichmentStart:
       type: object
@@ -936,6 +890,20 @@ components:
         status:
           type: string
           enum: [running]
+
+    ContactEnrichmentInput:
+      type: object
+      additionalProperties: false
+      required: [approvedPaidProspecting, maxLushaCredits, dryRun]
+      properties:
+        approvedPaidProspecting:
+          type: boolean
+        maxLushaCredits:
+          type: integer
+          minimum: 0
+          maximum: 100
+        dryRun:
+          type: boolean
 
     AccessToken:
       type: object

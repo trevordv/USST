@@ -289,8 +289,8 @@ router.patch("/projects/:id", requireAdmin, async (req, res): Promise<void> => {
 // POST /projects/enrich-contacts
 router.post("/projects/enrich-contacts", requireAdmin, async (req, res): Promise<void> => {
   const parsed = StartContactEnrichmentBody.safeParse(req.body);
-  if (!parsed.success || (parsed.data.approvedPaidProspecting && parsed.data.maxLushaCredits < 1)) {
-    res.status(400).json({ error: "Valid per-run enrichment controls and an explicit positive Lusha credit budget are required for paid prospecting" });
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
     return;
   }
   const admission = admitCostlyOperation("enrichment", res.locals.usstUser.id);

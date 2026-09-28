@@ -317,43 +317,8 @@ export interface ContactEnrichment {
   completedAt?: string | null;
   checked: number;
   updated: number;
-  verifiedContacts: number;
-  tentativeLeads: number;
-  rejectedMatches: number;
-  projectsUpdated: number;
-  providerRequests: number;
-  creditsEstimated: number;
-  creditsConsumed: number;
-  approvedCreditBudget: number;
-  paidProspectingApproved: boolean;
-  dryRun: boolean;
   /** @nullable */
   errorMessage?: string | null;
-}
-
-export interface ContactEnrichmentInput {
-  approvedPaidProspecting: boolean;
-  /**
-     * @minimum 0
-     * @maximum 100
-     */
-  maxLushaCredits: number;
-  /**
-     * @minimum 0
-     * @maximum 25
-     */
-  companyBatchSize: number;
-  /**
-     * @minimum 0
-     * @maximum 50
-     */
-  maxApifyQueries: number;
-  /**
-     * @minimum 0
-     * @maximum 40
-     */
-  maxLinkedInQueries: number;
-  dryRun: boolean;
 }
 
 export type ContactEnrichmentStartStatus = typeof ContactEnrichmentStartStatus[keyof typeof ContactEnrichmentStartStatus];
@@ -366,6 +331,16 @@ export const ContactEnrichmentStartStatus = {
 export interface ContactEnrichmentStart {
   runId: number;
   status: ContactEnrichmentStartStatus;
+}
+
+export interface ContactEnrichmentInput {
+  approvedPaidProspecting: boolean;
+  /**
+     * @minimum 0
+     * @maximum 100
+     */
+  maxLushaCredits: number;
+  dryRun: boolean;
 }
 
 export interface AccessToken {
