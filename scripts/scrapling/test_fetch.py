@@ -3,8 +3,11 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import socket
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,6 +19,34 @@ URL = "https://www.energymagazine.com.au/?s=solar+project"
 
 
 class WorkerTests(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("SCRAPLING_BROWSER_SMOKE") == "true", "browser smoke is opt-in")
+    def test_browser_runtime_and_page_setup(self):
+        from scrapling.fetchers import DynamicFetcher
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"<html><body><article id='fixture'>No projects found</article></body></html>")
+            def log_message(self, *_args):
+                pass
+        # Synthetic localhost fixture only, outside the public worker's allowlist.
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        setup_called = []
+        try:
+            response = DynamicFetcher.fetch(f"http://127.0.0.1:{server.server_port}/", headless=True,
+                timeout=10_000, retries=1, google_search=False,
+                page_setup=lambda page: setup_called.append(True))
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.css("#fixture::text").get(), "No projects found")
+            self.assertEqual(setup_called, [True])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
     def test_destinations(self):
         public = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]
         with patch.object(worker.socket, "getaddrinfo", return_value=public):

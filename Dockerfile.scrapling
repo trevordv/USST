@@ -1,5 +1,4 @@
-# Optional USST build with the local Scrapling runtime. Select this Dockerfile
-# only after reviewing the integration; the existing Railpack build is retained.
+# USST build with the local Scrapling runtime; acquisition remains opt-in.
 FROM node:24-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -10,6 +9,7 @@ RUN python3 -m venv /opt/scrapling \
     && /opt/scrapling/bin/pip install --no-cache-dir -r scripts/scrapling/requirements.lock
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/scrapling-browsers
 RUN /opt/scrapling/bin/python -m playwright install --with-deps chromium
+RUN SCRAPLING_BROWSER_SMOKE=true /opt/scrapling/bin/python scripts/scrapling/test_fetch.py
 # Public frontend settings only. Never pass server credentials as build args.
 ARG VITE_SUPABASE_URL
 ARG VITE_SUPABASE_PUBLISHABLE_KEY
