@@ -41,10 +41,11 @@ and browser build costs apply. Savings and source quality are not yet measured.
 
 ## Build and release
 
-`Dockerfile.scrapling` is an optional complete build for the existing service:
+`Dockerfile.scrapling` is the deployed build for the existing service:
 Node 24, Python, locked Scrapling 0.4.15 dependencies and Playwright Chromium.
-It preserves the pnpm production build and start command. The default Railway
-configuration is unchanged until review and release are approved.
+It preserves the pnpm production build and application runtime. `railway.json`
+selects this image and runs read-only browser/source checks before deployment.
+A failed release check withholds the replacement deployment.
 
 Before enabling:
 1. Build the optional image with public Vite settings as build arguments
@@ -61,15 +62,28 @@ Before enabling:
 5. Roll back immediately by setting `SCRAPLING_ENABLED=false`; existing
    acquisition remains available. Revert the code/build change if needed. No migration.
 
-## Verification limits
+## Release evidence — 1 October 2026
 
-Local dependency installation, Python worker protocol tests, Node adapter/scan
-regressions, typecheck and production build were run. Public Energy Magazine
-retrieval failed DNS resolution in the authoring environment. Chromium download
-failed with a truncated/non-ZIP payload. Docker is unavailable here. Therefore
-the browser/container and live source efficiency are **not verified**, and the
-feature must stay disabled until the release checks above pass.
+- PR #51 (adapter) and PR #52 (runtime/release checks) were merged into
+  `migration/railway-supabase` with explicit user authorisation.
+- GitHub CI and Migration Check passed; the API suite contains 268 passing tests.
+- Railway Docker build completed successfully, including all three Python tests
+  and a real Chromium synthetic-page smoke test (no skip).
+- Deployment `804acde3-2241-44b7-94e4-d29b69964279` passed pre-deploy runtime checks
+  and live Energy Magazine validation, then reached SUCCESS.
+- HTTP transport: status 200, 201,598 bytes, 2,602 ms. Browser transport: status 200,
+  203,936 bytes, 2,423 ms. Both documents passed the configured parser-shape check.
+- Application health returned HTTP 200; unauthenticated protected API access
+  returned HTTP 401.
+- Initial enablement is limited to Energy Magazine. Other sources retain their
+  existing acquisition paths. No database writes or paid-provider calls were
+  needed for these read-only release checks.
 
-The ordinary frozen pnpm install encountered the existing workspace build-script
-approval setting for esbuild. A frozen install with `--ignore-scripts` passed and
-the real application build succeeded. The workspace policy was left unchanged.
+These single-request timings demonstrate working acquisition, not a measured
+cost saving or improvement in whole-scan quality. Full scan performance and
+qualifying-project outcomes remain observable through the existing source-health
+records; compare them during normal use before extending the selected source set.
+
+Local authoring DNS/Chromium-download limitations were resolved for release by
+performing the real checks on Railway. The Docker build uses a frozen pnpm install
+with `--ignore-scripts`; GitHub's standard frozen install also passed.
