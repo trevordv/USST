@@ -89,6 +89,7 @@ import {
   FirecrawlAcquisitionError,
 } from "./firecrawl";
 import { apifySourceConfigured, fetchApprovedSourceWithApify } from "./apify-source";
+import { fetchApprovedWithScrapling, planScraplingTargets } from "./scrapling.ts";
 import {
   isExactPersonMatch,
   isProfessionalCompanyEmail,
@@ -3406,6 +3407,8 @@ async function scrapeSource(
   let brightDataCalls = 0;
   let fallbackUsed = false;
   let fallbackSucceeded = false;
+  let scraplingAcquired: string | undefined;
+  let scraplingAttempted = false;
 
   logScanSourceOutcome(source.name, "attempted", {
     method: strategy.mode,
@@ -3593,10 +3596,39 @@ async function scrapeSource(
       .slice(0, limit);
   }
 
-  // Firecrawl v2 is the first managed transport after deterministic acquisition.
+  // Optional local acquisition on selected approved public URLs. Valid zero
+  // results stop escalation; access-control and rate-limit failures stay closed.
+  for (const target of planScraplingTargets(source.name, attempts)) {
+    scraplingAttempted = true;
+    const format = strategy.mode === "standard" ? "html" : "structured-html";
+    for (const mode of ["http", "browser"] as const) {
+      // A browser is useful only for an unresolved document/JS parser shape,
+      // never to retry a blocked response or network/provider failure.
+      if (mode === "browser" && !attempts.some(a => a.url === target && a.method === "scrapling-http" &&
+          ["parse-failed", "content-unusable", "requires-js-or-ai-repair"].includes(a.outcome))) break;
+      const count = await extract(`scrapling-${mode}`, target, async () => {
+        const page = await fetchApprovedWithScrapling(source.name, target, mode);
+        scraplingAcquired = `scrapling-${mode}`;
+        return page.html;
+      }, html => {
+        assertSourceDocument(html, format);
+        const items = format === "structured-html"
+          ? sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, target), source, startDate, endDate, true)
+          : parseHtmlPage(html, source, startDate, endDate, target);
+        if (!items.length && classifyManagedZeroResult(source.name, html) === "unresolved") {
+          throw new SourceExtractionError("requires-js-or-ai-repair", "Scrapling document still requires project normalisation");
+        }
+        return items;
+      });
+      if (count !== null) { repairedUrls.add(target); break; }
+    }
+  }
+
+  // Firecrawl v2 remains the first managed transport after local acquisition.
   // A valid zero is successful acquisition and never triggers the next provider.
   if (acquisitionPlan.methods.includes("firecrawl")) {
-    const targets = managedTargets(acquisitionPlan.firecrawlMode === "crawl" ? 1 : 2);
+    const targets = managedTargets(acquisitionPlan.firecrawlMode === "crawl" ? 1 : 2)
+      .filter(url => !repairedUrls.has(url));
     if (targets.length && !firecrawlConfigured()) {
       recordAttempt({ method: "firecrawl", url: targets[0], outcome: "fetch-failed", reason: "missing-credentials", failureCategory: "missing-credentials" });
     }
@@ -3769,7 +3801,7 @@ async function scrapeSource(
   logScanSourceOutcome(source.name, outcome, {
     projectCount: projects.length,
     durationMs: Math.round(performance.now() - startedAt),
-    method: [strategy.mode, firecrawlSucceeded ? "firecrawl" : null, apifySucceeded ? "apify" : null,
+    method: [strategy.mode, scraplingAcquired, firecrawlSucceeded ? "firecrawl" : null, apifySucceeded ? "apify" : null,
       brightDataCalls ? "bright-data" : null, fallbackUsed ? "openai-normalisation" : null].filter(Boolean).join("+"),
     directSucceeded,
     brightSucceeded,
@@ -3807,10 +3839,10 @@ async function scrapeSource(
   const acquisitionMethod = brightSucceeded ? "brightdata"
     : apifySucceeded ? "apify"
       : firecrawlSucceeded ? "firecrawl"
-        : directAcquired
+        : scraplingAcquired ?? (directAcquired
           ? attempts.find((attempt) => !attempt.method.startsWith("firecrawl") && attempt.method !== "apify" && !attempt.method.startsWith("bright-data-"))?.method
             ?? acquisitionPlan.methods[0]
-          : acquisitionPlan.methods[0];
+          : acquisitionPlan.methods[0]);
   return {
     projects: assignedProjects,
     health: {
@@ -3823,7 +3855,7 @@ async function scrapeSource(
       brightDataAttempted: brightDataCalls > 0,
       openaiNormalisationAttempted: fallbackUsed,
       openaiNormalisationSucceeded: fallbackSucceeded,
-      fallbackUsed: firecrawlAttempted || apifyAttempted || brightDataCalls > 0 || fallbackUsed,
+      fallbackUsed: scraplingAttempted || firecrawlAttempted || apifyAttempted || brightDataCalls > 0 || fallbackUsed,
       outcome: durableOutcome,
       candidateCount: assignedProjects.length,
       qualifyingProjectCount: assignedProjects.filter(isEligibleScanProject).length,

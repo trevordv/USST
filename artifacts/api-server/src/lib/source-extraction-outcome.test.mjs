@@ -12,6 +12,7 @@ import { feedPageUrl } from "./feed-items.ts";
 import { assignProjectIdentityUrls } from "./project-identity.ts";
 import { isApprovedDiscoveredUrl, normalizeProjectName, nextListingPageUrl } from "./source-text.ts";
 import { classifyManagedZeroResult } from "./managed-source-extraction.ts";
+import { planScraplingTargets } from "./scrapling.ts";
 
 const scraper = await readFile(new URL("./scraper.ts", import.meta.url), "utf8");
 const start = scraper.indexOf("async function scrapeSource(");
@@ -57,13 +58,19 @@ test("approved discovered pages reject outside hosts, credentials and custom por
 
 async function run(options = {}) {
   const logs = [];
-  const calls = { ai: 0, aiHashes: [], fetch: [], discovered: [], firecrawl: 0, apify: 0, bright: 0 };
+  const calls = { ai: 0, aiHashes: [], fetch: [], discovered: [], firecrawl: 0, apify: 0, bright: 0, scrapling: [] };
   const env = options.env ?? {};
   const deps = {
     ...outcomes, sourceAcquisitionOutcome, getSourceRepairStrategy, getSourceAcquisitionPlan,
     planBrightDataTargets, hashMeaningfulSourceContent, hashSourceContent,
     combineContentFingerprints, safeSourceFailureReason, isEligibleScanProject,
     classifyManagedZeroResult,
+    planScraplingTargets: (name, attempts) => planScraplingTargets(name, attempts, env),
+    fetchApprovedWithScrapling: async (_name, url, mode) => {
+      calls.scrapling.push(mode);
+      if (options.scraplingError) throw options.scraplingError;
+      return { html: options.scraplingHtml ?? "<article>No projects found</article>", url };
+    },
     firecrawlConfigured: () => Boolean(env.FIRECRAWL_API_KEY),
     apifySourceConfigured: () => Boolean(env.APIFY_API_TOKEN),
     brightDataConfigured: () => Boolean(env.BRIGHT_DATA_API_KEY && env.BRIGHT_DATA_ZONE),
@@ -97,6 +104,7 @@ async function run(options = {}) {
       return options.htmlByUrl?.[url] ?? options.html ?? "<article>Solar project listing</article>";
     },
     parseHtmlPage: (_html, _source, _start, _end, url) => {
+      if (_html === options.scraplingHtml) return options.scraplingProjects ?? [];
       if (options.brightParseError && env.BRIGHT_DATA_API_KEY) throw options.brightParseError;
       if (options.directParseError) throw options.directParseError;
       return options.projectsByUrl?.[url] ?? options.directProjects ?? [];
@@ -137,6 +145,37 @@ test("successful direct zero is legitimate and performs no paid fallback", async
   assert.deepEqual(result.projects, []);
   assert.deepEqual({ firecrawl: result.calls.firecrawl, ai: result.calls.ai }, { firecrawl: 0, ai: 0 });
   assert.equal(result.health.outcome, "success-zero-results");
+});
+
+test("Scrapling repairs a failed public URL before paid providers", async () => {
+  const result = await run({ env: { SCRAPLING_ENABLED: "true", SCRAPLING_SOURCES: "Energy Magazine", FIRECRAWL_API_KEY: "test" },
+    fetchError: new Error("network failed"), scraplingHtml: "<article>River Solar Farm 50 MW proposed</article>", scraplingProjects: [project] });
+  assert.equal(result.projects.length, 1);
+  assert.deepEqual(result.calls.scrapling, ["http"]);
+  assert.equal(result.calls.firecrawl, 0);
+  assert.equal(result.calls.ai, 0);
+  assert.equal(result.health.acquisitionMethod, "scrapling-http");
+});
+
+test("Scrapling valid empty stops paid escalation, and unavailability retains Firecrawl", async () => {
+  const config = { env: { SCRAPLING_ENABLED: "true", SCRAPLING_SOURCES: "Energy Magazine", FIRECRAWL_API_KEY: "test" }, fetchError: new Error("network failed") };
+  const empty = await run(config);
+  assert.deepEqual(empty.calls.scrapling, ["http"]);
+  assert.equal(empty.calls.firecrawl, 0);
+  assert.equal(empty.calls.ai, 0);
+  const unavailable = await run({ ...config, scraplingError: new Error("unavailable") });
+  assert.equal(unavailable.calls.firecrawl, 1);
+  assert.deepEqual(unavailable.calls.scrapling, ["http"]);
+});
+
+test("unusable HTTP document escalates once to browser, blocked sources never invoke Scrapling", async () => {
+  const env = { SCRAPLING_ENABLED: "true", SCRAPLING_SOURCES: "Energy Magazine" };
+  const shell = await run({ env, fetchError: new Error("network failed"), scraplingHtml: "<script>app()</script>Loading..." });
+  assert.deepEqual(shell.calls.scrapling, ["http", "browser"]);
+  const blocked = await run({ env, fetchError: new MockSourceRequestError("blocked", "blocked") });
+  assert.deepEqual(blocked.calls.scrapling, []);
+  const successful = await run({ env });
+  assert.deepEqual(successful.calls.scrapling, []);
 });
 
 test("successful direct results perform no managed acquisition", async () => {
