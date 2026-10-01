@@ -2,6 +2,29 @@
 
 This log records material USST deviations from the generic Agentic App Template baseline.
 
+## 2026-10-01 — Opt-in local Scrapling transport
+
+**Request and problem:** The user requested Scrapling integration only for USST
+to improve acquisition efficiency. Existing scan code has deterministic paths
+and paid fallback providers. No source-specific performance improvement is yet
+established.
+
+**Decision:** Add a bounded Python subprocess in the existing service, ahead of
+paid fallback and only for explicitly selected approved failed public URLs.
+Retain Node/TypeScript orchestration, parsers, template conventions and product
+rules. No additional service, database, source or AI call. Keep the feature off
+until live evidence supports enablement.
+
+**Impact and rollback:** Locked Python/browser dependencies increase build size
+and runtime resources. Child processes exclude application credentials. Exact
+host, public destination, timeout, size and concurrency limits apply. Disable
+with `SCRAPLING_ENABLED=false`; no migration or irreversible write.
+
+**Evidence:** Fixture and subprocess/scan regressions cover opt-in, valid empty,
+fallback continuity and access boundaries. Authoring-network DNS/browser-download
+failures block live comparison and browser/container verification. See
+`docs/Scrapling-Acquisition.md` for release checks and explicit limitations.
+
 ## 2026-09-23 — Firecrawl as bounded approved-source acquisition
 
 **Decision:** Use Firecrawl v2 only after deterministic acquisition fails for a reviewed subset of the existing 34 approved sources. Bound scrape/crawl depth, pages, concurrency, time, content size, redirects and exact hosts.
