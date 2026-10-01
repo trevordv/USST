@@ -12,7 +12,8 @@ import { feedPageUrl } from "./feed-items.ts";
 import { assignProjectIdentityUrls } from "./project-identity.ts";
 import { isApprovedDiscoveredUrl, normalizeProjectName, nextListingPageUrl } from "./source-text.ts";
 import { classifyManagedZeroResult } from "./managed-source-extraction.ts";
-import { planScraplingTargets } from "./scrapling.ts";
+import { planScraplingTargets, ScraplingResponseError } from "./scrapling.ts";
+import { parseScraplingNewsPage } from "./scrapling-news.ts";
 
 const scraper = await readFile(new URL("./scraper.ts", import.meta.url), "utf8");
 const start = scraper.indexOf("async function scrapeSource(");
@@ -65,6 +66,14 @@ async function run(options = {}) {
     planBrightDataTargets, hashMeaningfulSourceContent, hashSourceContent,
     combineContentFingerprints, safeSourceFailureReason, isEligibleScanProject,
     classifyManagedZeroResult,
+    ScraplingResponseError,
+    parseScraplingNewsPage: (html, source, startDate, endDate, url) => {
+      if (options.scraplingProjects) {
+        outcomes.assertSourceDocument(html, "html");
+        return options.scraplingProjects;
+      }
+      return parseScraplingNewsPage(html, source, startDate, endDate, url);
+    },
     planScraplingTargets: (name, attempts) => planScraplingTargets(name, attempts, env),
     fetchApprovedWithScrapling: async (_name, url, mode) => {
       calls.scrapling.push(mode);
@@ -176,6 +185,25 @@ test("unusable HTTP document escalates once to browser, blocked sources never in
   assert.deepEqual(blocked.calls.scrapling, []);
   const successful = await run({ env });
   assert.deepEqual(successful.calls.scrapling, []);
+});
+
+test("a Scrapling access restriction retains its category and does not retry a browser", async () => {
+  const result = await run({ env: { SCRAPLING_ENABLED: "true", SCRAPLING_SOURCES: "Energy Magazine" },
+    fetchError: new Error("network failed"), scraplingError: new ScraplingResponseError("blocked", 200) });
+  assert.deepEqual(result.calls.scrapling, ["http"]);
+  const attempt = result.logs.find(log => log.message === "Source extraction attempt" && log.method === "scrapling-http");
+  assert.equal(attempt.outcome, "fetch-failed");
+  assert.equal(attempt.failureCategory, "blocked");
+});
+
+test("historical Energy Magazine cards stop Scrapling escalation without paid calls", async () => {
+  const result = await run({ env: { SCRAPLING_ENABLED: "true", SCRAPLING_SOURCES: "Energy Magazine", FIRECRAWL_API_KEY: "x" },
+    fetchError: new Error("network failed"),
+    scraplingHtml: '<article><h3><a href="/river">River Solar Farm approved in NSW</a></h3><time datetime="2024-10-21"></time><p>Proposed 50 MW solar farm in Australia</p></article>' });
+  assert.deepEqual(result.calls.scrapling, ["http"]);
+  assert.equal(result.calls.firecrawl, 0);
+  assert.equal(result.calls.ai, 0);
+  assert.equal(result.health.outcome, "success-zero-results");
 });
 
 test("successful direct results perform no managed acquisition", async () => {

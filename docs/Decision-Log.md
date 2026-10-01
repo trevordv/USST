@@ -157,6 +157,32 @@ failures block live comparison and browser/container verification. See
 - Rollback / exit path: Revert the PR; no data migration. Rows stored with the
   new `#slug` URLs remain valid and are still name-matched by source.
 
+### 2026-10-01 — Energy Magazine restriction and parser verification
+
+- Observed problem: Scan 122 logged Scrapling HTTP/browser parser failures.
+  Historical page bodies were not retained; the exact past failure cannot be
+  attributed to a particular returned page. Live direct feed/search requests
+  subsequently returned publisher AI-restriction pages with HTTP 403. The shared
+  classifier missed their explicit restriction text and Scrapling erased typed
+  response failures. Release checks only tested document shape, not extraction.
+- Evidence: A live Firecrawl basic-proxy search response passed the existing HTML
+  parser, with dated historical candidates and zero in the scan's 28 September–
+  1 October window. Synthetic/de-identified tests cover nested cards, historical
+  zero, unknown dates, structure changes and restriction responses at 200/403.
+- Decision: Preserve approved URLs, parser eligibility/date rules and providers.
+  Recognize explicit publisher restriction pages, retain response categories,
+  stop browser retry after restriction, reject restriction content in Firecrawl,
+  share production/release news parsing,
+  and add safe parser diagnostic codes. A proven historical zero stops escalation.
+- Security/privacy: No access bypass, new provider, source, credential, database
+  write, schema or API change. Diagnostics contain codes/counts, never page bodies.
+- Cost: No new AI calls; valid historical zero avoids browser/paid escalation.
+  Existing provider bounds are unchanged. No claimed whole-scan savings.
+- Deployment: Focused PR against `migration/railway-supabase`; release checks
+  distinguish successful extraction from correctly handled publisher restriction.
+  External restriction may remain and requires publisher permission/allowlisting.
+- Rollback: Revert the PR; no migration or stored-data remediation.
+
 ### YYYY-MM-DD — Decision title
 
 - Observed problem:

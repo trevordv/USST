@@ -184,6 +184,11 @@ export type SourceResponseProblem =
   | "http-error"
   | "invalid-content";
 
+export function isPublisherAccessRestriction(body: string): boolean {
+  return /<h1\b[^>]*>\s*Access to this site has been restricted\s*<\/h1>|^#\s+Access to this site has been restricted\s*$/im.test(body) &&
+    /blocked@primecreative\.com\.au|cdn\.pcmcloud\.com\/awswaf\/|category:\s*ai\b/i.test(body);
+}
+
 export function classifySourceResponse(
   status: number,
   contentType: string,
@@ -191,6 +196,12 @@ export function classifySourceResponse(
   wwwAuthenticate: string | null = null,
 ): SourceResponseProblem | null {
   const lower = body.toLowerCase();
+  // Prime Creative's explicit bot restriction can be returned with HTTP 200.
+  // Require the error-page heading and publisher WAF/support evidence, so a
+  // news article discussing restricted access is not mistaken for a barrier.
+  if (isPublisherAccessRestriction(body)) {
+    return "blocked";
+  }
   if (
     wwwAuthenticate != null || status === 401 || status === 402 || status === 407 || status === 429 ||
     [

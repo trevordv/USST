@@ -47,6 +47,13 @@ It preserves the pnpm production build and application runtime. `railway.json`
 selects this image and runs read-only browser/source checks before deployment.
 A failed release check withholds the replacement deployment.
 
+The check runs extraction/restriction regression tests and, for Energy Magazine,
+the same deterministic parser and bounded date-window logic used by the scan.
+A live publisher restriction is reported as `blocked` / `sourceAvailable: false`,
+not successful scraping. When the tested adapter correctly rejects that explicit
+restriction, it does not withhold unrelated application fixes. Runtime failures
+and unusable/parser failures still withhold a release without a successful mode.
+
 Before enabling:
 1. Build the optional image with public Vite settings as build arguments
    (`VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, `BASE_PATH`). Never pass
@@ -87,3 +94,35 @@ records; compare them during normal use before extending the selected source set
 Local authoring DNS/Chromium-download limitations were resolved for release by
 performing the real checks on Railway. The Docker build uses a frozen pnpm install
 with `--ignore-scripts`; GitHub's standard frozen install also passed.
+
+## Scan 122 remediation — 1 October 2026
+
+Scan 122 recorded Scrapling HTTP and browser `parse-failed` attempts. The page
+bodies were not retained, so their exact contents cannot be reconstructed from
+those logs. Subsequent direct requests to the same approved feed/search URLs
+returned HTTP 403 with the publisher's explicit AI-restriction page. The shared
+classifier previously treated this as a plain public 403, and did not recognize
+the same restriction text when delivered with HTTP 200. Scrapling also discarded
+the typed response problem, weakening later diagnosis.
+
+A live Firecrawl basic-proxy check retrieved the public search page. Its HTML
+passed the existing news parser; extracted dated solar candidates were historical
+and none fell within 28 September–1 October. This proves zero current candidates
+is possible without a parser failure, not that there are additional projects.
+
+Remediation recognizes the publisher's restriction heading plus WAF/support
+evidence, retains typed Scrapling response failures, and suppresses browser retry
+after a restriction. Firecrawl's HTML/markdown restriction responses are also
+rejected before caching, so an access barrier cannot become a successful zero.
+The production and release news-parser paths are shared.
+A zero is accepted as historical only when the parser reads dated candidates
+and every candidate is outside the requested window; unknown dates and unreadable
+structures remain unresolved. Safe diagnostic codes distinguish missing HTML
+structure, incomplete RSS, JS shells and unresolved records without logging bodies.
+
+Before extending Scrapling to another approved source, validate its actual parser
+with a representative readable page, a known candidate, valid zero, changed shape
+and access-restriction fixtures. Inspect its first bounded scan's provenance and
+qualifying results. No test can prevent a publisher changing markup or access
+rules; detect those changes separately and retain the bounded existing fallback.
+Publisher permission/allowlisting is required if direct access remains restricted.

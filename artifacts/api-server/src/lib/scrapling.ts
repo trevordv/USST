@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { getSourceRepairStrategy } from "./source-repair-strategies.ts";
-import { classifySourceResponse } from "./source-repair-parsers.ts";
+import { classifySourceResponse, type SourceResponseProblem } from "./source-repair-parsers.ts";
 import type { ExtractionAttempt } from "./source-extraction-outcome.ts";
 
 type Environment = Record<string, string | undefined>;
@@ -26,6 +26,16 @@ export function planScraplingTargets(source: string, attempts: readonly Extracti
 }
 
 export interface ScraplingPage { html: string; url: string; status: number; contentType: string; wwwAuthenticate?: string | null }
+export class ScraplingResponseError extends Error {
+  readonly problem: SourceResponseProblem;
+  readonly status: number;
+  constructor(problem: SourceResponseProblem, status: number) {
+    super(`Scrapling response rejected: ${problem}`);
+    this.name = "ScraplingResponseError";
+    this.problem = problem;
+    this.status = status;
+  }
+}
 export type ScraplingRunner = (url: string, mode: ScraplingMode) => Promise<string>;
 
 // One child at a time across concurrent scan sources. Busy callers retain their
@@ -81,8 +91,7 @@ export async function fetchApprovedWithScrapling(source: string, url: string, mo
   const final = new URL(page.url);
   if (final.protocol !== "https:" || final.hostname !== parsed.hostname || final.username || final.password ||
       (final.port && final.port !== "443")) throw new Error("Unsafe Scrapling final URL");
-  if (classifySourceResponse(page.status, page.contentType, page.html, page.wwwAuthenticate ?? null)) {
-    throw new Error("Unusable Scrapling response");
-  }
+  const problem = classifySourceResponse(page.status, page.contentType, page.html, page.wwwAuthenticate ?? null);
+  if (problem) throw new ScraplingResponseError(problem, page.status);
   return page;
 }
