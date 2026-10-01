@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fetchApprovedWithScrapling, planScraplingTargets, SCRAPLING_LIMITS } from "./scrapling.ts";
+import { fetchApprovedWithScrapling, planScraplingTargets, SCRAPLING_LIMITS, ScraplingResponseError } from "./scrapling.ts";
 
 const source = "Energy Magazine";
 const url = "https://www.energymagazine.com.au/?s=solar+project";
@@ -32,6 +32,14 @@ test("valid content retains provenance and never accepts unsafe redirects", asyn
   let called = false;
   await assert.rejects(fetchApprovedWithScrapling(source, "https://other.example/", "http", async () => { called = true; return "{}"; }));
   assert.equal(called, false);
+});
+
+test("restriction responses retain a typed failure instead of reaching the parser", async () => {
+  for (const status of [200, 403]) {
+    await assert.rejects(fetchApprovedWithScrapling(source, url, "http", async () => JSON.stringify({
+      ...page, status, html: '<h1>Access to this site has been restricted</h1><p>category:ai</p>',
+    })), error => error instanceof ScraplingResponseError && error.problem === "blocked" && error.status === status);
+  }
 });
 
 test("blocked, malformed, oversized, missing runtime and timeout responses preserve fallback", async () => {

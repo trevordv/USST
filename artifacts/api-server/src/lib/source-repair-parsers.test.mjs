@@ -19,6 +19,12 @@ test("real Incapsula challenge frames and other access barriers remain blocked",
   }
 });
 
+test("Prime Creative restriction pages are blocked even with a successful HTTP status", () => {
+  const body = '<html><h1>Access to this site has been restricted</h1><p>category:ai</p><a href="mailto:blocked@primecreative.com.au">support</a></html>';
+  for (const status of [200, 403]) assert.equal(classifySourceResponse(status, "text/html", body), "blocked");
+  assert.equal(classifySourceResponse(200, "text/html", '<article><h2>Access to this site has been restricted</h2><p>Industry news</p></article>'), null);
+});
+
 test("distinguishes plain public 403 from authentication, paywall and challenge responses", () => {
   assert.equal(
     classifySourceResponse(403, "text/html", "Forbidden"),

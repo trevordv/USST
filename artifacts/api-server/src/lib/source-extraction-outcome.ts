@@ -17,10 +17,14 @@ export interface ExtractionAttempt {
 
 export class SourceExtractionError extends Error {
   readonly outcome: "parse-failed" | "content-unusable" | "requires-js-or-ai-repair";
-  constructor(outcome: "parse-failed" | "content-unusable" | "requires-js-or-ai-repair", message: string) {
+  readonly diagnostic?: "empty-document" | "invalid-rss-channel" | "incomplete-rss-document" |
+    "no-server-content" | "unsupported-html-structure" | "unresolved-project-records";
+  constructor(outcome: "parse-failed" | "content-unusable" | "requires-js-or-ai-repair", message: string,
+    diagnostic?: SourceExtractionError["diagnostic"]) {
     super(message);
     this.name = "SourceExtractionError";
     this.outcome = outcome;
+    this.diagnostic = diagnostic;
   }
 }
 
@@ -44,21 +48,21 @@ export function paidSourceFallbackReason(attempts: readonly ExtractionAttempt[],
 
 /** Validate parser input/shape before treating a regex parser's [] as success. */
 export function assertSourceDocument(text: string, format: "rss" | "html" | "structured-html"): void {
-  if (!text.trim()) throw new SourceExtractionError("content-unusable", "empty source document");
+  if (!text.trim()) throw new SourceExtractionError("content-unusable", "empty source document", "empty-document");
   if (format === "rss") {
     if (!/<rss\b/i.test(text) || !/<channel\b/i.test(text)) {
-      throw new SourceExtractionError("content-unusable", "expected an RSS channel");
+      throw new SourceExtractionError("content-unusable", "expected an RSS channel", "invalid-rss-channel");
     }
     if (!/<\/rss\s*>/i.test(text) || !/<\/channel\s*>/i.test(text) ||
         (text.match(/<item\b/gi)?.length ?? 0) !== (text.match(/<\/item\s*>/gi)?.length ?? 0)) {
-      throw new SourceExtractionError("parse-failed", "incomplete RSS document");
+      throw new SourceExtractionError("parse-failed", "incomplete RSS document", "incomplete-rss-document");
     }
     return;
   }
   const visible = text.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ").replace(/<[^>]*>/g, " ").trim();
   if (!visible || /^(?:loading[.\s…]*|(?:please )?enable javascript[.\s]*)$/i.test(visible)) {
-    throw new SourceExtractionError(/<script\b/i.test(text) ? "requires-js-or-ai-repair" : "content-unusable", "no usable server-rendered content");
+    throw new SourceExtractionError(/<script\b/i.test(text) ? "requires-js-or-ai-repair" : "content-unusable", "no usable server-rendered content", "no-server-content");
   }
   // Match the structures consumed by the existing parsers, not project keywords
   // or eligibility. Non-solar, out-of-window and sub-threshold entries are valid.
@@ -68,6 +72,6 @@ export function assertSourceDocument(text: string, format: "rss" | "html" | "str
       /<(?:div|section|li)\b[^>]*\bclass=["'][^"']*(?:post|article|entry|item|result|card|teaser|story|listing|news|views-row)/i.test(text);
   const explicitEmpty = /\bno (?:matching |current |eligible )?(?:results|projects|items|posts|articles)\b|nothing found/i.test(visible);
   if (!hasStructure && !explicitEmpty) {
-    throw new SourceExtractionError("parse-failed", "source document does not contain the configured parser structure or an explicit empty state");
+    throw new SourceExtractionError("parse-failed", "source document does not contain the configured parser structure or an explicit empty state", "unsupported-html-structure");
   }
 }

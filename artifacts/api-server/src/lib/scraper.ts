@@ -89,7 +89,8 @@ import {
   FirecrawlAcquisitionError,
 } from "./firecrawl";
 import { apifySourceConfigured, fetchApprovedSourceWithApify } from "./apify-source";
-import { fetchApprovedWithScrapling, planScraplingTargets } from "./scrapling.ts";
+import { fetchApprovedWithScrapling, planScraplingTargets, ScraplingResponseError } from "./scrapling.ts";
+import { parseScraplingNewsPage } from "./scrapling-news.ts";
 import {
   isExactPersonMatch,
   isProfessionalCompanyEmail,
@@ -397,7 +398,7 @@ function logScanSourceOutcome(
     extractionOutcomes: details.extractionOutcomes?.map(({ method, url, outcome, reason, failureCategory }) => ({
       method, url: diagnosticUrl(url), outcome, reason, failureCategory,
     })),
-    failureCategory: err instanceof SourceRequestError ? err.problem : err ? "unclassified" : undefined,
+    failureCategory: err instanceof SourceRequestError ? err.problem : err instanceof SourceExtractionError ? "parser" : err ? "unclassified" : undefined,
   };
   if (["error", "blocked", "timeout", "extraction-failed", "skipped-missing-credentials"].includes(outcome)) {
     logger.warn(context, "Scan source outcome");
@@ -3370,7 +3371,9 @@ function logDirectSourceFailure(source: string, error: unknown): void {
     );
     return;
   }
-  logScanSourceOutcome(source, "extraction-failed", { err: error });
+  logScanSourceOutcome(source, "extraction-failed", {
+    err: error, reason: error instanceof SourceExtractionError ? error.diagnostic ?? error.outcome : undefined,
+  });
 }
 
 async function scrapeSource(
@@ -3480,7 +3483,7 @@ async function scrapeSource(
         : phase === "fetch" ? "network" : "parser";
       recordAttempt({
         method, url, outcome: failedExtractionOutcome(err, phase),
-        reason: failureCategory,
+        reason: err instanceof SourceExtractionError ? err.diagnostic ?? failureCategory : failureCategory,
         failureCategory,
       });
       return null;
@@ -3607,14 +3610,21 @@ async function scrapeSource(
       if (mode === "browser" && !attempts.some(a => a.url === target && a.method === "scrapling-http" &&
           ["parse-failed", "content-unusable", "requires-js-or-ai-repair"].includes(a.outcome))) break;
       const count = await extract(`scrapling-${mode}`, target, async () => {
-        const page = await fetchApprovedWithScrapling(source.name, target, mode);
+        let page;
+        try {
+          page = await fetchApprovedWithScrapling(source.name, target, mode);
+        } catch (error) {
+          if (error instanceof ScraplingResponseError) {
+            throw new SourceRequestError("Scrapling source response rejected", error.problem, target, error.status);
+          }
+          throw error;
+        }
         scraplingAcquired = `scrapling-${mode}`;
         return page.html;
       }, html => {
+        if (format === "html") return parseScraplingNewsPage(html, source, startDate, endDate, target);
         assertSourceDocument(html, format);
-        const items = format === "structured-html"
-          ? sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, target), source, startDate, endDate, true)
-          : parseHtmlPage(html, source, startDate, endDate, target);
+        const items = sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, target), source, startDate, endDate, true);
         if (!items.length && classifyManagedZeroResult(source.name, html) === "unresolved") {
           throw new SourceExtractionError("requires-js-or-ai-repair", "Scrapling document still requires project normalisation");
         }

@@ -41,6 +41,17 @@ function scrapeResponse(overrides = {}) {
 
 test.beforeEach(() => clearFirecrawlMemoryCacheForTests());
 
+test("publisher restriction content cannot be cached as successful zero acquisition", async () => {
+  for (const markdown of [
+    '<h1>Access to this site has been restricted</h1><p>category:ai</p>',
+    '# Access to this site has been restricted\nPlease contact blocked@primecreative.com.au',
+  ]) {
+    await assert.rejects(firecrawlScrapeApprovedSource("Energy Magazine", energyUrl, {
+      environment, fetcher: async () => Response.json(scrapeResponse({ markdown })),
+    }), error => error instanceof FirecrawlAcquisitionError && error.category === "blocked");
+  }
+});
+
 test("configuration and stable meaningful-content hashes are safe", () => {
   assert.equal(firecrawlConfigured(environment), true);
   assert.equal(firecrawlConfigured({}), false);

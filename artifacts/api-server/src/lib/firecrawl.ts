@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { getSourceAcquisitionPlan, getSourceRepairStrategy } from "./source-repair-strategies.ts";
+import { isPublisherAccessRestriction } from "./source-repair-parsers.ts";
 
 const FIRECRAWL_API_ORIGIN = "https://api.firecrawl.dev";
 const FIRECRAWL_API_VERSION = "v2";
@@ -310,6 +311,9 @@ function normalizePage(sourceName: string, requestedUrl: string, value: unknown)
   const html = typeof document.html === "string" ? document.html : "";
   const content = (markdown || html).slice(0, MAX_CONTENT_BYTES).trim();
   if (!content) throw new FirecrawlAcquisitionError("empty-content", "Firecrawl returned empty content");
+  if (isPublisherAccessRestriction(markdown) || isPublisherAccessRestriction(html)) {
+    throw new FirecrawlAcquisitionError("blocked", "Firecrawl target returned a publisher restriction", statusCode ?? undefined);
+  }
   const rawLinks = Array.isArray(document.links) ? document.links : [];
   const links = rawLinks.flatMap((link) => {
     if (typeof link !== "string") return [];
