@@ -125,9 +125,9 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 | `DATABASE_URL` | All — Postgres connection |
 | `ALTENERGY_USERNAME` / `ALTENERGY_PASSWORD` | AltEnergy authenticated scrape |
 | `LUVI_USERNAME` / `LUVI_PASSWORD` | LUVI development pipeline scrape (`LUVI_USERNAME` is retained for account identification; LUVI's current pipeline unlock uses the password) |
-| `APIFY_API_TOKEN` | Contact enrichment Phase 2 (Google Search) |
+| `APIFY_API_TOKEN` | Contact enrichment Phase 2 and bounded secondary scan acquisition for reviewed weak sources |
 | `LUSHA_API_KEY` | Contact enrichment Phase 2.5 (Lusha enrich + prospecting) |
-| `FIRECRAWL_API_KEY` | Scanning Firecrawl sources (EPBC, DCCEEW, Planning Alerts, CEC) |
+| `FIRECRAWL_API_KEY` | Bounded Firecrawl v2 fallback for reviewed weak sources in the existing 34-source registry |
 | `SESSION_SECRET` | Express session signing |
 
 ## Gotchas

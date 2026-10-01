@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp, integer, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, integer, boolean, date } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -11,6 +11,8 @@ export const scansTable = pgTable("scans", {
   projectsFound: integer("projects_found").notNull().default(0),
   newProjects: integer("new_projects").notNull().default(0),
   errorMessage: text("error_message"),
+  startDate: date("start_date", { mode: "string" }),
+  endDate: date("end_date", { mode: "string" }),
 });
 
 export const insertScanSchema = createInsertSchema(scansTable).omit({
@@ -28,6 +30,11 @@ export const scanProjectsTable = pgTable("scan_projects", {
   // projectName at the time of scan for traceability
   projectName: text("project_name"),
   isNew: boolean("is_new").notNull().default(false),
+  eventType: text("event_type").notNull().default("inventory_observed"),
+  effectiveDate: date("effective_date", { mode: "string" }),
+  dateEvidence: text("date_evidence").notNull().default("unknown"),
+  sourceUrl: text("source_url"),
+  sourceName: text("source_name"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
