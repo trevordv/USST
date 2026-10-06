@@ -28,20 +28,14 @@ export function inferKnownDeveloperFromText(
   const matches = new Map<string, { original: string; normalized: string }>();
   for (const original of organizationNames) {
     const normalized = normalizeKnownOrganization(original);
-    if (normalized.length < 5) continue;
+    if (normalized.length < 4) continue;
     const needle = ` ${normalized} `;
     if (haystack.includes(needle)) {
       matches.set(normalized, { original, normalized });
     }
   }
-  if (matches.size === 0) return null;
-
-  const ranked = [...matches.values()].sort((a,b) => b.normalized.length - a.normalized.length);
-  const best = ranked[0];
-  if (ranked.length > 1 && ranked[1].normalized.length === best.normalized.length && ranked[1].normalized !== best.normalized) {
-    return null;
-  }
-  return best.original;
+  if (matches.size !== 1) return null;
+  return [...matches.values()][0].original;
 }
 
 export function matchKnownContact(
