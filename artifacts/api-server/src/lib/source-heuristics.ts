@@ -114,7 +114,7 @@ const DEVELOPER_CUES: RegExp[] = [
   // Headline possessive: "Neoen's 400 MW Culcairn Solar Farm ..."
   new RegExp(`(?:^|[.!?:]\\s+)${COMPANY}['’]s\\s+(?:\\d[\\d,.]*\\s*(?:MW|GW)\\s+)?[A-Z]`),
   // Sentence subject: "Origin Energy has lodged plans for ..."
-  new RegExp(`(?:^|[.!?:]\\s+|,\\s+)${COMPANY}\\s+(?:has|have|had|is|are|will|plans?|proposes?|lodges?|lodged|unveils?|unveiled|announces?|announced|submits?|submitted|secures?|secured|receives?|received|gets|wins|files?|filed)\\b`),
+  new RegExp(`(?:^|[.!?:]\\s+|,\\s+)${COMPANY}\\s+(?:has|have|had|is|are|will|plans?|proposes?|lodges?|lodged|lands?|landed|unveils?|unveiled|announces?|announced|submits?|submitted|secures?|secured|receives?|received|gets|wins|files?|filed)\\b`),
 ];
 const AGENCY_RE =
   /\b(?:Commission|Department|Government|Council|Minister|Ministry|Authority|Regulator|EPA|Agency|Planning|Parliament|Court|Tribunal|University|Institute|Committee|Board|Panel|Treasury)\b/;
