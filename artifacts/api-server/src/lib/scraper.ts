@@ -89,6 +89,7 @@ import {
   FirecrawlAcquisitionError,
 } from "./firecrawl";
 import { apifySourceConfigured, fetchApprovedSourceWithApify } from "./apify-source";
+import { inferKnownDeveloperFromText, matchKnownContact, type KnownContact } from "./contact-fallback.ts";
 import { fetchApprovedWithScrapling, planScraplingTargets, ScraplingResponseError } from "./scrapling.ts";
 import { parseScraplingNewsPage } from "./scrapling-news.ts";
 import {
@@ -4080,6 +4081,9 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       sourceName: projectsTable.sourceName,
       status: projectsTable.status,
       announcedDate: projectsTable.announcedDate,
+      contactName: projectsTable.contactName,
+      contactEmail: projectsTable.contactEmail,
+      contactPhone: projectsTable.contactPhone,
     }).from(projectsTable);
     for (const r of existingRows) {
       existingDateById.set(r.id, r.announcedDate);
@@ -4091,8 +4095,29 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       if (isEligibleScanProject(r)) eligibleExistingProjectIds.add(r.id);
     }
 
-    // Load PVH fallback contacts once for the whole scan
+    // Load PVH fallback contacts once for the whole scan and combine them with
+    // already-verified project contacts. This allows a newly discovered project
+    // to reuse a known company contact before any paid enrichment is required.
     const pvhContacts = await db.select().from(pvhContactsTable);
+    const knownContacts: KnownContact[] = [
+      ...existingRows
+        .filter((row) => row.developer && row.contactEmail)
+        .map((row) => ({
+          organizationName: row.developer!,
+          name: row.contactName,
+          email: row.contactEmail!,
+          phone: row.contactPhone,
+        })),
+      ...pvhContacts
+        .filter((row) => row.organizationName && row.email1)
+        .map((row) => ({
+          organizationName: row.organizationName!,
+          name: [row.firstName, row.lastName].filter(Boolean).join(" ") || row.organizationName!,
+          email: row.email1!,
+          phone: null,
+        })),
+    ];
+    const knownOrganizations = [...new Set(knownContacts.map((contact) => contact.organizationName))];
     const wattsPersistenceDiagnostics = {
       acceptedNew: 0,
       canonicalUpdatesMatched: 0,
@@ -4104,6 +4129,23 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
 
     // Insert / record every project found by this scan (deduplicate by sourceUrl)
     for (const project of allScraped) {
+      // If the parser did not populate a developer, use only a deterministic
+      // known-company mention from the project/article text. Ambiguous matches
+      // return null rather than guessing.
+      if (!project.developer) {
+        const inferredDeveloper = inferKnownDeveloperFromText(
+          `${project.name ?? ""} ${project.description ?? ""}`,
+          knownOrganizations,
+        );
+        if (inferredDeveloper) {
+          project.developer = inferredDeveloper;
+          logger.info({ project: project.name, developer: inferredDeveloper }, "Known developer inferred from project evidence");
+        }
+      }
+
+      const knownContact = project.developer
+        ? matchKnownContact(project.developer, knownContacts)
+        : null;
       // Resolve dated Watts News events against canonical projects before the
       // quality gate. This permits a strongly matched update with no capacity
       // in the article (for example Wooderson) to reuse verified canonical
@@ -4220,12 +4262,13 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
             let contactEmail = project.contactEmail;
             let contactPhone = project.contactPhone;
 
-            if (!contactEmail && !contactName && project.developer) {
-              const fallback = matchFallbackContact(project.developer, pvhContacts);
+            if (!contactEmail && project.developer) {
+              const fallback = knownContact ?? matchFallbackContact(project.developer, pvhContacts);
               if (fallback) {
-                contactName = fallback.name;
+                contactName = fallback.name ?? contactName;
                 contactEmail = fallback.email;
-                logger.info({ project: project.name, developer: project.developer, fallbackEmail: fallback.email }, "Applied PVH fallback contact");
+                contactPhone = "phone" in fallback ? fallback.phone ?? contactPhone : contactPhone;
+                logger.info({ project: project.name, developer: project.developer }, "Applied known-company fallback contact");
               }
             }
 
