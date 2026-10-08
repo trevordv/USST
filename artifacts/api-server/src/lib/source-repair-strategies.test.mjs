@@ -11,15 +11,15 @@ import {
 const expectedGroups = {
   working: 10,
   inaccessible: 11,
-  "extraction-problematic": 12,
+  "extraction-problematic": 29,
   authenticated: 2,
 };
 
-test("the repair registry preserves exactly all 35 approved source slots", async () => {
-  assert.equal(SOURCE_REPAIR_STRATEGIES.length, 35);
+test("the repair registry preserves exactly all 52 approved source slots", async () => {
+  assert.equal(SOURCE_REPAIR_STRATEGIES.length, 52);
   assert.equal(
     new Set(SOURCE_REPAIR_STRATEGIES.map(({ name }) => name)).size,
-    35,
+    52,
   );
 
   const counts = Object.fromEntries(
@@ -66,12 +66,12 @@ test("every approved source has an HTTPS official endpoint and a named parser co
   }
 });
 
-test("all 23 audited repair sources have an explicit source-specific repair mode", async (t) => {
+test("all 40 repaired sources have an explicit source-specific repair mode", async (t) => {
   const repaired = SOURCE_REPAIR_STRATEGIES.filter(
     ({ auditGroup }) =>
       auditGroup === "inaccessible" || auditGroup === "extraction-problematic",
   );
-  assert.equal(repaired.length, 23);
+  assert.equal(repaired.length, 40);
   for (const strategy of repaired) {
     await t.test(strategy.name, () => {
       assert.notEqual(strategy.mode, "authenticated");
@@ -150,4 +150,23 @@ test("PV Magazine Global is scoped to Australian solar searches and uses bounded
   assert.equal(plan.firecrawlMode, "scrape");
   assert.equal(plan.maxFirecrawlPages, 1);
   assert.equal(plan.maxFirecrawlDepth, 0);
+});
+
+
+test("the 17 newly added publications have bounded managed acquisition", () => {
+  const names = [
+    "PV Tech", "Energy-Storage.news", "SolarQuarter", "Energy Global",
+    "Green Review", "Renewables Now", "Power Technology", "Australian Mining",
+    "Infrastructure Magazine", "Energy News Bulletin", "Carbon News NZ",
+    "Energy News NZ", "SEANZ Utility Solar", "MBIE Energy", "BusinessDesk NZ",
+    "NZ Herald Business", "EECA",
+  ];
+  for (const name of names) {
+    const strategy = SOURCE_REPAIR_STRATEGIES.find((entry) => entry.name === name);
+    assert.ok(strategy, name);
+    const plan = getSourceAcquisitionPlan(name);
+    assert.deepEqual(plan.methods, ["html", "firecrawl", "apify", "brightdata", "openai-normalisation"]);
+    assert.equal(plan.maxFirecrawlPages, 1);
+    assert.equal(plan.maxFirecrawlDepth, 0);
+  }
 });
