@@ -427,6 +427,14 @@ const SOURCES: ScrapeSource[] = [
     feedUrl: "https://www.pv-magazine-australia.com/feed/",
   },
   {
+    name: "PV Magazine Global",
+    country: "AU",
+    searchUrl: "https://www.pv-magazine.com/?s=Australia+solar+project",
+    extraUrls: [
+      "https://www.pv-magazine.com/?s=Australia+solar+farm",
+    ],
+  },
+  {
     name: "EcoGeneration",
     country: "AU",
     searchUrl: "https://www.ecogeneration.com.au/category/projects/solar-projects/",
