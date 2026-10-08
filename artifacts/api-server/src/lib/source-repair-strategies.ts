@@ -44,7 +44,7 @@ export interface SourceRepairStrategy {
 /**
  * Registry-reviewed sources whose deterministic public acquisition has been
  * unreliable. Firecrawl is transport for these existing sources only; this
- * list never expands the approved 35-source registry.
+ * list never expands the approved 52-source registry.
  */
 const FIRECRAWL_TARGET_SOURCES = new Set([
   "NSW Planning Portal",
@@ -64,6 +64,23 @@ const FIRECRAWL_TARGET_SOURCES = new Set([
   "NZ EPA – Public Consultations",
   "NZ Ministry for the Environment",
   "Energy Magazine",
+  "PV Tech",
+  "Energy-Storage.news",
+  "SolarQuarter",
+  "Energy Global",
+  "Green Review",
+  "Renewables Now",
+  "Power Technology",
+  "Australian Mining",
+  "Infrastructure Magazine",
+  "Energy News Bulletin",
+  "Carbon News NZ",
+  "Energy News NZ",
+  "SEANZ Utility Solar",
+  "MBIE Energy",
+  "BusinessDesk NZ",
+  "NZ Herald Business",
+  "EECA",
   "PV Magazine Global",
 ]);
 
@@ -112,6 +129,142 @@ export const SOURCE_REPAIR_STRATEGIES: readonly SourceRepairStrategy[] = [
       "https://www.pv-magazine.com/?s=Australia+solar+project",
       "https://www.pv-magazine.com/?s=Australia+solar+farm",
     ],
+    fallback: "openai",
+    parserTest: "html",
+  },
+  {
+    name: "PV Tech",
+    auditGroup: "extraction-problematic",
+    mode: "standard",
+    officialUrls: ["https://www.pv-tech.org/?s=Australia+solar"],
+    fallback: "openai",
+    parserTest: "html",
+  },
+  {
+    name: "Energy-Storage.news",
+    auditGroup: "extraction-problematic",
+    mode: "standard",
+    officialUrls: ["https://www.energy-storage.news/?s=Australia+solar"],
+    fallback: "openai",
+    parserTest: "html",
+  },
+  {
+    name: "SolarQuarter",
+    auditGroup: "extraction-problematic",
+    mode: "standard",
+    officialUrls: ["https://solarquarter.com/?s=Australia+solar"],
+    fallback: "openai",
+    parserTest: "html",
+  },
+  {
+    name: "Energy Global",
+    auditGroup: "extraction-problematic",
+    mode: "standard",
+    officialUrls: ["https://www.energyglobal.com/solar/"],
+    fallback: "openai",
+    parserTest: "html",
+  },
+  {
+    name: "Green Review",
+    auditGroup: "extraction-problematic",
+    mode: "standard",
+    officialUrls: ["https://greenreview.com.au/all-energy/"],
+    fallback: "openai",
+    parserTest: "html",
+  },
+  {
+    name: "Renewables Now",
+    auditGroup: "extraction-problematic",
+    mode: "standard",
+    officialUrls: ["https://www.renewablesnow.com/news/solar/"],
+    fallback: "openai",
+    parserTest: "html",
+  },
+  {
+    name: "Power Technology",
+    auditGroup: "extraction-problematic",
+    mode: "standard",
+    officialUrls: ["https://www.power-technology.com/marketdata/"],
+    fallback: "openai",
+    parserTest: "html",
+  },
+  {
+    name: "Australian Mining",
+    auditGroup: "extraction-problematic",
+    mode: "standard",
+    officialUrls: ["https://www.australianmining.com.au/?s=solar"],
+    fallback: "openai",
+    parserTest: "html",
+  },
+  {
+    name: "Infrastructure Magazine",
+    auditGroup: "extraction-problematic",
+    mode: "standard",
+    officialUrls: ["https://infrastructuremagazine.com.au/?s=solar"],
+    fallback: "openai",
+    parserTest: "html",
+  },
+  {
+    name: "Energy News Bulletin",
+    auditGroup: "extraction-problematic",
+    mode: "standard",
+    officialUrls: ["https://www.energynewsbulletin.net/power"],
+    fallback: "openai",
+    parserTest: "html",
+  },
+  {
+    name: "Carbon News NZ",
+    auditGroup: "extraction-problematic",
+    mode: "standard",
+    officialUrls: ["https://www.carbonnews.co.nz/news-page/25/energy"],
+    fallback: "openai",
+    parserTest: "html",
+  },
+  {
+    name: "Energy News NZ",
+    auditGroup: "extraction-problematic",
+    mode: "standard",
+    officialUrls: ["https://www.energynews.co.nz/"],
+    fallback: "openai",
+    parserTest: "html",
+  },
+  {
+    name: "SEANZ Utility Solar",
+    auditGroup: "extraction-problematic",
+    mode: "standard",
+    officialUrls: ["https://www.seanz.org.nz/utility-solar"],
+    fallback: "openai",
+    parserTest: "html",
+  },
+  {
+    name: "MBIE Energy",
+    auditGroup: "extraction-problematic",
+    mode: "standard",
+    officialUrls: ["https://www.mbie.govt.nz/building-and-energy/energy-and-natural-resources/energy-statistics-and-modelling/energy-publications-and-technical-papers/nz-generation-data-updates"],
+    fallback: "openai",
+    parserTest: "html",
+  },
+  {
+    name: "BusinessDesk NZ",
+    auditGroup: "extraction-problematic",
+    mode: "standard",
+    officialUrls: ["https://businessdesk.co.nz/"],
+    fallback: "openai",
+    parserTest: "html",
+  },
+  {
+    name: "NZ Herald Business",
+    auditGroup: "extraction-problematic",
+    mode: "standard",
+    officialUrls: ["https://www.nzherald.co.nz/business/"],
+    fallback: "openai",
+    parserTest: "html",
+  },
+  {
+    name: "EECA",
+    auditGroup: "extraction-problematic",
+    mode: "standard",
+    officialUrls: ["https://www.eeca.govt.nz/"],
     fallback: "openai",
     parserTest: "html",
   },
@@ -490,8 +643,8 @@ export function validateSourceRepairStrategies(
   const missing = [...configured].filter((name) => !strategies.has(name));
   const stale = [...strategies].filter((name) => !configured.has(name));
   if (
-    configuredNames.length !== 35 ||
-    configured.size !== 35 ||
+    configuredNames.length !== 52 ||
+    configured.size !== 52 ||
     missing.length ||
     stale.length
   ) {
