@@ -44,7 +44,7 @@ export interface SourceRepairStrategy {
 /**
  * Registry-reviewed sources whose deterministic public acquisition has been
  * unreliable. Firecrawl is transport for these existing sources only; this
- * list never expands the approved 34-source registry.
+ * list never expands the approved 35-source registry.
  */
 const FIRECRAWL_TARGET_SOURCES = new Set([
   "NSW Planning Portal",
@@ -64,6 +64,7 @@ const FIRECRAWL_TARGET_SOURCES = new Set([
   "NZ EPA – Public Consultations",
   "NZ Ministry for the Environment",
   "Energy Magazine",
+  "PV Magazine Global",
 ]);
 
 const FIRECRAWL_CRAWL_SOURCES = new Set([
@@ -102,6 +103,17 @@ export const SOURCE_REPAIR_STRATEGIES: readonly SourceRepairStrategy[] = [
     ],
     fallback: "openai",
     parserTest: "rss",
+  },
+  {
+    name: "PV Magazine Global",
+    auditGroup: "working",
+    mode: "standard",
+    officialUrls: [
+      "https://www.pv-magazine.com/?s=Australia+solar+project",
+      "https://www.pv-magazine.com/?s=Australia+solar+farm",
+    ],
+    fallback: "openai",
+    parserTest: "html",
   },
   {
     name: "EcoGeneration",
@@ -478,8 +490,8 @@ export function validateSourceRepairStrategies(
   const missing = [...configured].filter((name) => !strategies.has(name));
   const stale = [...strategies].filter((name) => !configured.has(name));
   if (
-    configuredNames.length !== 34 ||
-    configured.size !== 34 ||
+    configuredNames.length !== 35 ||
+    configured.size !== 35 ||
     missing.length ||
     stale.length
   ) {
