@@ -435,6 +435,91 @@ const SOURCES: ScrapeSource[] = [
     ],
   },
   {
+    name: "PV Tech",
+    country: "AU",
+    searchUrl: "https://www.pv-tech.org/?s=Australia+solar",
+  },
+  {
+    name: "Energy-Storage.news",
+    country: "AU",
+    searchUrl: "https://www.energy-storage.news/?s=Australia+solar",
+  },
+  {
+    name: "SolarQuarter",
+    country: "AU",
+    searchUrl: "https://solarquarter.com/?s=Australia+solar",
+  },
+  {
+    name: "Energy Global",
+    country: "AU",
+    searchUrl: "https://www.energyglobal.com/solar/",
+  },
+  {
+    name: "Green Review",
+    country: "AU",
+    searchUrl: "https://greenreview.com.au/all-energy/",
+  },
+  {
+    name: "Renewables Now",
+    country: "AU",
+    searchUrl: "https://www.renewablesnow.com/news/solar/",
+  },
+  {
+    name: "Power Technology",
+    country: "AU",
+    searchUrl: "https://www.power-technology.com/marketdata/",
+  },
+  {
+    name: "Australian Mining",
+    country: "AU",
+    searchUrl: "https://www.australianmining.com.au/?s=solar",
+  },
+  {
+    name: "Infrastructure Magazine",
+    country: "AU",
+    searchUrl: "https://infrastructuremagazine.com.au/?s=solar",
+  },
+  {
+    name: "Energy News Bulletin",
+    country: "AU",
+    searchUrl: "https://www.energynewsbulletin.net/power",
+  },
+  {
+    name: "Carbon News NZ",
+    country: "NZ",
+    searchUrl: "https://www.carbonnews.co.nz/news-page/25/energy",
+  },
+  {
+    name: "Energy News NZ",
+    country: "NZ",
+    searchUrl: "https://www.energynews.co.nz/",
+  },
+  {
+    name: "SEANZ Utility Solar",
+    country: "NZ",
+    searchUrl: "https://www.seanz.org.nz/utility-solar",
+  },
+  {
+    name: "MBIE Energy",
+    country: "NZ",
+    searchUrl: "https://www.mbie.govt.nz/building-and-energy/energy-and-natural-resources/energy-statistics-and-modelling/energy-publications-and-technical-papers/nz-generation-data-updates",
+  },
+  {
+    name: "BusinessDesk NZ",
+    country: "NZ",
+    searchUrl: "https://businessdesk.co.nz/",
+  },
+  {
+    name: "NZ Herald Business",
+    country: "NZ",
+    searchUrl: "https://www.nzherald.co.nz/business/",
+  },
+  {
+    name: "EECA",
+    country: "NZ",
+    searchUrl: "https://www.eeca.govt.nz/",
+  },
+  {
     name: "EcoGeneration",
     country: "AU",
     searchUrl: "https://www.ecogeneration.com.au/category/projects/solar-projects/",
