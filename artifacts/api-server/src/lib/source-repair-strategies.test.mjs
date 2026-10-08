@@ -9,17 +9,17 @@ import {
 } from "./source-repair-strategies.ts";
 
 const expectedGroups = {
-  working: 9,
+  working: 10,
   inaccessible: 11,
   "extraction-problematic": 12,
   authenticated: 2,
 };
 
-test("the repair registry preserves exactly all 34 approved source slots", async () => {
-  assert.equal(SOURCE_REPAIR_STRATEGIES.length, 34);
+test("the repair registry preserves exactly all 35 approved source slots", async () => {
+  assert.equal(SOURCE_REPAIR_STRATEGIES.length, 35);
   assert.equal(
     new Set(SOURCE_REPAIR_STRATEGIES.map(({ name }) => name)).size,
-    34,
+    35,
   );
 
   const counts = Object.fromEntries(
@@ -135,4 +135,19 @@ test("registry validation rejects a missing or stale source", () => {
       validateSourceRepairStrategies([...names.slice(1), "Unapproved Source"]),
     /mismatch/,
   );
+});
+
+
+test("PV Magazine Global is scoped to Australian solar searches and uses bounded managed fallback", () => {
+  const strategy = SOURCE_REPAIR_STRATEGIES.find(({ name }) => name === "PV Magazine Global");
+  assert.ok(strategy);
+  assert.deepEqual(strategy.officialUrls, [
+    "https://www.pv-magazine.com/?s=Australia+solar+project",
+    "https://www.pv-magazine.com/?s=Australia+solar+farm",
+  ]);
+  const plan = getSourceAcquisitionPlan("PV Magazine Global");
+  assert.deepEqual(plan.methods, ["html", "firecrawl", "apify", "brightdata", "openai-normalisation"]);
+  assert.equal(plan.firecrawlMode, "scrape");
+  assert.equal(plan.maxFirecrawlPages, 1);
+  assert.equal(plan.maxFirecrawlDepth, 0);
 });
