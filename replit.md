@@ -69,6 +69,7 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 | | AltEnergy – Watts News | https://altenergy.com.au/watt_news |
 | | RenewEconomy | https://reneweconomy.com.au |
 | | PV Magazine Australia | https://www.pv-magazine-australia.com |
+| | PV Magazine Global | https://www.pv-magazine.com |
 | | EcoGeneration | https://www.ecogeneration.com.au |
 | | Utility Magazine | https://utilitymagazine.com.au |
 | | ESD News | https://esdnews.com.au |
