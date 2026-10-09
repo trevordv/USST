@@ -1,4 +1,7 @@
-export const GENERIC_SCAN_WORKERS = 4;
+// A manual scan covers 32 generic sources sequentially in batches of this
+// size. Raising it only shortens wall-clock scan time — it does not change
+// how many sources are scanned or how many AI calls each one can make.
+export const GENERIC_SCAN_WORKERS = 8;
 export const CONTACT_DOMAIN_WORKERS = 3;
 
 /**

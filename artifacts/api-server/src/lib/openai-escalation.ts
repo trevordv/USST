@@ -63,13 +63,26 @@ export interface OpenAiEscalationOptions<TResponse, TResult> {
   resultCount?: (result: TResult) => number | null;
   /** Can only reduce the operation policy; never permits more than three attempts. */
   maxAttempts?: number;
+  /**
+   * When true, a clean-but-empty result (resultCount === 0) from the very
+   * first, cheapest model is treated as possibly-incomplete rather than
+   * final, and is retried exactly once with the next model up. A second
+   * empty result (or one from a later attempt) is accepted as final, so
+   * this never adds more than one extra call. Only meaningful when
+   * resultCount is provided. Intended for sources with no deterministic
+   * fallback at all (e.g. "openai-first"/"browse-ai-or-openai" sources),
+   * where a missed AI search silently loses the source's entire result
+   * for the scan rather than just one article.
+   */
+  retryOnEmpty?: boolean;
   log?: EscalationLogger;
   ledgerWriter?: OpenAiLedgerWriter;
 }
 
 /**
  * Run an extraction from Luna upward. Only thrown quality errors and retryable
- * provider failures advance the model. Valid results, including [], terminate.
+ * provider failures advance the model. Valid results, including [], terminate
+ * — unless retryOnEmpty opts a specific caller into one bounded exception.
  */
 export async function runOpenAiEscalation<TResponse, TResult>(
   options: OpenAiEscalationOptions<TResponse, TResult>,
@@ -97,6 +110,17 @@ export async function runOpenAiEscalation<TResponse, TResult>(
         return options.validate(response, model);
       },
       options.resultCount, options.ledgerWriter);
+
+      const count = options.resultCount?.(result) ?? null;
+      const canRetryEmpty = options.retryOnEmpty && index === 0 && count === 0 && index + 1 < maximum;
+      if (canRetryEmpty) {
+        log("openai_model_escalated", {
+          operation: options.context.operation, escalationReason: "empty_result",
+          fromModel: model, escalatedModel: OPENAI_ESCALATION_MODELS[index + 1], attempt: index + 2,
+        });
+        continue;
+      }
+
       log("openai_model_final", {
         operation: options.context.operation, finalModel: model, attempts: index + 1, success: true,
       });

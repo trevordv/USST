@@ -239,6 +239,66 @@ test("deduplicates before AI and sends only genuinely unresolved official record
   assert.deepEqual(requested.map(record => record.epbcNumber), ["2025/10020"]);
 });
 
+test("a genuine capacity figure on the record's own official detail page resolves it deterministically, without AI", async () => {
+  const unresolvedAttributes = {
+    ...solarAttributes,
+    REFERENCE_NUMBER: "2025/10030",
+    NAME: "River Solar Project",
+    OBJECTID: 5620,
+  };
+  let fallbackCalls = 0;
+  let detailPageRequested = false;
+  const records = await fetchEpbcRecords(undefined, undefined, {
+    fetchImplementation: async (input) => {
+      const url = String(input);
+      if (url.includes("gispubmap")) {
+        return arcGisResponse({ features: [{ attributes: unresolvedAttributes }] });
+      }
+      assert.match(url, /referral-detail\/2025-10030$/);
+      detailPageRequested = true;
+      return new Response(
+        "<html><body><article><h1>River Solar Project</h1><p>The 180 MW River Solar Project was referred for assessment in NSW.</p></article></body></html>",
+        { status: 200, headers: { "Content-Type": "text/html" } },
+      );
+    },
+    supplementStructuredRecords: true,
+    priorRecords: [],
+    fallback: async () => { fallbackCalls++; return []; },
+  });
+  assert.equal(detailPageRequested, true);
+  assert.equal(fallbackCalls, 0);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].sizeMw, 180);
+});
+
+test("a detail page with no readable capacity still falls through to the bounded AI batch", async () => {
+  const unresolvedAttributes = {
+    ...solarAttributes,
+    REFERENCE_NUMBER: "2025/10031",
+    NAME: "Creek Solar Project",
+    OBJECTID: 5621,
+  };
+  let requested = [];
+  await fetchEpbcRecords(undefined, undefined, {
+    fetchImplementation: async (input) => {
+      const url = String(input);
+      if (url.includes("gispubmap")) {
+        return arcGisResponse({ features: [{ attributes: unresolvedAttributes }] });
+      }
+      return new Response("<html><body><p>Referral under assessment.</p></body></html>", {
+        status: 200, headers: { "Content-Type": "text/html" },
+      });
+    },
+    supplementStructuredRecords: true,
+    priorRecords: [],
+    fallback: async (_start, _end, unresolvedRecords) => {
+      requested = unresolvedRecords;
+      return [];
+    },
+  });
+  assert.deepEqual(requested.map((record) => record.epbcNumber), ["2025/10031"]);
+});
+
 test("prior EPBC evidence resolves an official record before paid work", () => {
   const unresolved = mapArcGisFeatureToEpbcRecord({
     ...solarAttributes, REFERENCE_NUMBER: "2025/10021",

@@ -1,6 +1,19 @@
-import { pgTable, text, serial, timestamp, integer, boolean, date } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, integer, boolean, date, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
+
+// Scan-wide quality-gate rejection breakdown, written once when a scan
+// completes. Counts are a snapshot for that scan only, not a running total.
+export interface ScanRejectionSummary {
+  totalRejected: number;
+  "noisy-name": number;
+  "outside-target-region": number;
+  "missing-capacity": number;
+  "below-minimum-capacity": number;
+  "wind-project": number;
+  "no-solar-component": number;
+  topMissingCapacitySources: { sourceName: string; count: number }[];
+}
 
 export const scansTable = pgTable("scans", {
   id: serial("id").primaryKey(),
@@ -13,6 +26,7 @@ export const scansTable = pgTable("scans", {
   errorMessage: text("error_message"),
   startDate: date("start_date", { mode: "string" }),
   endDate: date("end_date", { mode: "string" }),
+  rejectionSummary: jsonb("rejection_summary").$type<ScanRejectionSummary>(),
 });
 
 export const insertScanSchema = createInsertSchema(scansTable).omit({

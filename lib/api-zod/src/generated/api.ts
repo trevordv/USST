@@ -220,7 +220,20 @@ export const ListScansResponseItem = zod.object({
   "newProjects": zod.number().optional(),
   "errorMessage": zod.string().nullish(),
   "startDate": zod.string().nullish(),
-  "endDate": zod.string().nullish()
+  "endDate": zod.string().nullish(),
+  "rejectionSummary": zod.union([zod.null(),zod.object({
+  "totalRejected": zod.number(),
+  "noisy-name": zod.number(),
+  "outside-target-region": zod.number(),
+  "missing-capacity": zod.number(),
+  "below-minimum-capacity": zod.number(),
+  "wind-project": zod.number(),
+  "no-solar-component": zod.number(),
+  "topMissingCapacitySources": zod.array(zod.object({
+  "sourceName": zod.string(),
+  "count": zod.number()
+}))
+})]).optional().describe('Scan-wide quality-gate rejection breakdown for this scan only. Null for scans run before this field existed, or for a scan that failed before completing.')
 })
 export const ListScansResponse = zod.array(ListScansResponseItem)
 
@@ -251,7 +264,20 @@ export const GetScanResponse = zod.object({
   "newProjects": zod.number().optional(),
   "errorMessage": zod.string().nullish(),
   "startDate": zod.string().nullish(),
-  "endDate": zod.string().nullish()
+  "endDate": zod.string().nullish(),
+  "rejectionSummary": zod.union([zod.null(),zod.object({
+  "totalRejected": zod.number(),
+  "noisy-name": zod.number(),
+  "outside-target-region": zod.number(),
+  "missing-capacity": zod.number(),
+  "below-minimum-capacity": zod.number(),
+  "wind-project": zod.number(),
+  "no-solar-component": zod.number(),
+  "topMissingCapacitySources": zod.array(zod.object({
+  "sourceName": zod.string(),
+  "count": zod.number()
+}))
+})]).optional().describe('Scan-wide quality-gate rejection breakdown for this scan only. Null for scans run before this field existed, or for a scan that failed before completing.')
 })
 
 
