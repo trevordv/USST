@@ -69,6 +69,17 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 | | AltEnergy – Watts News | https://altenergy.com.au/watt_news |
 | | RenewEconomy | https://reneweconomy.com.au |
 | | PV Magazine Australia | https://www.pv-magazine-australia.com |
+| | PV Magazine Global | https://www.pv-magazine.com |
+| | PV Tech | https://www.pv-tech.org |
+| | Energy-Storage.news | https://www.energy-storage.news |
+| | SolarQuarter | https://solarquarter.com |
+| | Energy Global | https://www.energyglobal.com |
+| | Green Review | https://greenreview.com.au |
+| | Renewables Now | https://www.renewablesnow.com |
+| | Power Technology | https://www.power-technology.com |
+| | Australian Mining | https://www.australianmining.com.au |
+| | Infrastructure Magazine | https://infrastructuremagazine.com.au |
+| | Energy News Bulletin | https://www.energynewsbulletin.net |
 | | EcoGeneration | https://www.ecogeneration.com.au |
 | | Utility Magazine | https://utilitymagazine.com.au |
 | | ESD News | https://esdnews.com.au |
@@ -100,6 +111,13 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 | | Clean Energy Council – Clean Energy Australia Report | https://cleanenergycouncil.org.au/news-resources/clean-energy-australia-report-2026 |
 | | Smart Energy Council | https://smartenergy.org.au |
 | **News** | Energy Magazine | https://www.energymagazine.com.au |
+| **NZ / Industry / Data** | Carbon News NZ | https://www.carbonnews.co.nz |
+| | Energy News NZ | https://www.energynews.co.nz |
+| | SEANZ Utility Solar | https://www.seanz.org.nz/utility-solar |
+| | MBIE Energy | https://www.mbie.govt.nz/building-and-energy/energy-and-natural-resources/energy-statistics-and-modelling/ |
+| | BusinessDesk NZ | https://businessdesk.co.nz |
+| | NZ Herald Business | https://www.nzherald.co.nz/business/ |
+| | EECA | https://www.eeca.govt.nz |
 | **NZ** | NZ Electricity Authority | https://www.ea.govt.nz |
 | | Transpower NZ | https://www.transpower.co.nz |
 | | NZ Fast-track Approvals (current regime) | https://www.fasttrack.govt.nz/projects/ |
@@ -125,9 +143,9 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 | `DATABASE_URL` | All — Postgres connection |
 | `ALTENERGY_USERNAME` / `ALTENERGY_PASSWORD` | AltEnergy authenticated scrape |
 | `LUVI_USERNAME` / `LUVI_PASSWORD` | LUVI development pipeline scrape (`LUVI_USERNAME` is retained for account identification; LUVI's current pipeline unlock uses the password) |
-| `APIFY_API_TOKEN` | Contact enrichment Phase 2 (Google Search) |
+| `APIFY_API_TOKEN` | Contact enrichment Phase 2 and bounded secondary scan acquisition for reviewed weak sources |
 | `LUSHA_API_KEY` | Contact enrichment Phase 2.5 (Lusha enrich + prospecting) |
-| `FIRECRAWL_API_KEY` | Scanning Firecrawl sources (EPBC, DCCEEW, Planning Alerts, CEC) |
+| `FIRECRAWL_API_KEY` | Bounded Firecrawl v2 fallback for reviewed weak sources in the existing 52-source registry |
 | `SESSION_SECRET` | Express session signing |
 
 ## Gotchas

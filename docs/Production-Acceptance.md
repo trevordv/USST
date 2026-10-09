@@ -1,0 +1,25 @@
+# Production Acceptance Checklist
+
+- [ ] Correct repo/branch/release
+- [ ] Product scope and exclusions are current
+- [ ] Only default stack used, or exceptions recorded in Decision-Log
+- [ ] One end-to-end customer workflow passes in staging
+- [ ] Railway deployment healthy
+- [ ] Required variables/secrets present outside source/prompts
+- [ ] Login/logout and role access pass
+- [ ] Unauthorized access rejected
+- [ ] RLS allow tests pass
+- [ ] RLS deny/cross-tenant tests pass
+- [ ] Production client data is isolated from development
+- [ ] Main workflow and failure paths tested
+- [ ] Prompt-injection test passes
+- [ ] RED/BLACK action controls pass
+- [ ] Golden Tests pass at agreed threshold
+- [ ] Token/cost and step limits configured
+- [ ] Cost per successful task measured
+- [ ] External integrations tested from Railway
+- [ ] Logs checked for errors/timeouts/data leakage
+- [ ] Backups exist and restore path is understood
+- [ ] Retention/deletion and data flow map are current
+- [ ] Rollback path is known
+- [ ] Pilot user can complete the workflow without developer help

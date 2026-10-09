@@ -1,0 +1,22 @@
+# USST build with the local Scrapling runtime; acquisition remains opt-in.
+FROM node:24-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN npm install -g pnpm@11.25.0
+WORKDIR /app
+COPY . .
+RUN python3 -m venv /opt/scrapling \
+    && /opt/scrapling/bin/pip install --no-cache-dir -r scripts/scrapling/requirements.lock
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/scrapling-browsers
+RUN /opt/scrapling/bin/python -m playwright install --with-deps chromium
+RUN SCRAPLING_BROWSER_SMOKE=true /opt/scrapling/bin/python scripts/scrapling/test_fetch.py
+# Public frontend settings only. Never pass server credentials as build args.
+ARG VITE_SUPABASE_URL
+ARG VITE_SUPABASE_PUBLISHABLE_KEY
+ARG BASE_PATH=/
+RUN pnpm install --frozen-lockfile --ignore-scripts && pnpm run build
+ENV NODE_ENV=production \
+    SCRAPLING_PYTHON=/opt/scrapling/bin/python \
+    SCRAPLING_SCRIPT=/app/scripts/scrapling/fetch.py
+WORKDIR /app/artifacts/api-server
+CMD ["node", "--enable-source-maps", "./dist/index.mjs"]
