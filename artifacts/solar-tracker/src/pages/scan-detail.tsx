@@ -9,10 +9,19 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { format } from "date-fns";
-import { ArrowLeft, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Filter } from "lucide-react";
 import { useState } from "react";
 
 type ScanResultFilter = "scan_period" | "all" | "new" | "updated" | "inventory_observed";
+
+const REJECTION_REASON_LABELS = [
+  ["missing-capacity", "Missing capacity"],
+  ["below-minimum-capacity", "Below 5 MW"],
+  ["wind-project", "Wind project"],
+  ["no-solar-component", "No solar component"],
+  ["outside-target-region", "Outside AU/NZ"],
+  ["noisy-name", "News/noise, not a project"],
+] as const;
 
 export default function ScanDetail() {
   const [resultFilter, setResultFilter] = useState<ScanResultFilter>("scan_period");
@@ -355,6 +364,47 @@ export default function ScanDetail() {
             </TableBody>
           </Table>
         </div>
+
+        {/* Quality gate: projects this scan found but did not keep, and why */}
+        {scan.rejectionSummary && scan.rejectionSummary.totalRejected > 0 && (
+          <div className="border rounded-lg bg-card overflow-hidden shadow-sm">
+            <div className="px-4 py-3 border-b bg-muted/50 flex items-center gap-2">
+              <Filter className="h-4 w-4 text-muted-foreground" />
+              <h2 className="font-semibold text-sm">
+                Quality gate — {scan.rejectionSummary.totalRejected} found but not kept
+              </h2>
+            </div>
+
+            <div className="p-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+              {REJECTION_REASON_LABELS.map(([key, label]) => (
+                <div key={key} className="text-center">
+                  <div className="text-xl font-mono font-bold">
+                    {scan.rejectionSummary?.[key] ?? 0}
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-0.5">{label}</div>
+                </div>
+              ))}
+            </div>
+
+            {scan.rejectionSummary.topMissingCapacitySources.length > 0 && (
+              <div className="border-t">
+                <div className="px-4 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  Sources losing the most to a missing capacity figure
+                </div>
+                <Table>
+                  <TableBody>
+                    {scan.rejectionSummary.topMissingCapacitySources.map((row) => (
+                      <TableRow key={row.sourceName} className="hover:bg-muted/50">
+                        <TableCell className="text-sm">{row.sourceName}</TableCell>
+                        <TableCell className="text-right font-mono text-sm w-24">{row.count}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </Layout>
   );

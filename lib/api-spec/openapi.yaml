@@ -730,6 +730,37 @@ components:
           type: ["string", "null"]
         endDate:
           type: ["string", "null"]
+        rejectionSummary:
+          description: Scan-wide quality-gate rejection breakdown for this scan only. Null for scans run before this field existed, or for a scan that failed before completing.
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [totalRejected, "noisy-name", "outside-target-region", "missing-capacity", "below-minimum-capacity", "wind-project", "no-solar-component", topMissingCapacitySources]
+              properties:
+                totalRejected:
+                  type: integer
+                noisy-name:
+                  type: integer
+                outside-target-region:
+                  type: integer
+                missing-capacity:
+                  type: integer
+                below-minimum-capacity:
+                  type: integer
+                wind-project:
+                  type: integer
+                no-solar-component:
+                  type: integer
+                topMissingCapacitySources:
+                  type: array
+                  items:
+                    type: object
+                    required: [sourceName, count]
+                    properties:
+                      sourceName:
+                        type: string
+                      count:
+                        type: integer
 
     ScanInput:
       type: object

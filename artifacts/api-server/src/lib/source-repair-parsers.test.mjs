@@ -163,3 +163,23 @@ test("fails clearly if AEMO changes the required workbook columns", () => {
     /header row not found/,
   );
 });
+
+test("reads a header-labelled REZ access-rights table with bare MW numbers and skips non-solar rows", () => {
+  const html = `
+    <table>
+      <thead><tr><th>Project</th><th>Technology</th><th>Capacity (MW)</th><th>Proponent</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Birriwa Solar</td><td>Solar</td><td>600</td><td>ACEN Australia</td><td>Access rights granted</td></tr>
+        <tr><td>Tallawang Solar Hybrid</td><td>Solar hybrid (solar and battery)</td><td>500</td><td>Potentia Energy</td><td>Access rights granted</td></tr>
+        <tr><td>Cobbora Battery Energy Storage System</td><td>BESS</td><td>400</td><td>Pacific Partnerships</td><td>Access rights granted</td></tr>
+        <tr><td>Valley of the Winds</td><td>Wind</td><td>1,332</td><td>ACEN Australia</td><td>Access rights granted</td></tr>
+      </tbody>
+    </table>`;
+  const candidates = parseOfficialProjectHtml(html, "https://www.energyco.nsw.gov.au/projects/rez/").map((candidate) => ({ ...candidate, country: "AU" }));
+  assert.deepEqual(candidates.map(({ name }) => name), ["Birriwa Solar", "Tallawang Solar Hybrid"]);
+  assert.equal(candidates[0].capacityMw, 600);
+  assert.equal(candidates[0].developer, "ACEN Australia");
+  assert.equal(candidates[0].status, "under_development");
+  const eligible = filterEligibleScanProjects(candidates);
+  assert.equal(eligible.length, 2);
+});

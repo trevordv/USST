@@ -13,6 +13,7 @@ import { cachedSourceFallback, hashMeaningfulSourceContent, hashSourceContent } 
 import { isEligibleScanProject } from "./project-eligibility.ts";
 import { recordOpenAiCacheHit } from "./openai-usage.ts";
 import { OpenAiQualityError, runOpenAiEscalation } from "./openai-escalation.ts";
+import { allowedHostsFor, enrichProjectsFromDetailPages, type EnrichableProject } from "./detail-enrichment.ts";
 
 const PORTAL_BASE = "https://epbcpublicportal.environment.gov.au";
 const ARCGIS_LAYER_URL =
@@ -705,6 +706,71 @@ export function mergeEpbcRecordDetails(
   return merged;
 }
 
+// ── Detail-page capacity enrichment ─────────────────────────────────────────
+
+interface EpbcDetailCandidate extends EnrichableProject {
+  epbcNumber: string;
+}
+
+/**
+ * ArcGIS never carries an MW field — "unresolved" solar records have no
+ * capacity because the description is synthesised from Category/Stage/Status
+ * text only. Before paying for an AI web-search call, read each record's own
+ * official referral-detail page (deterministic, free, same official host)
+ * and try to read its capacity from the real project description there.
+ */
+async function enrichUnresolvedSolarCapacityFromDetailPages(
+  unresolved: readonly EpbcRecord[],
+  fetchImplementation: FetchImplementation,
+): Promise<{ resolved: Map<string, number>; attempted: number; enriched: number }> {
+  const solarCandidates = unresolved.filter(
+    (record) => record.isSolar && record.sizeMw === null && record.sourceUrl,
+  );
+  if (solarCandidates.length === 0) return { resolved: new Map(), attempted: 0, enriched: 0 };
+
+  const wrappers: EpbcDetailCandidate[] = solarCandidates.map((record) => ({
+    epbcNumber: record.epbcNumber,
+    sourceUrl: record.sourceUrl as string,
+    capacityMw: null,
+    developer: null,
+    location: null,
+    description: record.rawDescription ?? "",
+    status: "announced",
+  }));
+
+  const allowedHosts = allowedHostsFor([PORTAL_BASE]);
+  let stats: { attempted: number; enriched: number };
+  try {
+    stats = await enrichProjectsFromDetailPages(wrappers, {
+      allowedHosts,
+      fetchPage: async (url) => {
+        const res = await fetchImplementation(url, {
+          headers: {
+            Accept: "text/html",
+            "User-Agent": "Mozilla/5.0 (compatible; SolarScout/1.0)",
+          },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!res.ok) throw new Error(`EPBC detail page HTTP ${res.status}`);
+        return res.text();
+      },
+    });
+  } catch (err) {
+    logger.warn({ err }, "EPBC: detail-page capacity enrichment failed; continuing to AI fallback");
+    return { resolved: new Map(), attempted: 0, enriched: 0 };
+  }
+
+  const resolved = new Map<string, number>();
+  for (const wrapper of wrappers) {
+    if (wrapper.capacityMw != null) resolved.set(wrapper.epbcNumber, wrapper.capacityMw);
+  }
+  logger.info(
+    { candidates: solarCandidates.length, attempted: stats.attempted, enriched: stats.enriched },
+    "EPBC: detail-page capacity enrichment complete",
+  );
+  return { resolved, attempted: stats.attempted, enriched: stats.enriched };
+}
+
 export async function fetchEpbcRecords(
   startDate?: string,
   endDate?: string,
@@ -723,7 +789,7 @@ export async function fetchEpbcRecords(
         ? await loadPriorEpbcRecords(candidates.map(record => record.epbcNumber))
         : []);
     const plan = planEpbcEnrichment(candidates, priorRecords);
-    const records = plan.records;
+    let records = plan.records;
     logger.info({
       totalCandidates: plan.totalCandidates,
       deterministicallyResolved: plan.deterministicallyResolved,
@@ -731,14 +797,29 @@ export async function fetchEpbcRecords(
       unresolved: plan.unresolved.length,
     }, "EPBC: deterministic resolution complete");
 
-    if (supplementStructuredRecords && plan.unresolved.length > 0) {
+    // Read each unresolved solar record's own official detail page before
+    // spending an AI call — ArcGIS never carries an MW field, so this is
+    // usually how a genuine capacity figure is found at all.
+    let unresolved = plan.unresolved;
+    if (unresolved.length > 0) {
+      const detailResult = await enrichUnresolvedSolarCapacityFromDetailPages(unresolved, fetchImplementation);
+      if (detailResult.resolved.size > 0) {
+        records = records.map((record) => {
+          const detailMw = detailResult.resolved.get(record.epbcNumber);
+          return detailMw != null ? { ...record, sizeMw: detailMw } : record;
+        });
+        unresolved = unresolved.filter((record) => !detailResult.resolved.has(record.epbcNumber));
+      }
+    }
+
+    if (supplementStructuredRecords && unresolved.length > 0) {
       try {
-        const supplemental = fallbackResult(await fallback(startDate, endDate, plan.unresolved));
+        const supplemental = fallbackResult(await fallback(startDate, endDate, unresolved));
         const merged = mergeEpbcRecordDetails(records, supplemental.records);
         logger.info(
           { totalCandidates: plan.totalCandidates, deterministicallyResolved: plan.deterministicallyResolved,
             duplicatesRemoved: plan.duplicatesRemoved, cached: supplemental.cached,
-            unresolved: plan.unresolved.length, aiCalls: supplemental.aiCalls,
+            unresolved: unresolved.length, aiCalls: supplemental.aiCalls,
             finalEligibleProjects: merged.filter(isEligibleEpbcRecord).length },
           "EPBC: unresolved enrichment complete",
         );

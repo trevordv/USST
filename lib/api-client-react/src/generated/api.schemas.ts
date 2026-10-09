@@ -150,6 +150,23 @@ export const ScanRunStatus = {
   failed: 'failed',
 } as const;
 
+/**
+ * Scan-wide quality-gate rejection breakdown for this scan only. Null for scans run before this field existed, or for a scan that failed before completing.
+ */
+export type ScanRunRejectionSummary = null | {
+  totalRejected: number;
+  'noisy-name': number;
+  'outside-target-region': number;
+  'missing-capacity': number;
+  'below-minimum-capacity': number;
+  'wind-project': number;
+  'no-solar-component': number;
+  topMissingCapacitySources: {
+  sourceName: string;
+  count: number;
+}[];
+};
+
 export interface ScanRun {
   id: number;
   status: ScanRunStatus;
@@ -165,6 +182,8 @@ export interface ScanRun {
   startDate?: string | null;
   /** @nullable */
   endDate?: string | null;
+  /** Scan-wide quality-gate rejection breakdown for this scan only. Null for scans run before this field existed, or for a scan that failed before completing. */
+  rejectionSummary?: ScanRunRejectionSummary;
 }
 
 export interface ScanInput {

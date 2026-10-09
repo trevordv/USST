@@ -7,7 +7,7 @@ import {
 } from "./concurrency.ts";
 
 test("USST keeps the specified scan and contact worker caps", () => {
-  assert.equal(GENERIC_SCAN_WORKERS, 4);
+  assert.equal(GENERIC_SCAN_WORKERS, 8);
   assert.equal(CONTACT_DOMAIN_WORKERS, 3);
 });
 

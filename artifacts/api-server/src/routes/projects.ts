@@ -40,7 +40,8 @@ function buildWhereConditions(
 
   // ── Permanent quality filters ──────────────────────────────
   // No wind projects
-  conditions.push(not(ilike(projectsTable.name, "%wind%")));
+  // Word-end match so "Windsor" or "Windermere" solar farms are not hidden.
+  conditions.push(sql`${projectsTable.name} !~* 'wind\\M'`);
   // Only AU and NZ
   conditions.push(inArray(projectsTable.country, ["AU", "NZ"]));
   // Utility-scale gate: ≥5 MW.

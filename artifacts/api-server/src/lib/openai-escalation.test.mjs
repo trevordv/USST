@@ -4,14 +4,14 @@ import {
   OPENAI_ESCALATION_MODELS, OpenAiQualityError, runOpenAiEscalation,
 } from "./openai-escalation.ts";
 
-function harness(outputs, operation = "source_fallback", maxAttempts) {
+function harness(outputs, operation = "source_fallback", maxAttempts, retryOnEmpty) {
   const calls = [];
   const events = [];
   const ledger = [];
   return {
     calls, events, ledger,
     run: () => runOpenAiEscalation({
-      context: { operation, sourceName: "Official source" }, maxAttempts,
+      context: { operation, sourceName: "Official source" }, maxAttempts, retryOnEmpty,
       request: async model => {
         calls.push(model);
         const value = outputs[calls.length - 1];
@@ -41,6 +41,30 @@ test("Luna valid result terminates without escalation", async () => {
 
 test("Luna valid empty array terminates without escalation", async () => {
   const h = harness(["[]"]);
+  assert.deepEqual(await h.run(), []);
+  assert.deepEqual(h.calls, ["gpt-5.6-luna"]);
+});
+
+test("retryOnEmpty escalates once past a clean empty Luna result, then accepts a second empty result", async () => {
+  const h = harness(["[]", "[]"], "source_fallback", undefined, true);
+  assert.deepEqual(await h.run(), []);
+  assert.deepEqual(h.calls, ["gpt-5.6-luna", "gpt-5.6-terra"]);
+});
+
+test("retryOnEmpty stops escalating as soon as a non-empty result is found", async () => {
+  const h = harness(["[]", '[{"name":"Solar"}]'], "source_fallback", undefined, true);
+  assert.equal((await h.run()).length, 1);
+  assert.deepEqual(h.calls, ["gpt-5.6-luna", "gpt-5.6-terra"]);
+});
+
+test("retryOnEmpty never retries a second time just because the escalated attempt is also empty", async () => {
+  const h = harness(["[]", "[]", "[]"], "source_fallback", undefined, true);
+  assert.deepEqual(await h.run(), []);
+  assert.deepEqual(h.calls, ["gpt-5.6-luna", "gpt-5.6-terra"]);
+});
+
+test("without retryOnEmpty a clean empty Luna result still terminates immediately", async () => {
+  const h = harness(["[]"], "source_fallback", undefined, false);
   assert.deepEqual(await h.run(), []);
   assert.deepEqual(h.calls, ["gpt-5.6-luna"]);
 });

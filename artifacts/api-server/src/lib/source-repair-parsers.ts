@@ -19,11 +19,96 @@ const stripMarkup = (value: string): string =>
 const extractCapacity = (value: string): number | null => extractCapacityMw(value);
 
 function determineStatus(value: string): "announced" | "under_development" {
-  return /approved|committed|assessment|construction|development|planning|consent/i.test(
+  return /approved|committed|assessment|construction|development|planning|consent|access rights/i.test(
     value,
   )
     ? "under_development"
     : "announced";
+}
+
+const HEADER_COLUMNS = {
+  name: /^(?:project(?: name)?|name|facility|site)\b/i,
+  capacity: /capacity|\bmw\b|\bgw\b|size/i,
+  technology: /technology|\btype\b|fuel/i,
+  developer: /proponent|developer|applicant|owner|company|operator/i,
+  location: /region|location|state|area|council|district/i,
+  status: /status|stage|phase/i,
+} as const;
+
+/**
+ * Parse tables whose header row labels the columns (for example a REZ access
+ * rights table with Project | Technology | Capacity (MW) | Proponent | Status).
+ * Capacity may be a bare number when the header carries the unit. Rows are kept
+ * only when the technology or project name indicates a solar component; the
+ * shared eligibility gate still enforces the minimum size and region rules.
+ */
+function parseHeaderedProjectTables(
+  html: string,
+  pageUrl: string,
+): SourceRepairCandidate[] {
+  const results: SourceRepairCandidate[] = [];
+  for (const table of html.matchAll(/<table[\s\S]*?<\/table>/gi)) {
+    const rows = [...table[0].matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)].map(
+      (match) => match[1],
+    );
+    const cellsOf = (row: string) =>
+      [...row.matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi)].map((match) =>
+        stripMarkup(match[1]),
+      );
+    const headerIndex = rows.findIndex((row) => /<th[\s>]/i.test(row));
+    if (headerIndex < 0) continue;
+    const headers = cellsOf(rows[headerIndex]);
+    const column = (key: keyof typeof HEADER_COLUMNS) =>
+      headers.findIndex((header) => HEADER_COLUMNS[key].test(header));
+    const nameIndex = column("name");
+    const capacityIndex = column("capacity");
+    if (nameIndex < 0 || capacityIndex < 0) continue;
+    const technologyIndex = column("technology");
+    const developerIndex = column("developer");
+    const locationIndex = column("location");
+    const statusIndex = column("status");
+    const headerIsGw = /\bgw\b/i.test(headers[capacityIndex]);
+
+    for (const row of rows.slice(headerIndex + 1)) {
+      const cells = cellsOf(row);
+      const name = cells[nameIndex]?.slice(0, 180);
+      if (!name || name.length < 5) continue;
+      const technology = technologyIndex >= 0 ? (cells[technologyIndex] ?? "") : "";
+      if (!/\b(?:solar|photovoltaic|pv)\b/i.test(`${technology} ${name}`)) continue;
+
+      const capacityCell = cells[capacityIndex] ?? "";
+      const withUnit = extractCapacity(capacityCell);
+      const bare = Number(capacityCell.replace(/,/g, ""));
+      const capacityMw =
+        withUnit ??
+        (Number.isFinite(bare) && capacityCell.trim() !== ""
+          ? headerIsGw ? bare * 1_000 : bare
+          : null);
+      if (capacityMw == null) continue;
+
+      const link = row.match(/href=["']([^"']+)["']/i)?.[1];
+      let sourceUrl = pageUrl;
+      if (link) {
+        try {
+          sourceUrl = new URL(link, pageUrl).href;
+        } catch {
+          /* retain the official page URL */
+        }
+      }
+      const status = statusIndex >= 0 ? (cells[statusIndex] ?? "") : "";
+      results.push({
+        name,
+        description: stripMarkup(row).slice(0, 600),
+        capacityMw,
+        developer: developerIndex >= 0 ? cells[developerIndex] || null : null,
+        location: locationIndex >= 0 ? cells[locationIndex] || null : null,
+        status: determineStatus(`${status} ${technology}`),
+        sourceUrl,
+        announcedDate: null,
+      });
+    }
+  }
+  return results;
 }
 
 /**
@@ -40,8 +125,11 @@ export function parseOfficialProjectHtml(
       /<h[2-4][^>]*>([\s\S]*?)<\/h[2-4]>([\s\S]*?)(?=<h[2-4][^>]*>|$)/gi,
     ),
   ];
-  const results: SourceRepairCandidate[] = [];
-  const seen = new Set<string>();
+  const results: SourceRepairCandidate[] = parseHeaderedProjectTables(
+    html,
+    pageUrl,
+  );
+  const seen = new Set<string>(results.map((result) => result.name.toLowerCase()));
 
   for (const section of sections) {
     const raw = section.slice(1).filter(Boolean).join(" ");
