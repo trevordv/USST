@@ -89,7 +89,7 @@ import {
   FirecrawlAcquisitionError,
 } from "./firecrawl";
 import { apifySourceConfigured, fetchApprovedSourceWithApify } from "./apify-source";
-import { inferKnownDeveloperFromText, matchKnownContact, type KnownContact } from "./contact-fallback.ts";
+import { inferKnownDeveloperFromText, matchKnownContact, planMissingContactFieldUpdates, type KnownContact } from "./contact-fallback.ts";
 import { fetchApprovedWithScrapling, planScraplingTargets, ScraplingResponseError } from "./scrapling.ts";
 import { parseScraplingNewsPage } from "./scrapling-news.ts";
 import {
@@ -4178,6 +4178,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       contactEmail: projectsTable.contactEmail,
       contactPhone: projectsTable.contactPhone,
     }).from(projectsTable);
+    const existingProjectById = new Map(existingRows.map((row) => [row.id, row]));
     for (const r of existingRows) {
       existingDateById.set(r.id, r.announcedDate);
       if (r.sourceUrl) {
@@ -4385,6 +4386,26 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
               scanId,
             }).returning({ id: projectsTable.id });
             persistedProjectId = inserted.id;
+          } else {
+            // Existing records may predate the developer/contact evidence
+            // recovery path. Fill only blank fields from the current source's
+            // deterministic developer evidence or a known exact-company
+            // contact; never replace an existing verified contact.
+            const existing = existingProjectById.get(persistedProjectId);
+            if (existing) {
+              const fallback = project.developer
+                ? knownContact ?? matchFallbackContact(project.developer, pvhContacts)
+                : null;
+              const updates: Partial<typeof projectsTable.$inferInsert> = planMissingContactFieldUpdates(
+                existing,
+                project.developer,
+                fallback,
+              );
+              if (Object.keys(updates).length > 0) {
+                await tx.update(projectsTable).set(updates).where(eq(projectsTable.id, persistedProjectId));
+                Object.assign(existing, updates);
+              }
+            }
           }
 
           if (persistedProjectId == null) {

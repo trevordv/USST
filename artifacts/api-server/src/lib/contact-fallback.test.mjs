@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { inferKnownDeveloperFromText, matchKnownContact } from "./contact-fallback.ts";
+import { inferKnownDeveloperFromText, matchKnownContact, planMissingContactFieldUpdates } from "./contact-fallback.ts";
 import { extractDeveloper } from "./source-heuristics.ts";
 
 test("infers a unique known developer from article text", () => {
@@ -19,12 +19,46 @@ test("does not guess when equally strong known organisations are both present", 
   assert.equal(developer, null);
 });
 
+test("infers a unique short registered developer identifier, but not a short alphabetic name", () => {
+  assert.equal(
+    inferKnownDeveloperFromText(
+      "e-Storage will supply the battery system for OX2 at the Muswellbrook hybrid solar farm.",
+      ["OX2", "AGL"],
+    ),
+    "OX2",
+  );
+  assert.equal(
+    inferKnownDeveloperFromText("AGL partners on an unrelated project.", ["AGL"]),
+    null,
+  );
+});
+
 test("reuses the most complete exact-company known contact", () => {
   const contact = matchKnownContact("Squadron", [
     { organizationName: "Squadron Energy", name: "Contact One", email: "one@example.com", phone: null },
     { organizationName: "Squadron Energy", name: "Contact Two", email: "two@example.com", phone: "+61 2 0000 0000" },
   ]);
   assert.equal(contact?.name, "Contact Two");
+});
+
+test("fills missing developer/contact fields from exact company evidence without replacing existing values", () => {
+  const fallback = { organizationName: "OX2", name: "Test Contact", email: "contact@example.test", phone: null };
+  assert.deepEqual(
+    planMissingContactFieldUpdates(
+      { developer: null, contactName: null, contactEmail: "", contactPhone: null },
+      "OX2",
+      fallback,
+    ),
+    { developer: "OX2", contactName: "Test Contact", contactEmail: "contact@example.test" },
+  );
+  assert.deepEqual(
+    planMissingContactFieldUpdates(
+      { developer: "OX2", contactName: "Verified Contact", contactEmail: "verified@example.test", contactPhone: "+61 2 0000 0000" },
+      "Different developer",
+      fallback,
+    ),
+    {},
+  );
 });
 
 test("developer extraction accepts company-led lands headlines", () => {
