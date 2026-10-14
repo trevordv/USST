@@ -164,6 +164,16 @@ test("fails clearly if AEMO changes the required workbook columns", () => {
   );
 });
 
+test("AEMO inventory rows retain an unknown announcement date", () => {
+  const rows = [
+    ["Generator information"],
+    ["Site Name", "Site Owner", "Region", "Max Site Capacity (AC)", "Technology Type", "Technology Detail", "Aggregated Nameplate Capacity (MW AC)", "Commitment Status"],
+    ["Yoorndoo Ilga Solar", "Yoorndoo Ilga Solar Pty Ltd", "SA1", 250, "Solar", "PV", 250, "Publicly Announced"],
+  ];
+  const [candidate] = parseAemoGenerationRows(rows, "https://www.aemo.com.au/generation.xlsx", null);
+  assert.equal(candidate.announcedDate, null);
+});
+
 test("reads a header-labelled REZ access-rights table with bare MW numbers and skips non-solar rows", () => {
   const html = `
     <table>
