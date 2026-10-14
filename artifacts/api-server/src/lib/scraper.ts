@@ -89,7 +89,7 @@ import {
   FirecrawlAcquisitionError,
 } from "./firecrawl";
 import { apifySourceConfigured, fetchApprovedSourceWithApify } from "./apify-source";
-import { inferKnownDeveloperFromText, matchKnownContact, type KnownContact } from "./contact-fallback.ts";
+import { inferKnownDeveloperFromText, matchKnownContact, planMissingContactFieldUpdates, type KnownContact } from "./contact-fallback.ts";
 import { fetchApprovedWithScrapling, planScraplingTargets, ScraplingResponseError } from "./scrapling.ts";
 import { parseScraplingNewsPage } from "./scrapling-news.ts";
 import {
@@ -2640,11 +2640,11 @@ async function callLushaProspecting(
 
 /**
  * Enrich projects that are missing personal contact details.
- * Phase 1:    Scrape developer/project websites directly.
- * Phase 2:    Apify Google Search → visit top result URLs.
- * Phase 2.5a: Lusha search-and-enrich for contacts where we already have a person name.
- * Phase 2.5b: Lusha Prospecting for companies where we have no person name at all.
- * Phase 3:    LinkedIn profile search for developers with generic contacts.
+ * 1. Exact known-company contacts are applied during scan persistence.
+ * 2. Scrape developer/project websites directly.
+ * 3. Apify Google Search → visit top result URLs.
+ * 4. LinkedIn profile search for developers with generic contacts.
+ * 5. Lusha search/prospecting only as the final paid fallback.
  */
 export async function enrichMissingContacts(runId?: number, requestedOptions: Partial<LushaRunOptions> = {}): Promise<{ checked: number; updated: number }> {
   const enrichmentStartedAt = performance.now();
@@ -2792,11 +2792,9 @@ export async function enrichMissingContacts(runId?: number, requestedOptions: Pa
     ...phaseOneMisses.filter((entry): entry is [string, GroupEntry] => entry !== null),
   );
 
-  // Lusha is the primary paid contact provider. Run it before the existing
-  // Apify/LinkedIn fallback paths; dry runs deliberately make no Lusha calls.
+  // Lusha is a final paid fallback. Direct/official-page research, Google
+  // results and LinkedIn get the first opportunity to resolve a contact.
   const lushaKey = process.env.LUSHA_API_KEY;
-  const lushaPool = noDomainGroups.filter(([key]) => !enrichedKeys.has(key));
-  await runLushaFirst();
 
   // ── Phase 2: Apify Google Search for developers without a known domain ────
   const token = process.env.APIFY_API_TOKEN;
@@ -2873,9 +2871,8 @@ export async function enrichMissingContacts(runId?: number, requestedOptions: Pa
     }
   }
 
-  // Lusha implementation is declared below but invoked before the existing
-  // fallback providers above, keeping their behavior otherwise unchanged.
-  async function runLushaFirst(): Promise<void> {
+  async function runLushaLast(): Promise<void> {
+  const lushaPool = noDomainGroups.filter(([key]) => !enrichedKeys.has(key));
   if (lushaPool.length > 0 && !lushaKey) {
     logger.warn(
       { phase: "Lusha enrichment", outcome: "skipped-missing-credentials", missing: ["LUSHA_API_KEY"] },
@@ -3070,6 +3067,11 @@ export async function enrichMissingContacts(runId?: number, requestedOptions: Pa
       logger.warn({ err }, "Contact enrichment: Phase 3 LinkedIn failed");
     }
   }
+
+  // Only unresolved developer groups reach the paid provider. The existing
+  // administrator approval, dry-run and credit-budget checks remain inside
+  // this final fallback.
+  await runLushaLast();
 
   logger.info(
     {
@@ -4180,6 +4182,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       contactEmail: projectsTable.contactEmail,
       contactPhone: projectsTable.contactPhone,
     }).from(projectsTable);
+    const existingProjectById = new Map(existingRows.map((row) => [row.id, row]));
     for (const r of existingRows) {
       existingDateById.set(r.id, r.announcedDate);
       if (r.sourceUrl) {
@@ -4387,6 +4390,26 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
               scanId,
             }).returning({ id: projectsTable.id });
             persistedProjectId = inserted.id;
+          } else {
+            // Existing records may predate the developer/contact evidence
+            // recovery path. Fill only blank fields from the current source's
+            // deterministic developer evidence or a known exact-company
+            // contact; never replace an existing verified contact.
+            const existing = existingProjectById.get(persistedProjectId);
+            if (existing) {
+              const fallback = project.developer
+                ? knownContact ?? matchFallbackContact(project.developer, pvhContacts)
+                : null;
+              const updates: Partial<typeof projectsTable.$inferInsert> = planMissingContactFieldUpdates(
+                existing,
+                project.developer,
+                fallback,
+              );
+              if (Object.keys(updates).length > 0) {
+                await tx.update(projectsTable).set(updates).where(eq(projectsTable.id, persistedProjectId));
+                Object.assign(existing, updates);
+              }
+            }
           }
 
           if (persistedProjectId == null) {
