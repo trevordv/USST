@@ -3364,12 +3364,13 @@ function sourceRepairCandidatesToProjects(
   source: ScrapeSource,
   startDate?: string,
   endDate?: string,
-  preserveMissingDate = false,
 ): ScrapedProject[] {
-  const today = new Date().toISOString().slice(0, 10);
   return candidates.flatMap((candidate) => {
-    if (preserveMissingDate && !candidate.announcedDate && (startDate || endDate)) return [];
-    const announcedDate = candidate.announcedDate ?? (preserveMissingDate ? null : today);
+    // Structured current-inventory sources often lack an event date.  A scan
+    // timestamp is not announcement evidence, so bounded scans must exclude
+    // those rows rather than treating them as announced today.
+    if (!candidate.announcedDate && (startDate || endDate)) return [];
+    const announcedDate = candidate.announcedDate ?? null;
     if (startDate && announcedDate && announcedDate < startDate) return [];
     if (endDate && announcedDate && announcedDate > endDate) return [];
     const project: ScrapedProject = {
@@ -3408,9 +3409,10 @@ async function scrapeAemoGenerationWorkbook(
   const workbook = Buffer.from(await response.arrayBuffer());
   try {
     const rows = await readAemoGenerationWorkbookRows(workbook);
-    const today = new Date().toISOString().slice(0, 10);
     return sourceRepairCandidatesToProjects(
-      parseAemoGenerationRows(rows, AEMO_GENERATION_WORKBOOK_URL, today),
+      // AEMO's Generator Information workbook is current inventory. It has no
+      // per-row announcement date, so it may not create a bounded scan event.
+      parseAemoGenerationRows(rows, AEMO_GENERATION_WORKBOOK_URL, null),
       source,
       startDate,
       endDate,
@@ -3591,7 +3593,7 @@ async function scrapeSource(
     await extract("direct-structured-html", source.searchUrl,
       () => fetchForSource(source, source.searchUrl), html => {
         assertSourceDocument(html, "structured-html");
-        return sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, source.searchUrl), source, startDate, endDate, true);
+        return sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, source.searchUrl), source, startDate, endDate);
       });
   } else if (strategy.mode === "aemo-workbook") {
     await extract("aemo-workbook", AEMO_GENERATION_WORKBOOK_URL,
@@ -3603,7 +3605,7 @@ async function scrapeSource(
     await extract("direct-structured-html", source.searchUrl,
       () => fetchForSource(source, source.searchUrl), html => {
         assertSourceDocument(html, "structured-html");
-        return sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, source.searchUrl), source, startDate, endDate, true);
+        return sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, source.searchUrl), source, startDate, endDate);
       });
   } else {
     if (strategy.mode !== "structured-html" && source.feedUrl) {
@@ -3718,7 +3720,7 @@ async function scrapeSource(
       }, html => {
         if (format === "html") return parseScraplingNewsPage(html, source, startDate, endDate, target);
         assertSourceDocument(html, format);
-        const items = sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, target), source, startDate, endDate, true);
+        const items = sourceRepairCandidatesToProjects(parseOfficialProjectHtml(html, target), source, startDate, endDate);
         if (!items.length && classifyManagedZeroResult(source.name, html) === "unresolved") {
           throw new SourceExtractionError("requires-js-or-ai-repair", "Scrapling document still requires project normalisation");
         }
@@ -3837,7 +3839,7 @@ async function scrapeSource(
         return target.format === "rss"
           ? parseRssFeed(text, source, startDate, endDate)
           : target.format === "structured-html"
-            ? sourceRepairCandidatesToProjects(parseOfficialProjectHtml(text, target.url), source, startDate, endDate, true)
+            ? sourceRepairCandidatesToProjects(parseOfficialProjectHtml(text, target.url), source, startDate, endDate)
             : parseHtmlPage(text, source, startDate, endDate, target.url);
       });
     const brightAttempt = attempts.at(-1);

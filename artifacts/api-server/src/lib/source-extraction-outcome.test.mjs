@@ -339,12 +339,20 @@ test("eligibility rejection after a successful direct parse never triggers paid 
   }
 });
 
-test("Bright Data structured candidates preserve missing dates and bounded-window safety", () => {
+test("structured candidates preserve missing dates and bounded-window safety", () => {
   const candidate = { ...project, announcedDate: null };
   const source = { name: "RenewMap", country: "AU" };
-  assert.deepEqual(mapCandidates([candidate], source, "2026-08-01", "2026-08-31", true), []);
-  assert.equal(mapCandidates([candidate], source, undefined, undefined, true)[0].announcedDate, null);
-  assert.equal(mapCandidates([{ ...candidate, announcedDate: "2026-08-15" }], source, "2026-08-01", "2026-08-31", true).length, 1);
+  assert.deepEqual(mapCandidates([candidate], source, "2026-08-01", "2026-08-31"), []);
+  assert.equal(mapCandidates([candidate], source, undefined, undefined)[0].announcedDate, null);
+  assert.equal(mapCandidates([{ ...candidate, announcedDate: "2026-08-15" }], source, "2026-08-01", "2026-08-31").length, 1);
+});
+
+test("RUN-0129: current AEMO inventory cannot be stamped as an announcement on the scan day", () => {
+  const aemoInventoryCandidate = { ...project, sourceUrl: "https://www.aemo.com.au/generation.xlsx#site=Yoorndoo%20Ilga", announcedDate: null };
+  const source = { name: "AEMO", country: "AU" };
+  assert.deepEqual(mapCandidates([aemoInventoryCandidate], source, "2026-10-05", "2026-10-14"), []);
+  assert.equal(mapCandidates([aemoInventoryCandidate], source)[0].announcedDate, null);
+  assert.doesNotMatch(scraper, /parseAemoGenerationRows\(rows, AEMO_GENERATION_WORKBOOK_URL, today\)/);
 });
 
 test("valid empty and historical deterministic document semantics remain intact", () => {

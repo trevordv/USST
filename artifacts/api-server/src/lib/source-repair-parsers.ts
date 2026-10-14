@@ -192,7 +192,7 @@ function finiteNumber(value: unknown): number | null {
 export function parseAemoGenerationRows(
   rows: readonly (readonly unknown[])[],
   workbookUrl: string,
-  announcedDate: string,
+  announcedDate: string | null,
 ): SourceRepairCandidate[] {
   const headerIndex = rows.findIndex((row) =>
     row.some((cell) => normalizeHeader(cell) === "site name"),
