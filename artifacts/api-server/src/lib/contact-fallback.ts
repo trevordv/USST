@@ -32,6 +32,12 @@ export interface MissingContactFieldUpdates {
   contactPhone?: string;
 }
 
+interface ContactFallbackFields {
+  name: string | null;
+  email: string;
+  phone?: string | null;
+}
+
 /**
  * Fill only absent project/developer contact fields. This deliberately never
  * replaces stored values: known-company evidence can recover historic gaps,
@@ -40,7 +46,7 @@ export interface MissingContactFieldUpdates {
 export function planMissingContactFieldUpdates(
   existing: ExistingProjectContactFields,
   developerEvidence: string | null | undefined,
-  fallback: KnownContact | null,
+  fallback: ContactFallbackFields | null,
 ): MissingContactFieldUpdates {
   const updates: MissingContactFieldUpdates = {};
   if (!existing.developer?.trim() && developerEvidence) updates.developer = developerEvidence;
