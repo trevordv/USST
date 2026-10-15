@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - migration/railway-supabase
+      - codex/**
   pull_request:
     branches:
       - migration/railway-supabase
@@ -47,6 +48,9 @@ jobs:
 
       - name: Typecheck and build
         run: pnpm run build
+
+      - name: Test suite
+        run: pnpm -r --if-present test
 
       - name: Verify staged production frontend
         run: test -f artifacts/api-server/dist/public/index.html

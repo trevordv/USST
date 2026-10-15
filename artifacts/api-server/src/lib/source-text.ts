@@ -176,6 +176,15 @@ export interface CapacityMention {
   score: number;
 }
 
+/** Capacity facets deliberately kept separate so a hybrid total is never
+ * persisted or evaluated as solar generation capacity. */
+export interface ProjectCapacityEvidence {
+  solarMw: number | null;
+  windMw: number | null;
+  bessMw: number | null;
+  bessMwh: number | null;
+}
+
 // Number: 1,200 | 1200 | 1.2 | 12.5. Unit: MW/GW/megawatt(s)/gigawatt(s), optional
 // AC/DC/p suffix. `\b` after the unit rejects MWh/GWh (energy, not power).
 const CAPACITY_MENTION_RE =
@@ -237,6 +246,44 @@ export function extractCapacityMw(text: string): number | null {
     if (mention.score > best.score) best = mention;
   }
   return best.valueMw;
+}
+
+function firstExplicitCapacity(text: string, patterns: readonly RegExp[]): number | null {
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    pattern.lastIndex = 0;
+    if (!match) continue;
+    let value = Number.parseFloat(match[1].replace(/,/g, ""));
+    if (/^g/i.test(match[2])) value *= 1_000;
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return null;
+}
+
+/**
+ * Extract only technology-labelled capacities. A figure described merely as a
+ * "600 MW hybrid project" is deliberately not solar MW: it can include wind
+ * and storage. Callers may retain the source text as provenance, but must use
+ * `solarMw` for solar eligibility and PV-sales capacity.
+ */
+export function extractProjectCapacityEvidence(text: string): ProjectCapacityEvidence {
+  const power = "(MW|GW|megawatts?|gigawatts?)";
+  const number = "([0-9][0-9,.]*)";
+  const solarMw = firstExplicitCapacity(text, [
+    new RegExp(`${number}\\s*${power}\\s*(?:AC|DC)?\\s*(?:solar(?:\\s+PV)?|photovoltaic|PV)\\b`, "i"),
+    new RegExp(`\\b(?:solar(?:\\s+PV)?|photovoltaic|PV)\\s*(?:generation|component|capacity|farm|project)?\\s*(?:of|at|is|:|-)?\\s*${number}\\s*${power}\\b`, "i"),
+  ]);
+  const windMw = firstExplicitCapacity(text, [
+    new RegExp(`${number}\\s*${power}\\s*(?:wind|wind generation|wind farm|turbines?)\\b`, "i"),
+    new RegExp(`\\b(?:wind|wind generation|wind farm)\\s*(?:component|capacity)?\\s*(?:of|at|is|:|-)?\\s*${number}\\s*${power}\\b`, "i"),
+  ]);
+  const bessMw = firstExplicitCapacity(text, [
+    new RegExp(`${number}\\s*${power}\\s*(?:\\/\\s*[0-9][0-9,.]*\\s*(?:MWh|GWh))?\\s*(?:BESS|battery(?:\\s+storage)?|energy storage)\\b`, "i"),
+  ]);
+  const bessMwh = firstExplicitCapacity(text, [
+    new RegExp(`${number}\\s*(MWh|GWh)\\s*(?:BESS|battery(?:\\s+storage)?|energy storage)\\b`, "i"),
+  ]);
+  return { solarMw, windMw, bessMw, bessMwh };
 }
 
 // ── Project-name derivation ─────────────────────────────────────────────────

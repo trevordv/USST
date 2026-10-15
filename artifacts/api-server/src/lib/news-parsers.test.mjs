@@ -31,7 +31,7 @@ test("RSS: full-article capacity is used (1,200 MW, not 200 or the 400 MWh batte
 test("RSS: statistics never become a project capacity; operational articles are excluded", () => {
   const rows = parseRssFeed(feed, source);
   const snapshot = rows.find((project) => /snapshot/i.test(project.name));
-  assert.equal(snapshot?.capacityMw ?? null, null); // "10 GW cumulative" is not a project rating
+  assert.equal(snapshot, undefined); // generic statistic headline is not a project identity
   assert.ok(!rows.some((project) => /Alpha/.test(project.name))); // "energised" / "now generating"
 });
 
@@ -99,4 +99,18 @@ test("HTML: bounded window excludes undated cards and out-of-window dates", () =
 
 test("shared capacity helper is the one used by every parser", () => {
   assert.equal(extractCapacity("a 1,200 MW solar farm"), 1200);
+});
+
+test("RUN-0119: a generic Narrogin headline resolves only its primary named asset", () => {
+  const narroginFeed = `<?xml version="1.0"?><rss><channel><item>
+    <title>Lightsource bp seeks green light for 600 MW hybrid project in WA</title>
+    <link>https://www.pv-magazine-australia.com/2026/09/23/lightsource-bp-seeks-green-light-for-600-mw-hybrid-project-in-wa/</link>
+    <pubDate>Wed, 23 Sep 2026 01:00:00 +0000</pubDate>
+    <description>The Narrogin East Renewable Energy Project proposes 150 MW solar, 250 MW wind and a 200 MW BESS. ACE Power's approved Narrogin Solar Farm is a separate development.</description>
+  </item></channel></rss>`;
+  const rows = parseRssFeed(narroginFeed, { name: "PV Magazine Australia", country: "AU", searchUrl: "https://www.pv-magazine-australia.com/" });
+  assert.deepEqual(rows.map((row) => row.name), ["Narrogin East Renewable Energy Project"]);
+  assert.equal(rows[0].capacityMw, 150);
+  assert.equal(rows[0].sourceEventDate, "2026-09-23");
+  assert.equal(rows.some((row) => /ACE Power/i.test(row.name)), false);
 });
