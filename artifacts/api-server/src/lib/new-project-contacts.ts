@@ -38,6 +38,7 @@ export interface NewProjectContactSummary {
   lushaLookups: number;
   lushaProjectsUpdated: number;
   lushaCreditsUsed: number;
+  lushaCreditsReserved: number;
   stoppedReason: "done" | "budget" | "provider-refused" | "disabled";
 }
 
@@ -71,13 +72,19 @@ export async function discoverNewProjectContacts(
   deps: {
     lusha: LushaLike | null;
     maxCredits: number;
+    /**
+     * Upper bound configured from the account's Lusha plan.  We must reserve
+     * this before a request because Lusha only reports credits after charging.
+     */
+    maxCreditsPerRequest: number;
     update: (projectId: number, fields: ContactFieldUpdate) => Promise<void>;
     log?: (event: string, fields: Record<string, unknown>) => void;
   },
 ): Promise<NewProjectContactSummary> {
   const log = deps.log ?? (() => {});
   const summary: NewProjectContactSummary = {
-    projects: rows.length, textContactsApplied: 0, lushaLookups: 0, lushaProjectsUpdated: 0, lushaCreditsUsed: 0, stoppedReason: "done",
+    projects: rows.length, textContactsApplied: 0, lushaLookups: 0, lushaProjectsUpdated: 0,
+    lushaCreditsUsed: 0, lushaCreditsReserved: 0, stoppedReason: "done",
   };
   const state = rows.map((row) => ({ ...row }));
 
@@ -97,7 +104,7 @@ export async function discoverNewProjectContacts(
   }
 
   // ── 2. Lusha for developers still lacking any email or phone ──────────────
-  if (!deps.lusha || deps.maxCredits <= 0) {
+  if (!deps.lusha || deps.maxCredits <= 0 || deps.maxCreditsPerRequest <= 0) {
     summary.stoppedReason = "disabled";
     return summary;
   }
@@ -110,20 +117,31 @@ export async function discoverNewProjectContacts(
   }
   // Developers with the most new projects first: one lookup covers them all.
   const ordered = [...groups.values()].sort((a, b) => b.length - a.length);
+  const canReserve = (requests: number): boolean =>
+    summary.lushaCreditsReserved + requests * deps.maxCreditsPerRequest <= deps.maxCredits;
+  const reserve = (requests: number): void => {
+    summary.lushaCreditsReserved += requests * deps.maxCreditsPerRequest;
+  };
 
   for (const group of ordered) {
-    if (summary.lushaCreditsUsed >= deps.maxCredits) { summary.stoppedReason = "budget"; break; }
     const developer = group[0].developer!;
     const named = group.map((row) => personParts(row.contactName)).find(Boolean) ?? null;
     let result: LushaContactResult | null = null;
     try {
-      summary.lushaLookups++;
       if (named) {
+        if (!canReserve(1)) { summary.stoppedReason = "budget"; break; }
+        reserve(1);
+        summary.lushaLookups++;
         result = await deps.lusha.findNamedPerson({ ...named, companyName: developer });
         summary.lushaCreditsUsed += Math.max(1, result?.creditsCharged ?? 0);
       }
       const namedUseful = result && (acceptedLushaEmail(result, developer) || result.phone);
-      if (!namedUseful && summary.lushaCreditsUsed < deps.maxCredits) {
+      // Company search may perform two prospecting calls (AU/NZ then global)
+      // plus one reveal. Reserve all three before asking the provider.
+      if (!namedUseful) {
+        if (!canReserve(3)) { summary.stoppedReason = "budget"; break; }
+        reserve(3);
+        summary.lushaLookups++;
         const companyResult = await deps.lusha.findCompanyContact({ companyName: developer, companyDomain: result?.companyDomain ?? null });
         summary.lushaCreditsUsed += Math.max(1, companyResult?.creditsCharged ?? 0);
         result = companyResult;

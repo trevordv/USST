@@ -94,7 +94,7 @@ test("new-project contacts: description first, one Lusha lookup per developer, b
     { id: 5, name: "Budget Solar", developer: "Late Developer", description: "", contactName: null, contactEmail: null, contactPhone: null },
   ];
   const summary = await discoverNewProjectContacts(rows, {
-    lusha, maxCredits: 3,
+    lusha, maxCredits: 4, maxCreditsPerRequest: 1,
     update: async (id, fields) => { updates.push([id, fields]); },
   });
   // Text: name for #1, phone for #4 (no Lusha needed for #4).
@@ -104,10 +104,12 @@ test("new-project contacts: description first, one Lusha lookup per developer, b
   assert.deepEqual(updates.filter(([id]) => id === 1 || id === 2).map(([, f]) => f.contactEmail).filter(Boolean), ["jane@bnrg.com", "jane@bnrg.com"]);
   // Acme: company prospecting, phone-only result kept.
   assert.deepEqual(updates.find(([id]) => id === 3)[1], { contactName: "Bea Dee", contactPhone: "+61 2 9000 0000" });
-  // Budget (3 credits) exhausted before the last developer.
+  // Four credits are reserved (one named request, then a two-step company
+  // workflow plus possible global retry), exhausting the configured budget.
   assert.equal(lookups.length, 2);
   assert.equal(summary.stoppedReason, "budget");
   assert.equal(summary.lushaCreditsUsed, 3);
+  assert.equal(summary.lushaCreditsReserved, 4);
   assert.equal(updates.some(([id]) => id === 5), false);
 });
 
@@ -117,10 +119,10 @@ test("new-project contacts: Lusha billing refusal stops further paid lookups; no
     async findCompanyContact() { throw Object.assign(new Error("402"), { status: 402 }); },
   };
   const rows = [1, 2].map((id) => ({ id, name: `P${id}`, developer: `Dev ${id}`, description: "", contactName: null, contactEmail: null, contactPhone: null }));
-  const refused = await discoverNewProjectContacts(rows, { lusha, maxCredits: 10, update: async () => {} });
+  const refused = await discoverNewProjectContacts(rows, { lusha, maxCredits: 10, maxCreditsPerRequest: 1, update: async () => {} });
   assert.equal(refused.stoppedReason, "provider-refused");
   assert.equal(refused.lushaLookups, 1);
-  const disabled = await discoverNewProjectContacts(rows, { lusha: null, maxCredits: 10, update: async () => {} });
+  const disabled = await discoverNewProjectContacts(rows, { lusha: null, maxCredits: 10, maxCreditsPerRequest: 1, update: async () => {} });
   assert.equal(disabled.stoppedReason, "disabled");
 });
 
@@ -131,6 +133,22 @@ test("new-project contacts: a Lusha email from another company's domain is not a
     async findCompanyContact() { return { name: "X Y", title: null, email: "x@unrelated.com", phone: null, companyDomain: "acme.com.au", creditsCharged: 1 }; },
   };
   await discoverNewProjectContacts([{ id: 1, name: "A", developer: "Acme Renewables", description: "", contactName: null, contactEmail: null, contactPhone: null }],
-    { lusha, maxCredits: 5, update: async (id, f) => { updates.push([id, f]); } });
+    { lusha, maxCredits: 5, maxCreditsPerRequest: 1, update: async (id, f) => { updates.push([id, f]); } });
   assert.deepEqual(updates, []);
+});
+
+test("new-project contacts: reservations prevent a company workflow from crossing the scan cap", async () => {
+  const calls = [];
+  const lusha = {
+    async findNamedPerson() { calls.push("named"); return { name: null, title: null, email: null, phone: null, companyDomain: null, creditsCharged: 1 }; },
+    async findCompanyContact() { calls.push("company"); return { name: "A B", title: null, email: null, phone: "+61 2 9000 0000", companyDomain: null, creditsCharged: 3 }; },
+  };
+  const rows = [
+    { id: 1, name: "Named", developer: "Acme", description: "Jane Citizen is project director", contactName: "Jane Citizen", contactEmail: null, contactPhone: null },
+    { id: 2, name: "Company", developer: "Beta", description: "", contactName: null, contactEmail: null, contactPhone: null },
+  ];
+  const summary = await discoverNewProjectContacts(rows, { lusha, maxCredits: 3, maxCreditsPerRequest: 1, update: async () => {} });
+  assert.deepEqual(calls, ["named"], "company workflow needs a three-request reservation and must not start");
+  assert.equal(summary.lushaCreditsReserved, 1);
+  assert.equal(summary.stoppedReason, "budget");
 });

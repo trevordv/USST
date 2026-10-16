@@ -275,6 +275,31 @@ failures block live comparison and browser/container verification. See
 - Rollback / exit path: Set `LUSHA_AUTO_ENRICH_NEW_PROJECTS=false` to stop paid
   lookups immediately; revert the PR for the rest.
 
+### 2026-10-16 — Reserve automatic Lusha scan credits before provider calls
+
+- Observed problem: `billing.creditsCharged` is returned only after Lusha has
+  processed a request. The prior post-scan code counted that response, so a
+  multi-request company workflow could start while fewer credits remained than
+  its worst-case charge.
+- Evidence / metric: The company workflow can make two prospecting calls and
+  one reveal; the prior admission check considered only credits already charged.
+- Simplest attempted fix: Keep the existing one-developer workflow and disable
+  automatic paid lookup whenever a safe request-cost bound is unavailable.
+- Decision: Require `LUSHA_MAX_CREDITS_PER_REQUEST` for automatic Lusha. Reserve
+  one bounded request for a named-person lookup and three for company
+  prospecting/reveal before calling Lusha. Record actual charged credits and
+  reserved credits separately. Free description extraction is unchanged.
+- Security / privacy impact: No additional data leaves the service. The caller
+  retains the existing business-contact and DNC checks.
+- Token / cost impact: A scan cannot begin a workflow unless its configured
+  worst-case reservation fits within `LUSHA_SCAN_MAX_CREDITS`. This may perform
+  fewer lookups than the old optimistic accounting.
+- Deployment impact: Set `LUSHA_MAX_CREDITS_PER_REQUEST` from the account plan
+  before enabling automatic Lusha. Without it, paid automatic lookup is safely
+  disabled.
+- Rollback / exit path: Set `LUSHA_AUTO_ENRICH_NEW_PROJECTS=false`, unset the
+  new variable, or revert this change. No migration or data rewrite.
+
 ### YYYY-MM-DD — Decision title
 
 - Observed problem:

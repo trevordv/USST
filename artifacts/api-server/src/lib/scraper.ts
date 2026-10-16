@@ -4232,15 +4232,20 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         const maxCredits = Number.isFinite(requestedBudget)
           ? Math.min(Math.max(Math.floor(requestedBudget), 0), MAX_LUSHA_CREDITS_PER_RUN)
           : DEFAULT_SCAN_LUSHA_CREDITS;
+        const requestedMaxPerRequest = Number(process.env.LUSHA_MAX_CREDITS_PER_REQUEST);
+        const maxCreditsPerRequest = Number.isSafeInteger(requestedMaxPerRequest) && requestedMaxPerRequest > 0
+          ? requestedMaxPerRequest
+          : 0;
         const contactSummary = await discoverNewProjectContacts(rows, {
-          lusha: lushaKey && autoLusha ? new LushaV3Client(lushaKey) : null,
+          lusha: lushaKey && autoLusha && maxCreditsPerRequest > 0 ? new LushaV3Client(lushaKey) : null,
           maxCredits,
+          maxCreditsPerRequest,
           update: async (projectId, fields) => {
             await db.update(projectsTable).set({ ...fields, updatedAt: new Date() }).where(eq(projectsTable.id, projectId));
           },
           log: (event, fields) => logger.info({ scanId, event, ...fields }, "New project contact discovery"),
         });
-        logger.info({ scanId, ...contactSummary, lushaConfigured: Boolean(lushaKey), autoLusha, maxCredits }, "New project contact discovery complete");
+        logger.info({ scanId, ...contactSummary, lushaConfigured: Boolean(lushaKey), autoLusha, maxCredits, maxCreditsPerRequest }, "New project contact discovery complete");
       }
     } catch (error) {
       logger.warn({ scanId, err: error }, "New project contact discovery failed; scan results are unaffected");
