@@ -1,6 +1,7 @@
-import { useState, useRef } from "react";
+import { useMemo, useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -27,6 +28,8 @@ import {
 } from "@/components/ui/tooltip";
 import { RefreshCw, ExternalLink, Sun, XCircle, Download, Search, Upload } from "lucide-react";
 import { format } from "date-fns";
+import { useAuth } from "@/lib/auth-context";
+import { createEpbcApiFetch, EPBC_AUTH_ERROR } from "@/lib/epbc-api";
 import { useDebounce } from "@/lib/use-debounce";
 
 const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
@@ -92,18 +95,6 @@ const AU_STATES = ["ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA", "Nationa
 
 // ── Fetch helpers ─────────────────────────────────────────────────────────────
 
-async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({})) as { error?: string };
-    throw new Error(body.error ?? `HTTP ${res.status}`);
-  }
-  return res.json() as Promise<T>;
-}
-
 function buildQuery(params: Record<string, string | undefined>): string {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
@@ -116,6 +107,8 @@ function buildQuery(params: Record<string, string | undefined>): string {
 
 export default function EpbcPage() {
   const qc = useQueryClient();
+  const { token } = useAuth();
+  const apiFetch = useMemo(() => createEpbcApiFetch(token, BASE), [token]);
   const [search, setSearch] = useState("");
   const [state, setState] = useState("all");
   const [technology, setTechnology] = useState("all");
@@ -134,16 +127,25 @@ export default function EpbcPage() {
     approvalStatus: approvalStatus !== "all" ? approvalStatus : undefined,
   });
 
-  const { data: projects = [], isLoading } = useQuery<EpbcProject[]>({
+  const {
+    data: projects = [],
+    error: projectsError,
+    isLoading,
+    refetch: refetchProjects,
+  } = useQuery<EpbcProject[]>({
     queryKey: ["epbc-projects", queryStr],
     queryFn: () => apiFetch<EpbcProject[]>(`/api/epbc/projects${queryStr}`),
+    enabled: Boolean(token),
   });
 
-  const { data: meta } = useQuery<EpbcMeta>({
+  const { data: meta, error: metaError, refetch: refetchMeta } = useQuery<EpbcMeta>({
     queryKey: ["epbc-meta"],
     queryFn: () => apiFetch<EpbcMeta>("/api/epbc/meta"),
     staleTime: 60_000,
+    enabled: Boolean(token),
   });
+
+  const loadError = token ? projectsError ?? metaError : new Error(EPBC_AUTH_ERROR);
 
   const [syncStartDate, setSyncStartDate] = useState("");
   const [syncEndDate, setSyncEndDate] = useState("");
@@ -175,18 +177,20 @@ export default function EpbcPage() {
         body: JSON.stringify(patch),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["epbc-projects"] }),
+    onError: (err: Error) => {
+      setSyncMsg(`Update failed: ${err.message}`);
+      setTimeout(() => setSyncMsg(null), 5000);
+    },
   });
 
   const uploadMutation = useMutation<{ newCount: number; updatedCount: number; skipped: number; total: number }, Error, File>({
     mutationFn: async (file) => {
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch(`${BASE}/api/epbc/upload`, { method: "POST", body: fd });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as { error?: string };
-        throw new Error(body.error ?? `HTTP ${res.status}`);
-      }
-      return res.json() as Promise<{ newCount: number; updatedCount: number; skipped: number; total: number }>;
+      return apiFetch<{ newCount: number; updatedCount: number; skipped: number; total: number }>(
+        "/api/epbc/upload",
+        { method: "POST", body: fd },
+      );
     },
     onSuccess: (data) => {
       setSyncMsg(`Upload complete: ${data.newCount} new, ${data.updatedCount} updated, ${data.skipped} skipped`);
@@ -316,6 +320,29 @@ export default function EpbcPage() {
             </div>
           </div>
 
+          {loadError && (
+            <Alert variant="destructive">
+              <XCircle className="h-4 w-4" />
+              <AlertTitle>Unable to load EPBC data</AlertTitle>
+              <AlertDescription className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <span>{loadError.message}</span>
+                {token && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      void refetchProjects();
+                      void refetchMeta();
+                    }}
+                  >
+                    Try again
+                  </Button>
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
+
           {/* Filters */}
           <div className="flex flex-wrap gap-2 items-center">
             <div className="relative">
@@ -376,7 +403,7 @@ export default function EpbcPage() {
             </Select>
 
             <span className="text-sm text-muted-foreground ml-1">
-              {isLoading ? "Loading…" : `${projects.length} result${projects.length !== 1 ? "s" : ""}`}
+              {isLoading ? "Loading…" : projectsError ? "Results unavailable" : `${projects.length} result${projects.length !== 1 ? "s" : ""}`}
             </span>
           </div>
 
@@ -407,6 +434,14 @@ export default function EpbcPage() {
                       ))}
                     </TableRow>
                   ))
+                ) : projectsError ? (
+                  <TableRow>
+                    <TableCell colSpan={9} className="h-48 text-center text-destructive">
+                      <XCircle className="mx-auto mb-2 h-5 w-5" />
+                      <p className="text-sm font-medium">EPBC projects could not be loaded.</p>
+                      <p className="mt-1 text-xs">{projectsError.message}</p>
+                    </TableCell>
+                  </TableRow>
                 ) : projects.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={9} className="h-48 text-center text-muted-foreground">

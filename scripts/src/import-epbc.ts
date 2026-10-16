@@ -16,7 +16,6 @@ import * as fs from "fs";
 import { fileURLToPath } from "url";
 import xlsx from "xlsx";
 import { db, projectsTable } from "@workspace/db";
-import { ilike, or } from "drizzle-orm";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WORKSPACE_ROOT = path.resolve(__dirname, "../../");
