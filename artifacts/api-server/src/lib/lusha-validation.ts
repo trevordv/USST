@@ -5,6 +5,8 @@ export interface LushaRunOptions {
 }
 
 export const MAX_LUSHA_CREDITS_PER_RUN = 100;
+/** Default Lusha credit cap for the automatic post-scan lookup of new projects. */
+export const DEFAULT_SCAN_LUSHA_CREDITS = 25;
 
 export function normalizeLushaRunOptions(input: Partial<LushaRunOptions> = {}): LushaRunOptions {
   const approvedPaidProspecting = input.approvedPaidProspecting === true;

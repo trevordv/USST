@@ -27,7 +27,9 @@ test("out-of-range existing lineage is neither linked nor counted", () => {
     { projectId: 2, isNew: false, eventType: "updated", effectiveDate: "2026-08-13" },
   ], window);
   assert.deepEqual(included.map((row) => row.projectId), [2]);
-  assert.deepEqual(summarizeScanLineage(included, { bounded: true }), { projectsFound: 1, newProjects: 0, updatedProjects: 1, inventoryObservedCount: 0 });
+  // Dated scans report only new projects announced in the window; an update
+  // to an older project is lineage, not a scan result (2026-10-16).
+  assert.deepEqual(summarizeScanLineage(included, { bounded: true }), { projectsFound: 0, newProjects: 0, updatedProjects: 1, inventoryObservedCount: 0 });
 });
 
 test("View found and View new derive only from persisted in-window lineage", () => {
@@ -62,7 +64,7 @@ test("AltEnergy event/news updates still use their event date", () => {
     reason: "in-window",
   });
   assert.deepEqual(summarizeScanLineage([{ projectId: 283, isNew: false, eventType: "updated", effectiveDate: result.effectiveDate }], { bounded: true }), {
-    projectsFound: 1,
+    projectsFound: 0,
     newProjects: 0,
     updatedProjects: 1,
     inventoryObservedCount: 0,
@@ -205,4 +207,16 @@ test("the schema migration preserves historical production values for an explici
   );
   assert.match(migration, /ALTER COLUMN announced_date DROP NOT NULL/i);
   assert.doesNotMatch(migration, /\b(?:UPDATE|DELETE FROM)\s+public\.(?:projects|scan_projects|scans)\b/i);
+});
+
+test("dated scan results: only new projects announced inside the window", async () => {
+  const { isNewProjectInScanWindow } = await import("./scan-date-window.ts");
+  const w = { startDate: "2026-10-01", endDate: "2026-10-15" };
+  assert.equal(isNewProjectInScanWindow({ eventType: "new", effectiveDate: "2026-10-05", dateEvidence: "source_reported" }, w), true);
+  assert.equal(isNewProjectInScanWindow({ eventType: "inventory_observed", effectiveDate: "2026-10-05", dateEvidence: "persisted_announcement" }, w), true);
+  assert.equal(isNewProjectInScanWindow({ eventType: "updated", effectiveDate: "2026-10-05", dateEvidence: "source_update" }, w), false);
+  assert.equal(isNewProjectInScanWindow({ eventType: "new", effectiveDate: null, dateEvidence: "altenergy_inventory_observation" }, w), false);
+  assert.equal(isNewProjectInScanWindow({ eventType: "new", effectiveDate: "2026-09-30", dateEvidence: "source_reported" }, w), false);
+  assert.equal(isNewProjectInScanWindow({ eventType: "new", effectiveDate: "2026-10-16", dateEvidence: "source_reported" }, w), false);
+  assert.equal(isNewProjectInScanWindow({ eventType: "updated", effectiveDate: null }, {}), true);
 });
