@@ -100,3 +100,30 @@ export function matchKnownContact(
 
   return matches[0] ?? null;
 }
+
+export interface PvhFallbackContactRow {
+  organizationName: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  email1: string | null;
+}
+
+/**
+ * Match a developer against the PVH contacts list by exact normalised company
+ * name only. The previous substring/word-overlap scoring attached unrelated
+ * companies' contacts (for example "Spark Renewables" -> Ark Energy, because
+ * "ark" is a substring of "spark"). A missing contact is better than a wrong one.
+ */
+export function matchPvhFallbackContact(
+  developer: string | null | undefined,
+  contacts: readonly PvhFallbackContactRow[],
+): { name: string; email: string } | null {
+  const target = normalizeKnownOrganization(developer);
+  if (!target) return null;
+  const match = contacts.find((contact) =>
+    contact.email1 && contact.organizationName &&
+    normalizeKnownOrganization(contact.organizationName) === target);
+  if (!match?.email1) return null;
+  const name = [match.firstName, match.lastName].filter(Boolean).join(" ") || match.organizationName || "";
+  return { name, email: match.email1 };
+}

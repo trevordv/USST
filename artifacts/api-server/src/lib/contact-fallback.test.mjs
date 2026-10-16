@@ -67,3 +67,22 @@ test("developer extraction accepts company-led lands headlines", () => {
     "Squadron",
   );
 });
+
+test("PVH fallback matches only the exact normalised company, never a substring", async () => {
+  const { matchPvhFallbackContact } = await import("./contact-fallback.ts");
+  const contacts = [
+    { organizationName: "Ark Energy", firstName: "A", lastName: "K", email1: "a@arkenergy.example" },
+    { organizationName: "EDF Renewables Australia", firstName: "E", lastName: "D", email1: "e@edf.example" },
+    { organizationName: "BP Australia", firstName: "B", lastName: "P", email1: "b@bp.example" },
+    { organizationName: "AGL Energy", firstName: null, lastName: null, email1: "g@agl.example" },
+    { organizationName: "Neoen Australia", firstName: "N", lastName: "N", email1: "n@neoen.example" },
+  ];
+  for (const developer of ["Spark Renewables", "Clarke Energy", "Parkes Solar Farm Pty Ltd", "Markham Energy",
+    "Redfern Energy", "Lightsource bp", "Fagle Renewables", "Sagl Power"]) {
+    assert.equal(matchPvhFallbackContact(developer, contacts), null, developer);
+  }
+  assert.deepEqual(matchPvhFallbackContact("Neoen", contacts), { name: "N N", email: "n@neoen.example" });
+  assert.deepEqual(matchPvhFallbackContact("Ark Energy Pty Ltd", contacts), { name: "A K", email: "a@arkenergy.example" });
+  assert.deepEqual(matchPvhFallbackContact("AGL", contacts), { name: "AGL Energy", email: "g@agl.example" });
+  assert.equal(matchPvhFallbackContact(null, contacts), null);
+});

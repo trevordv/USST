@@ -37,3 +37,34 @@ export function assignProjectIdentityUrls<T extends { name: string; sourceUrl: s
   }
   return projects;
 }
+
+// Trailing words that describe the asset type rather than identify it. "Corop
+// Solar Farm", "Corop Solar Project" and "Corop Solar & BESS Project" all
+// reduce to "corop solar". "Solar" itself is retained so a solar project is
+// never keyed together with an unrelated non-solar asset of the same place name.
+const GENERIC_TRAILING_WORDS = new Set([
+  "farm", "park", "project", "projects", "plant", "station", "power", "facility",
+  "development", "pv", "bess", "battery", "storage", "energy", "system", "hybrid", "and",
+]);
+
+/**
+ * Cross-source identity key: country + project name without generic asset
+ * suffixes. Returns null when the remaining name is too short to be specific.
+ */
+export function canonicalProjectKey(name: string | null | undefined, country: string | null | undefined): string | null {
+  const words = normalizeProjectName(name ?? "").split(" ").filter(Boolean);
+  while (words.length > 0 && GENERIC_TRAILING_WORDS.has(words[words.length - 1])) words.pop();
+  const core = words.join(" ");
+  // Require a distinctive place/name token besides "solar".
+  const distinctive = words.filter((word) => word !== "solar");
+  if (core.length < 5 || distinctive.join("").length < 4) return null;
+  return `${(country ?? "").toUpperCase()}|${core}`;
+}
+
+/** Capacities agree when either is unknown or they are within 35% of each other. */
+export function capacitiesCompatible(a: number | string | null | undefined, b: number | string | null | undefined): boolean {
+  const x = Number(a);
+  const y = Number(b);
+  if (a == null || b == null || !Number.isFinite(x) || !Number.isFinite(y) || x <= 0 || y <= 0) return true;
+  return Math.min(x, y) / Math.max(x, y) >= 0.65;
+}
