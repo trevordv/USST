@@ -67,6 +67,9 @@ export default function ScanDetail() {
     );
   }
 
+  // A dated scan returns only new projects announced inside its window.
+  const bounded = Boolean(scan.startDate || scan.endDate);
+  const periodLabel = `${scan.startDate ? format(new Date(scan.startDate), "MMM d, yyyy") : "…"} – ${scan.endDate ? format(new Date(scan.endDate), "MMM d, yyyy") : "today"}`;
   const newCount = projects?.filter((p) => p.eventType === "new" && p.effectiveDate).length ?? 0;
   const updatedCount = projects?.filter((p) => p.eventType === "updated" && p.effectiveDate).length ?? 0;
   const observedCount = projects?.filter((p) => p.dateEvidence === "altenergy_inventory_observation").length ?? 0;
@@ -88,7 +91,7 @@ export default function ScanDetail() {
   };
 
   const visibleProjects = projects?.filter((project) =>
-    resultFilter === "all" ||
+    bounded || resultFilter === "all" ||
     (resultFilter === "scan_period"
       ? (project.eventType === "new" || project.eventType === "updated") && project.effectiveDate != null
       : resultFilter === "inventory_observed"
@@ -149,18 +152,27 @@ export default function ScanDetail() {
                 <div className="text-sm text-muted-foreground">Sources scanned</div>
                 <div className="text-xl font-mono font-bold">{scan.sourcesScanned}</div>
               </div>
-              <div className="text-right">
-                <div className="text-sm text-muted-foreground">Projects in period</div>
-                <div className="text-xl font-mono font-bold">{scan.projectsFound ?? 0}</div>
-              </div>
-              <div className="text-right">
-                <div className="text-sm text-muted-foreground">New</div>
-                <div className="text-xl font-mono font-bold text-primary">+{newCount}</div>
-              </div>
-              <div className="text-right">
-                <div className="text-sm text-muted-foreground">Updated</div>
-                <div className="text-xl font-mono font-bold text-amber-600">{updatedCount}</div>
-              </div>
+              {bounded ? (
+                <div className="text-right">
+                  <div className="text-sm text-muted-foreground">New projects {periodLabel}</div>
+                  <div className="text-xl font-mono font-bold text-primary">{projects?.length ?? 0}</div>
+                </div>
+              ) : (
+                <>
+                  <div className="text-right">
+                    <div className="text-sm text-muted-foreground">Projects found</div>
+                    <div className="text-xl font-mono font-bold">{scan.projectsFound ?? 0}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm text-muted-foreground">New</div>
+                    <div className="text-xl font-mono font-bold text-primary">+{newCount}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm text-muted-foreground">Updated</div>
+                    <div className="text-xl font-mono font-bold text-amber-600">{updatedCount}</div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -230,14 +242,20 @@ export default function ScanDetail() {
         <div className="order-2 border rounded-lg bg-card overflow-hidden shadow-sm">
           <div className="px-4 py-3 border-b bg-muted/50 flex flex-wrap items-center justify-between gap-3">
             <h2 className="font-semibold text-sm">
-              Project results ({scanPeriodCount} in scan period)
-              {newCount > 0 && (
-                <span className="ml-2 text-xs font-normal text-emerald-600">
-                  · {newCount} new
-                </span>
+              {bounded ? (
+                <>New projects announced {periodLabel} ({projects?.length ?? 0})</>
+              ) : (
+                <>
+                  Project results ({scanPeriodCount} in scan period)
+                  {newCount > 0 && (
+                    <span className="ml-2 text-xs font-normal text-emerald-600">
+                      · {newCount} new
+                    </span>
+                  )}
+                </>
               )}
             </h2>
-            <div className="flex flex-wrap gap-2" aria-label="Scan result categories">
+            {!bounded && <div className="flex flex-wrap gap-2" aria-label="Scan result categories">
               {([
                 ["scan_period", "Scan Period", scanPeriodCount],
                 ["new", "New", newCount],
@@ -254,7 +272,7 @@ export default function ScanDetail() {
                   {label}: {count}
                 </Button>
               ))}
-            </div>
+            </div>}
           </div>
 
           <Table>
@@ -264,6 +282,7 @@ export default function ScanDetail() {
                 <TableHead>Capacity</TableHead>
                 <TableHead>Location</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Contact</TableHead>
                 <TableHead>Announced</TableHead>
               </TableRow>
             </TableHeader>
@@ -342,6 +361,19 @@ export default function ScanDetail() {
                       </Link>
                     </TableCell>
                     <TableCell>
+                      <Link href={projectHref} className="block text-xs">
+                        {project.contactName || project.contactEmail || project.contactPhone ? (
+                          <div className="space-y-0.5">
+                            {project.contactName && <div className="font-medium text-foreground">{project.contactName}</div>}
+                            {project.contactEmail && <div className="text-muted-foreground truncate max-w-[180px]">{project.contactEmail}</div>}
+                            {project.contactPhone && <div className="text-muted-foreground font-mono">{project.contactPhone}</div>}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </Link>
+                    </TableCell>
+                    <TableCell>
                       <Link href={projectHref} className="block text-sm text-muted-foreground">
                         {project.effectiveDate
                           ? format(new Date(project.effectiveDate), "MMM d, yyyy")
@@ -355,9 +387,9 @@ export default function ScanDetail() {
                 })
               ) : (
                 <TableRow>
-                  <TableCell colSpan={5} className="h-48 text-center text-muted-foreground">
+                  <TableCell colSpan={6} className="h-48 text-center text-muted-foreground">
                     <CheckCircle2 className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                    <p>No projects found in this scan.</p>
+                    <p>{bounded ? "No new projects announced in this period." : "No projects found in this scan."}</p>
                   </TableCell>
                 </TableRow>
               )}

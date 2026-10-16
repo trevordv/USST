@@ -229,6 +229,77 @@ failures block live comparison and browser/container verification. See
 - Rollback / exit path: Revert the PR. Cleared contacts are listed by the
   script's dry-run output; keep that output before `--apply`.
 
+### 2026-10-16 — New-only dated scans, contact discovery with Lusha v3, source health check
+
+- Observed problem / request: The product owner asked that (1) all sources be
+  verified as working, (2) the code be made more efficient without losing
+  accuracy, (3) a dated scan show only new projects inside its start/end dates,
+  (4) contacts named in project descriptions be captured, and (5) Lusha be used
+  to find an email or phone for each new project. Review found the Lusha
+  company-prospecting step used v2 endpoints that Lusha retires on 30 November
+  2026, and Lusha results without an email were discarded even when a direct
+  phone number was returned. The AEMO Generation Information workbook URL was
+  pinned to July 2026. A skipped, unconfigured paid fallback overwrote the real
+  direct-acquisition failure category in source health.
+- Evidence: Lusha v3 OpenAPI (api-evangelist/lusha) and Lusha's v3 migration
+  guide. Live source probing was not possible from the authoring environment
+  (egress allowlist), so a deployable read-only check was added instead.
+- Decision:
+  - Dated scans return and count only projects first stored by the scan with an
+    in-window announcement date, or stored earlier with a persisted
+    announcement date in the window. Updates and undated inventory remain lineage.
+  - After each scan, new projects get free description extraction (named
+    person + title, developer email, AU/NZ phone; blank fields only), then Lusha
+    v3: named person via `/v3/contacts/search-and-enrich`, otherwise the most
+    sales-relevant AU/NZ person via `/v3/contacts/prospecting` + `/v3/contacts/enrich`.
+    One lookup per developer; email must belong to the developer; a phone-only
+    result is kept; credits tracked from `billing.creditsCharged`, capped by
+    `LUSHA_SCAN_MAX_CREDITS` (default 25, max 100); stops on 401/402/403. This
+    supersedes the earlier "enrichment is manual only" rule for new projects.
+  - Manual enrichment uses the same v3 client and accepts phone-only results.
+  - `check-sources` command: runs every approved source's real acquisition and
+    parser path without DB writes; paid fallbacks disabled unless `--with-fallbacks`.
+  - AEMO: discover the newest quarterly workbook on the approved AEMO page,
+    falling back to the pinned URL.
+  - Efficiency: one batched last-seen update per scan instead of one query per
+    re-found project; AltEnergy and LUVI run concurrently with generic sources
+    (results combined in the original order).
+- Security / privacy impact: Contact data stored is limited to business email,
+  phone, name for project developers. Lusha's own DNC flags are honoured;
+  masked numbers are discarded. No new sources.
+- Token / cost impact: Lusha spend per scan is capped (default 25 credits).
+  No new AI calls. `check-sources` is free by default.
+- Deployment impact: No schema migration. Optional env vars
+  `LUSHA_AUTO_ENRICH_NEW_PROJECTS`, `LUSHA_SCAN_MAX_CREDITS`. After deploy run
+  `railway ssh` into the service and run `node dist/check-sources.mjs`.
+- Rollback / exit path: Set `LUSHA_AUTO_ENRICH_NEW_PROJECTS=false` to stop paid
+  lookups immediately; revert the PR for the rest.
+
+### 2026-10-16 — Reserve automatic Lusha scan credits before provider calls
+
+- Observed problem: `billing.creditsCharged` is returned only after Lusha has
+  processed a request. The prior post-scan code counted that response, so a
+  multi-request company workflow could start while fewer credits remained than
+  its worst-case charge.
+- Evidence / metric: The company workflow can make two prospecting calls and
+  one reveal; the prior admission check considered only credits already charged.
+- Simplest attempted fix: Keep the existing one-developer workflow and disable
+  automatic paid lookup whenever a safe request-cost bound is unavailable.
+- Decision: Require `LUSHA_MAX_CREDITS_PER_REQUEST` for automatic Lusha. Reserve
+  one bounded request for a named-person lookup and three for company
+  prospecting/reveal before calling Lusha. Record actual charged credits and
+  reserved credits separately. Free description extraction is unchanged.
+- Security / privacy impact: No additional data leaves the service. The caller
+  retains the existing business-contact and DNC checks.
+- Token / cost impact: A scan cannot begin a workflow unless its configured
+  worst-case reservation fits within `LUSHA_SCAN_MAX_CREDITS`. This may perform
+  fewer lookups than the old optimistic accounting.
+- Deployment impact: Set `LUSHA_MAX_CREDITS_PER_REQUEST` from the account plan
+  before enabling automatic Lusha. Without it, paid automatic lookup is safely
+  disabled.
+- Rollback / exit path: Set `LUSHA_AUTO_ENRICH_NEW_PROJECTS=false`, unset the
+  new variable, or revert this change. No migration or data rewrite.
+
 ### YYYY-MM-DD — Decision title
 
 - Observed problem:

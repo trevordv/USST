@@ -92,7 +92,7 @@ const FIRECRAWL_CRAWL_SOURCES = new Set([
   "NZ EPA – Public Consultations",
 ]);
 
-const AEMO_GENERATION_INFORMATION_PAGE =
+export const AEMO_GENERATION_INFORMATION_PAGE =
   "https://www.aemo.com.au/energy-systems/electricity/national-electricity-market-nem/nem-forecasting-and-planning/forecasting-and-planning-data/generation-information";
 
 export const AEMO_GENERATION_WORKBOOK_URL =

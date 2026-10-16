@@ -21,7 +21,7 @@
  */
 
 import { db, pool, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable, pvhContactsTable } from "@workspace/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { logger } from "./logger";
 import {
   getProjectIneligibilityReason,
@@ -32,7 +32,7 @@ import {
   summarizeScanLineage,
   type ScanProjectLineage,
 } from "./project-eligibility";
-import { decideScanDateWindow, parseSourceAnnouncementDate } from "./scan-date-window";
+import { decideScanDateWindow, isNewProjectInScanWindow, parseSourceAnnouncementDate } from "./scan-date-window";
 import {
   classifyAltEnergyProjectDbRecord,
   createAltEnergyProjectDbDiagnostics,
@@ -52,12 +52,13 @@ import {
   type SourceResponseProblem,
 } from "./source-repair-parsers";
 import {
+  AEMO_GENERATION_INFORMATION_PAGE,
   AEMO_GENERATION_WORKBOOK_URL,
   getSourceAcquisitionPlan,
   getSourceRepairStrategy,
   validateSourceRepairStrategies,
 } from "./source-repair-strategies";
-import { readAemoGenerationWorkbookRows } from "./aemo-workbook";
+import { findLatestAemoWorkbookUrl, readAemoGenerationWorkbookRows } from "./aemo-workbook";
 import {
   deriveProjectName,
   extractMainText,
@@ -92,12 +93,16 @@ import {
 import { apifySourceConfigured, fetchApprovedSourceWithApify } from "./apify-source";
 import { parseAltEnergyListing, parseWattNewsListing } from "./altenergy-listings.ts";
 import { capacityAppearsInContent, dateAppearsInContent } from "./ai-evidence.ts";
+import { LushaV3Client } from "./lusha-v3.ts";
+import { discoverNewProjectContacts } from "./new-project-contacts.ts";
 import { inferKnownDeveloperFromText, matchKnownContact, matchPvhFallbackContact, planMissingContactFieldUpdates, type KnownContact } from "./contact-fallback.ts";
 import { fetchApprovedWithScrapling, planScraplingTargets, ScraplingResponseError } from "./scrapling.ts";
 import { parseScraplingNewsPage } from "./scrapling-news.ts";
 import {
   isExactPersonMatch,
   isProfessionalCompanyEmail,
+  DEFAULT_SCAN_LUSHA_CREDITS,
+  MAX_LUSHA_CREDITS_PER_RUN,
   normalizeLushaRunOptions,
   type LushaRunOptions,
 } from "./lusha-validation";
@@ -2212,7 +2217,7 @@ async function scrapeUrlForContact(url: string, companyName?: string | null): Pr
 
 type ContactResult = { name: string | null; email: string; phone: string | null };
 
-// ── Lusha API types ────────────────────────────────────────────────────────
+// ── Lusha (API v3; see lusha-v3.ts) ───────────────────────────────────────
 
 interface LushaContact {
   firstName?: string;
@@ -2221,256 +2226,52 @@ interface LushaContact {
   companyDomain?: string;
 }
 
-interface LushaProspectingContact {
-  firstName?: string;
-  lastName?: string;
-  jobTitle?: string;
+/** Lusha result for the manual enrichment run: an email OR a phone is useful. */
+type LushaManualResult = { name: string | null; email: string | null; phone: string | null; companyDomain: string | null };
+
+function lushaClient(): LushaV3Client | null {
+  const apiKey = process.env.LUSHA_API_KEY?.trim();
+  return apiKey ? new LushaV3Client(apiKey) : null;
 }
 
-interface LushaProspectingResponse {
-  data?: { contacts?: LushaProspectingContact[] };
-  contacts?: LushaProspectingContact[];
-  results?: LushaProspectingContact[];
-}
-
-interface LushaEnrichedContact {
-  firstName?: string;
-  lastName?: string;
-  emails?: Array<{ email: string; type?: string; confidence?: string }>;
-  phones?: Array<{ number?: string; type?: string; doNotCall?: boolean }>;
-}
-
-interface LushaResponse {
-  results?: LushaEnrichedContact[];
-  billing?: { creditsCharged?: number; resultsReturned?: number };
-}
-
-/**
- * Call Lusha v3 search-and-enrich one named contact at a time. This avoids
- * treating a partial provider response as positionally correlated.
- *
- * Real API shape (confirmed):
- *   POST https://api.lusha.com/v3/contacts/search-and-enrich
- *   Header: api_key: <key>
- *   Body:   { contacts: [...], reveal: ["emails", "phones"] }
- *   Response: { results: [ { emails: [{email, type, confidence}], phones: [{number, type}], firstName, lastName }, ... ] }
- *
- * Phone numbers may be partially masked (e.g. "+61 415...") on lower-tier plans —
- * those are discarded so we never save truncated data.
- *
- * Returns a map from input index → enriched result (email + phone + name).
- */
+/** Look up named people one at a time (exact person match enforced by the client). */
 async function callLushaBulkEnrich(
   contacts: LushaContact[],
-): Promise<Map<number, ContactResult>> {
-  const apiKey = process.env.LUSHA_API_KEY;
-  if (!apiKey || contacts.length === 0) return new Map();
-
-  const results = new Map<number, ContactResult>();
-  const BATCH_SIZE = 1;
-
-  for (let start = 0; start < contacts.length; start += BATCH_SIZE) {
-    const batch = contacts.slice(start, start + BATCH_SIZE);
+): Promise<Map<number, LushaManualResult>> {
+  const client = lushaClient();
+  const results = new Map<number, LushaManualResult>();
+  if (!client) return results;
+  for (let index = 0; index < contacts.length; index++) {
+    const contact = contacts[index];
+    if (!contact.firstName || !contact.lastName || !contact.companyName) continue;
     try {
-      const resp = await fetch("https://api.lusha.com/v3/contacts/search-and-enrich", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "api_key": apiKey,
-        },
-        body: JSON.stringify({
-          contacts: batch,
-          reveal: ["emails", "phones"],
-        }),
-        signal: AbortSignal.timeout(30_000),
+      const result = await client.findNamedPerson({
+        firstName: contact.firstName, lastName: contact.lastName,
+        companyName: contact.companyName, companyDomain: contact.companyDomain ?? null,
       });
-
-      if (!resp.ok) {
-        logger.warn({ provider: "lusha", status: resp.status }, "Lusha API error response");
-        continue;
-      }
-
-      const json = (await resp.json()) as LushaResponse;
-      const enrichedList = json?.results ?? [];
-
-      let batchFound = 0;
-      for (let i = 0; i < enrichedList.length; i++) {
-        const contact = enrichedList[i];
-        if (!contact) continue;
-
-        const emails = contact.emails ?? [];
-        const phones = contact.phones ?? [];
-
-        // Prefer work emails with highest confidence; fall back to any valid address
-        const bestEmail =
-          emails.find((e) => e.confidence === "A+" && e.type === "work")?.email ??
-          emails.find((e) => e.type === "work")?.email ??
-          emails[0]?.email;
-
-        if (!bestEmail) continue;
-
-        // Discard truncated/masked phone numbers (Lusha shows "+61 415..." on some plans)
-        const fullPhone =
-          phones.find((p) => p.type === "mobile" && p.number && !p.number.includes("..."))?.number ??
-          phones.find((p) => p.number && !p.number.includes("..."))?.number ??
-          null;
-
-        const firstName = contact.firstName ?? "";
-        const lastName = contact.lastName ?? "";
-        const name = [firstName, lastName].filter(Boolean).join(" ") || null;
-
-        results.set(start + i, { name, email: bestEmail, phone: fullPhone ?? null });
-        batchFound++;
-      }
-
-      logger.info(
-        { batchStart: start, batchSize: batch.length, found: batchFound, credits: json?.billing?.creditsCharged },
-        "Lusha batch enrichment complete",
-      );
+      if (result && (result.email || result.phone)) results.set(index, result);
+      logger.info({ provider: "lusha", found: Boolean(result?.email || result?.phone), credits: result?.creditsCharged }, "Lusha named-person lookup complete");
     } catch (err) {
-      logger.warn({ provider: "lusha", batchStart: start }, "Lusha bulk enrich request failed");
+      logger.warn({ provider: "lusha", status: (err as { status?: number }).status }, "Lusha named-person lookup failed");
     }
   }
-
   return results;
 }
 
-/**
- * Lusha Prospecting: find contacts at a company where we don't know the person's name.
- *
- * Three-step flow (confirmed endpoint shapes):
- *   1. POST /prospecting/filters/companies/names  { text }  → resolves company ID + fqdn
- *   2. POST /prospecting/contact/search  { filters.companies.include.names: [name] }  → list of contacts (no PII)
- *   3. POST /v3/contacts/search-and-enrich  { firstName, lastName, companyName, companyDomain }  → emails + phones
- *
- * Picks the most sales-relevant contact (Business Developer > Project Director > CEO > Engineer).
- * Returns null if no credits, company not found, or no contacts.
- */
+/** Find the most sales-relevant AU/NZ person at a company via v3 prospecting. */
 async function callLushaProspecting(
   companyName: string,
   companyDomain: string | null,
-): Promise<ContactResult | null> {
-  const apiKey = process.env.LUSHA_API_KEY;
-  if (!apiKey) return null;
-
-  // Job-title relevance scores — higher = better sales contact
-  const TITLE_SCORES: Array<[RegExp, number]> = [
-    [/business develop/i, 10],
-    [/project director|head of (project|develop)/i, 9],
-    [/development director|director of develop/i, 9],
-    [/managing director|chief executive|^ceo$/i, 8],
-    [/general manager|country manager/i, 7],
-    [/project manager|development manager/i, 6],
-    [/commercial manager|bd manager/i, 5],
-  ];
-
-  function titleScore(title: string): number {
-    for (const [re, score] of TITLE_SCORES) {
-      if (re.test(title)) return score;
-    }
-    return 1;
-  }
-
+): Promise<LushaManualResult | null> {
+  const client = lushaClient();
+  if (!client) return null;
   try {
-    // Step 1 — resolve company ID
-    const compResp = await fetch("https://api.lusha.com/prospecting/filters/companies/names", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "api_key": apiKey },
-      body: JSON.stringify({ text: companyName }),
-    });
-    if (!compResp.ok) {
-      logger.warn({ status: compResp.status, companyName }, "Lusha: company name lookup failed");
-      return null;
-    }
-    const companies = (await compResp.json()) as Array<{
-      companyId?: number; name?: string; fqdn?: string; has_prospecting_contacts?: boolean;
-    }>;
-    const expectedDomain = companyDomain?.toLowerCase().replace(/^www\./, "");
-    const expectedName = companyName.trim().toLowerCase();
-    const co = companies.find((company) => {
-      const domain = company.fqdn?.toLowerCase().replace(/^www\./, "");
-      return expectedDomain ? domain === expectedDomain : company.name?.trim().toLowerCase() === expectedName;
-    });
-    if (!co?.companyId || !co.has_prospecting_contacts) return null;
-
-    // Step 2 — search contacts at this company (no PII returned, no credits charged)
-    const searchResp = await fetch("https://api.lusha.com/prospecting/contact/search", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "api_key": apiKey },
-      body: JSON.stringify({
-        filters: {
-          companies: { include: { names: [co.name ?? companyName] } },
-        },
-        pages: { page: 0, size: 10 },
-      }),
-    });
-    if (!searchResp.ok) {
-      logger.warn({ status: searchResp.status, companyName }, "Lusha: prospecting contact search failed");
-      return null;
-    }
-    const searchData = (await searchResp.json()) as LushaProspectingResponse;
-    const candidates: LushaProspectingContact[] =
-      searchData.data?.contacts ?? searchData.contacts ?? searchData.results ?? [];
-    if (candidates.length === 0) return null;
-
-    // Pick the most sales-relevant contact
-    const best = candidates
-      .filter((c) => c.firstName && c.lastName)
-      .sort((a, b) => titleScore(b.jobTitle ?? "") - titleScore(a.jobTitle ?? ""))[0];
-    if (!best?.firstName || !best.lastName) return null;
-
-    logger.info(
-      { companyName, firstName: best.firstName, lastName: best.lastName, title: best.jobTitle },
-      "Lusha prospecting: enriching best contact",
-    );
-
-    // Step 3 — enrich that specific person to reveal email + phone
-    const enrichResp = await fetch("https://api.lusha.com/v3/contacts/search-and-enrich", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "api_key": apiKey },
-      body: JSON.stringify({
-        contacts: [{
-          firstName: best.firstName,
-          lastName: best.lastName,
-          companyName: co.name ?? companyName,
-          companyDomain: co.fqdn ?? companyDomain ?? undefined,
-        }],
-        reveal: ["emails", "phones"],
-      }),
-    });
-    if (!enrichResp.ok) {
-      logger.warn({ status: enrichResp.status, companyName }, "Lusha: prospecting enrich step failed");
-      return null;
-    }
-    const enrichData = (await enrichResp.json()) as LushaResponse;
-    const enriched = enrichData.results?.[0];
-    if (!enriched || ("error" in enriched)) return null;
-
-    const emails = enriched.emails ?? [];
-    const phones = enriched.phones ?? [];
-
-    const bestEmail =
-      emails.find((e) => e.confidence === "A+" && e.type === "work")?.email ??
-      emails.find((e) => e.type === "work")?.email ??
-      emails[0]?.email;
-    if (!bestEmail) return null;
-
-    const fullPhone =
-      phones.find((p) => p.type === "mobile" && p.number && !p.number.includes("..."))?.number ??
-      phones.find((p) => p.number && !p.number.includes("..."))?.number ??
-      null;
-
-    const resolvedFirst = enriched.firstName ?? best.firstName;
-    const resolvedLast = enriched.lastName ?? best.lastName;
-    if (!isExactPersonMatch(`${best.firstName} ${best.lastName}`, resolvedFirst, resolvedLast) ||
-        !isProfessionalCompanyEmail(bestEmail, co.fqdn ?? companyDomain) ||
-        !isEmailDomainRelated(bestEmail, companyName)) return null;
-    const name = [resolvedFirst, resolvedLast]
-      .filter(Boolean).join(" ") || null;
-
-    return { name, email: bestEmail, phone: fullPhone ?? null };
+    const result = await client.findCompanyContact({ companyName, companyDomain });
+    if (!result || (!result.email && !result.phone)) return null;
+    logger.info({ companyName, title: result.title, credits: result.creditsCharged }, "Lusha prospecting: contact revealed");
+    return result;
   } catch (err) {
-    logger.warn({ err, companyName }, "Lusha prospecting threw");
+    logger.warn({ companyName, status: (err as { status?: number }).status }, "Lusha prospecting failed");
     return null;
   }
 }
@@ -2598,6 +2399,31 @@ export async function enrichMissingContacts(runId?: number, requestedOptions: Pa
       if (isNewVerified) verifiedNewContacts++;
     }
     return true;
+  }
+
+  /**
+   * Apply a Lusha result. A related work email is applied like any verified
+   * contact; a direct phone is useful on its own and fills blank phone fields.
+   */
+  async function applyLushaContact(g: GroupEntry, result: LushaManualResult): Promise<boolean> {
+    const developer = g.projects[0].developer ?? null;
+    const email = result.email && isProfessionalCompanyEmail(result.email, result.companyDomain ?? g.domain) &&
+      (Boolean(result.companyDomain) || isEmailDomainRelated(result.email, developer))
+      ? result.email : null;
+    if (email && await applyContact(g, { name: result.name, email, phone: result.phone })) return true;
+    if (!result.phone) { rejectedMatches++; return false; }
+    let applied = false;
+    for (const proj of g.projects) {
+      if (proj.contactPhone?.trim()) continue;
+      await db.update(projectsTable).set({
+        contactName: proj.contactName ?? result.name ?? g.existingName,
+        contactPhone: result.phone,
+        updatedAt: new Date(),
+      }).where(eq(projectsTable.id, proj.id));
+      updated++;
+      applied = true;
+    }
+    return applied;
   }
 
   // ── Phase 1: Scrape known domains ─────────────────────────
@@ -2750,7 +2576,7 @@ export async function enrichMissingContacts(runId?: number, requestedOptions: Pa
       "Contact enrichment: Phase 2.5 Lusha split",
     );
 
-    // 2.5a — bulk search-and-enrich for contacts we already have a name for
+    // 2.5a — named people: exact person lookup (v3 search-and-enrich)
     let remainingCredits = lushaCreditBudget;
     if (namedEntries.length > 0 && remainingCredits > 0) {
       try {
@@ -2759,20 +2585,7 @@ export async function enrichMissingContacts(runId?: number, requestedOptions: Pa
         for (const [batchIdx, result] of lushaResults) {
           const entry = selectedNamed[batchIdx];
           if (!entry || enrichedKeys.has(entry.devKey)) continue;
-          const parts = result.name?.trim().split(/\s+/) ?? [];
-          const firstName = parts.shift();
-          const lastName = parts.join(" ");
-          if (!isExactPersonMatch(`${entry.contact.firstName ?? ""} ${entry.contact.lastName ?? ""}`, firstName, lastName) ||
-              !isProfessionalCompanyEmail(result.email, entry.g.domain) ||
-              !isEmailDomainRelated(result.email, entry.g.projects[0].developer ?? null)) {
-            rejectedMatches++;
-            continue;
-          }
-          if (await applyContact(entry.g, {
-            name: result.name ?? entry.g.existingName ?? null,
-            email: result.email,
-            phone: result.phone,
-          })) {
+          if (await applyLushaContact(entry.g, result)) {
             enrichedKeys.add(entry.devKey);
             logger.info({ devKey: entry.devKey }, "Contact enriched via Lusha search-and-enrich");
           }
@@ -2783,9 +2596,8 @@ export async function enrichMissingContacts(runId?: number, requestedOptions: Pa
       }
     }
 
-    // 2.5b — prospecting for companies where we have no person name at all
-    // The same explicit per-run budget covers company prospecting. One company
-    // consumes at most one planned reveal; lookup/search requests do not reveal contacts.
+    // 2.5b — no person name: v3 prospecting reveals one sales-relevant person
+    // per company within the same explicit per-run budget.
     if (namelessEntries.length > 0 && remainingCredits > 0) {
       logger.info({ eligible: namelessEntries.length, budget: remainingCredits }, "Contact enrichment: Lusha company prospecting");
       for (const [devKey, g] of namelessEntries.slice(0, remainingCredits)) {
@@ -2795,8 +2607,8 @@ export async function enrichMissingContacts(runId?: number, requestedOptions: Pa
         if (!dev) continue;
         try {
           const result = await callLushaProspecting(dev, domain);
-          providerRequests += 3;
-          if (result && await applyContact(g, result)) {
+          providerRequests += 2;
+          if (result && await applyLushaContact(g, result)) {
             enrichedKeys.add(devKey);
             logger.info({ devKey }, "Contact enriched via Lusha prospecting");
           }
@@ -3247,7 +3059,8 @@ async function scrapeAemoGenerationWorkbook(
   startDate?: string,
   endDate?: string,
 ): Promise<ScrapedProject[]> {
-  const response = await fetch(AEMO_GENERATION_WORKBOOK_URL, {
+  const workbookUrl = await resolveAemoWorkbookUrl();
+  const response = await fetch(workbookUrl, {
     headers: {
       "User-Agent": "USST/1.0 (approved public energy-data ingestion)",
       Accept: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream",
@@ -3258,7 +3071,7 @@ async function scrapeAemoGenerationWorkbook(
     throw new SourceRequestError(
       `AEMO workbook returned HTTP ${response.status}`,
       response.status === 403 ? "blocked" : "http-error",
-      response.url || AEMO_GENERATION_WORKBOOK_URL,
+      response.url || workbookUrl,
       response.status,
     );
   }
@@ -3268,7 +3081,7 @@ async function scrapeAemoGenerationWorkbook(
     return sourceRepairCandidatesToProjects(
       // AEMO's Generator Information workbook is current inventory. It has no
       // per-row announcement date, so it may not create a bounded scan event.
-      parseAemoGenerationRows(rows, AEMO_GENERATION_WORKBOOK_URL, null),
+      parseAemoGenerationRows(rows, workbookUrl, null),
       source,
       startDate,
       endDate,
@@ -3276,6 +3089,22 @@ async function scrapeAemoGenerationWorkbook(
   } catch {
     throw new SourceExtractionError("parse-failed", "AEMO workbook could not be parsed");
   }
+}
+
+/** Newest workbook linked from AEMO's page, or the pinned URL if discovery fails. */
+async function resolveAemoWorkbookUrl(): Promise<string> {
+  try {
+    const html = await fetchWithTimeout(AEMO_GENERATION_INFORMATION_PAGE, 20_000);
+    const latest = findLatestAemoWorkbookUrl(html, AEMO_GENERATION_INFORMATION_PAGE);
+    if (latest) {
+      if (latest !== AEMO_GENERATION_WORKBOOK_URL) logger.info({ workbook: diagnosticUrl(latest) }, "AEMO: newer generation workbook discovered");
+      return latest;
+    }
+    logger.warn("AEMO: no generation workbook link found on the information page; using pinned workbook");
+  } catch {
+    logger.warn("AEMO: information page unavailable; using pinned workbook");
+  }
+  return AEMO_GENERATION_WORKBOOK_URL;
 }
 
 async function scrapeEpbcOfficialLayer(
@@ -3782,7 +3611,12 @@ async function scrapeSource(
   const assignedProjects = assignProjectIdentityUrls(
     [source.searchUrl, source.feedUrl, ...(source.extraUrls ?? [])], projects,
   );
-  const lastFailureCategory = [...attempts].reverse().find((attempt) => attempt.failureCategory)?.failureCategory ?? null;
+  // Report the real acquisition problem (blocked, timeout, parser...) rather
+  // than an unconfigured optional fallback that was skipped afterwards.
+  const lastFailureCategory = [...attempts].reverse()
+    .find((attempt) => attempt.failureCategory && attempt.failureCategory !== "missing-credentials")?.failureCategory
+    ?? [...attempts].reverse().find((attempt) => attempt.failureCategory)?.failureCategory
+    ?? null;
   const durableOutcome: DurableSourceOutcome = outcome === "success"
     ? "success-with-results"
     : outcome === "empty"
@@ -3877,7 +3711,10 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       }
     }
 
-    const genericResults = await mapWithConcurrency(
+    // Generic sources, AltEnergy and LUVI are independent hosts: run them
+    // concurrently, then combine in the original order so first-seen
+    // de-duplication is unchanged.
+    const genericTask = mapWithConcurrency(
       SOURCES,
       GENERIC_SCAN_WORKERS,
       async (source) => {
@@ -3902,9 +3739,9 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         }
       },
     );
-    for (const scraped of genericResults) allScraped.push(...scraped);
-
     // Dedicated AltEnergy authenticated scrape (separate from generic SOURCES)
+    const altEnergyTask = (async (): Promise<ScrapedProject[]> => {
+    const altEnergyOut: ScrapedProject[] = [];
     const altEnergyStartedAt = performance.now();
     let altEnergyHealth: ScanSourceHealthInput = {
       sourceName: "AltEnergy Australia", acquisitionMethod: "authenticated",
@@ -3917,7 +3754,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
     try {
       logScanSourceOutcome("AltEnergy Australia", "attempted", { method: "authenticated" });
       const altEnergyProjects = await scrapeAltEnergy(startDate, endDate);
-      allScraped.push(...altEnergyProjects);
+      altEnergyOut.push(...altEnergyProjects);
       if (process.env.ALTENERGY_USERNAME?.trim() && process.env.ALTENERGY_PASSWORD?.trim()) {
         altEnergyHealth = {
           ...altEnergyHealth,
@@ -3954,8 +3791,12 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       await persistHealth(altEnergyHealth);
       await recordSourceComplete();
     }
+    return altEnergyOut;
+    })();
 
     // Dedicated LUVI authenticated development-pipeline scrape.
+    const luviTask = (async (): Promise<ScrapedProject[]> => {
+    const luviOut: ScrapedProject[] = [];
     const luviStartedAt = performance.now();
     let luviHealth: ScanSourceHealthInput = {
       sourceName: LUVI_SOURCE_NAME, acquisitionMethod: "authenticated",
@@ -3977,7 +3818,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       } else {
         logScanSourceOutcome(LUVI_SOURCE_NAME, "attempted", { method: "authenticated" });
         luviProjects = await scrapeLuvi(startDate, endDate);
-        allScraped.push(...luviProjects);
+        luviOut.push(...luviProjects);
         luviHealth = {
           ...luviHealth,
           outcome: luviProjects.length ? "success-with-results" : "success-zero-results",
@@ -4013,6 +3854,12 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       await persistHealth(luviHealth);
       await recordSourceComplete();
     }
+    return luviOut;
+    })();
+
+    const [genericResults, altEnergyScraped, luviScraped] = await Promise.all([genericTask, altEnergyTask, luviTask]);
+    for (const scraped of genericResults) allScraped.push(...scraped);
+    allScraped.push(...altEnergyScraped, ...luviScraped);
 
     // Build a lookup of existing sourceUrl -> { id, announcedDate } for quick checking
     const existingByUrl = new Map<string, number>();
@@ -4099,6 +3946,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
     };
 
     const rejections = new ScanRejectionTally();
+    const seenExistingProjectIds = new Set<number>();
     const insertedThisScan = new Set<number>();
 
     // Insert / record every project found by this scan (deduplicate by sourceUrl)
@@ -4201,9 +4049,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       // for undated items, which would otherwise let old March/May records slip
       // through. For new projects, use the scraped date directly.
       const isExisting = existingProjectId != null;
-      if (existingProjectId != null && existingProjectId !== -1) {
-        await db.update(projectsTable).set({ lastSeenAt: new Date() }).where(eq(projectsTable.id, existingProjectId));
-      }
+      if (existingProjectId != null && existingProjectId !== -1) seenExistingProjectIds.add(existingProjectId);
       const dateDecision = decideScanDateWindow({
         startDate,
         endDate,
@@ -4359,6 +4205,52 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       }
     }
 
+    // One batched last-seen update instead of one query per re-found project.
+    const seenIds = [...seenExistingProjectIds];
+    const seenAt = new Date();
+    for (let index = 0; index < seenIds.length; index += 500) {
+      await db.update(projectsTable).set({ lastSeenAt: seenAt })
+        .where(inArray(projectsTable.id, seenIds.slice(index, index + 500)));
+    }
+
+    // Contact discovery for the projects this scan reports as new: free
+    // description extraction, then bounded Lusha v3 lookups. Never fails the scan.
+    try {
+      const bounded = Boolean(startDate || endDate);
+      const targetIds = [...new Set(persistedLineage
+        .filter((relation) => relation.isNew && (!bounded || isNewProjectInScanWindow(relation, { startDate, endDate })))
+        .map((relation) => relation.projectId))];
+      if (targetIds.length > 0) {
+        const rows = await db.select({
+          id: projectsTable.id, name: projectsTable.name, developer: projectsTable.developer,
+          description: projectsTable.description, contactName: projectsTable.contactName,
+          contactEmail: projectsTable.contactEmail, contactPhone: projectsTable.contactPhone,
+        }).from(projectsTable).where(inArray(projectsTable.id, targetIds));
+        const lushaKey = process.env.LUSHA_API_KEY?.trim();
+        const autoLusha = process.env.LUSHA_AUTO_ENRICH_NEW_PROJECTS?.trim().toLowerCase() !== "false";
+        const requestedBudget = Number(process.env.LUSHA_SCAN_MAX_CREDITS ?? DEFAULT_SCAN_LUSHA_CREDITS);
+        const maxCredits = Number.isFinite(requestedBudget)
+          ? Math.min(Math.max(Math.floor(requestedBudget), 0), MAX_LUSHA_CREDITS_PER_RUN)
+          : DEFAULT_SCAN_LUSHA_CREDITS;
+        const requestedMaxPerRequest = Number(process.env.LUSHA_MAX_CREDITS_PER_REQUEST);
+        const maxCreditsPerRequest = Number.isSafeInteger(requestedMaxPerRequest) && requestedMaxPerRequest > 0
+          ? requestedMaxPerRequest
+          : 0;
+        const contactSummary = await discoverNewProjectContacts(rows, {
+          lusha: lushaKey && autoLusha && maxCreditsPerRequest > 0 ? new LushaV3Client(lushaKey) : null,
+          maxCredits,
+          maxCreditsPerRequest,
+          update: async (projectId, fields) => {
+            await db.update(projectsTable).set({ ...fields, updatedAt: new Date() }).where(eq(projectsTable.id, projectId));
+          },
+          log: (event, fields) => logger.info({ scanId, event, ...fields }, "New project contact discovery"),
+        });
+        logger.info({ scanId, ...contactSummary, lushaConfigured: Boolean(lushaKey), autoLusha, maxCredits, maxCreditsPerRequest }, "New project contact discovery complete");
+      }
+    } catch (error) {
+      logger.warn({ scanId, err: error }, "New project contact discovery failed; scan results are unaffected");
+    }
+
     const rejectionSummary = rejections.summary();
     logger.info({ scanId, ...rejectionSummary }, "Scan quality-gate rejection summary");
     const { projectsFound, newProjects, updatedProjects, inventoryObservedCount } = summarizeScanLineage(
@@ -4419,4 +4311,67 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       })
       .where(eq(scansTable.id, scanId));
   }
+}
+
+export interface SourceCheckResult {
+  sourceName: string;
+  outcome: string;
+  acquisitionMethod: string;
+  candidateCount: number;
+  qualifyingProjectCount: number;
+  durationMs: number;
+  failureCategory: string | null;
+  fallbackUsed: boolean;
+}
+
+/**
+ * Read-only source health check: runs every approved source's real
+ * acquisition and parser path (no database writes) and reports the outcome.
+ * Paid fallbacks run only if their credentials are present in the process
+ * environment; `check-sources` removes them unless `--with-fallbacks` is set.
+ */
+export async function checkScanSources(options: { startDate?: string; endDate?: string; only?: readonly string[] } = {}): Promise<SourceCheckResult[]> {
+  const wanted = (name: string) => !options.only?.length ||
+    options.only.some((value) => name.toLowerCase().includes(value.toLowerCase()));
+  const results = await mapWithConcurrency(SOURCES.filter((source) => wanted(source.name)), GENERIC_SCAN_WORKERS, async (source) => {
+    const started = performance.now();
+    try {
+      const { health } = await scrapeSource(source, options.startDate, options.endDate);
+      return {
+        sourceName: source.name, outcome: health.outcome, acquisitionMethod: health.acquisitionMethod,
+        candidateCount: health.candidateCount, qualifyingProjectCount: health.qualifyingProjectCount,
+        durationMs: health.durationMs, failureCategory: health.failureCategory ?? null, fallbackUsed: health.fallbackUsed,
+      } satisfies SourceCheckResult;
+    } catch (error) {
+      return {
+        sourceName: source.name, outcome: "extraction-failed", acquisitionMethod: getSourceAcquisitionPlan(source.name).methods[0],
+        candidateCount: 0, qualifyingProjectCount: 0, durationMs: Math.round(performance.now() - started),
+        failureCategory: error instanceof SourceRequestError ? error.problem : "unclassified", fallbackUsed: false,
+      } satisfies SourceCheckResult;
+    }
+  });
+  for (const [name, run, envKeys] of [
+    ["AltEnergy Australia", () => scrapeAltEnergy(options.startDate, options.endDate), ["ALTENERGY_USERNAME", "ALTENERGY_PASSWORD"]],
+    [LUVI_SOURCE_NAME, () => scrapeLuvi(options.startDate, options.endDate), ["LUVI_PASSWORD"]],
+  ] as const) {
+    if (!wanted(name)) continue;
+    const started = performance.now();
+    const missing = envKeys.filter((key) => !process.env[key]?.trim());
+    if (missing.length) {
+      results.push({ sourceName: name, outcome: "missing-credentials", acquisitionMethod: "authenticated", candidateCount: 0,
+        qualifyingProjectCount: 0, durationMs: 0, failureCategory: "missing-credentials", fallbackUsed: false });
+      continue;
+    }
+    try {
+      const projects = await run();
+      results.push({ sourceName: name, outcome: projects.length ? "success-with-results" : "success-zero-results",
+        acquisitionMethod: "authenticated", candidateCount: projects.length,
+        qualifyingProjectCount: projects.filter(isEligibleScanProject).length,
+        durationMs: Math.round(performance.now() - started), failureCategory: null, fallbackUsed: false });
+    } catch {
+      results.push({ sourceName: name, outcome: "extraction-failed", acquisitionMethod: "authenticated", candidateCount: 0,
+        qualifyingProjectCount: 0, durationMs: Math.round(performance.now() - started), failureCategory: "unclassified", fallbackUsed: false });
+    }
+  }
+  return results;
 }
