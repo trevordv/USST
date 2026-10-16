@@ -14,7 +14,7 @@ const analyse = (title, text, country = "AU") =>
     requireCountryEvidence: true,
   });
 
-test("RUN-0115 stored lineage is 12 dated events plus 552 inventory observations, not 564 scan-period projects", () => {
+test("RUN-0115 stored lineage reports 3 new in-window projects; 9 updates and 552 inventory observations are lineage only", () => {
   const lineage = [
     ...Array.from({ length: 3 }, (_, i) => ({
       projectId: i + 1,
@@ -37,7 +37,7 @@ test("RUN-0115 stored lineage is 12 dated events plus 552 inventory observations
     })),
   ];
   assert.deepEqual(summarizeScanLineage(lineage, { bounded: true }), {
-    projectsFound: 12,
+    projectsFound: 3,
     newProjects: 3,
     updatedProjects: 9,
     inventoryObservedCount: 552,

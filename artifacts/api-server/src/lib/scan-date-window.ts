@@ -90,3 +90,24 @@ export function filterRelationsForScanWindow<T extends { effectiveDate?: string 
     dateEvidence: relation.dateEvidence,
   }));
 }
+
+/**
+ * A dated (bounded) scan reports only *new projects announced inside the
+ * window*: either first stored by this scan with an in-window announcement
+ * date, or already stored with a persisted announcement date in the window.
+ * Updates to older projects, cross-source update reports and undated inventory
+ * observations are retained as lineage but are not scan results.
+ */
+export function isNewProjectInScanWindow(
+  relation: { eventType?: string | null; isNew?: boolean | null; effectiveDate?: string | null; dateEvidence?: string | null },
+  window: { startDate?: string | null; endDate?: string | null },
+): boolean {
+  if (!window.startDate && !window.endDate) return true;
+  if (relation.dateEvidence === "altenergy_inventory_observation") return false;
+  const date = relation.effectiveDate;
+  if (!date) return false;
+  if (window.startDate && date < window.startDate) return false;
+  if (window.endDate && date > window.endDate) return false;
+  const firstStoredNow = relation.eventType === "new" || (relation.eventType == null && relation.isNew === true);
+  return firstStoredNow || relation.dateEvidence === "persisted_announcement";
+}

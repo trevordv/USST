@@ -54,7 +54,8 @@ The current application is working in Replit. Migration work must preserve curre
 - Data quality is more important than project count.
 - Do not turn article headlines, operational updates, fundraising stories, or unrelated announcements into projects.
 - Only scan approved sources. Do not add broad web search, developer-site scraping, or new sources without explicit approval.
-- Contact enrichment must remain an explicit user action rather than an automatic scan step unless explicitly requested otherwise.
+- Contact enrichment: explicitly requested by the product owner on 2026-10-16, each completed scan automatically looks for contacts on the projects it reports as new — free extraction from the project description first, then Lusha v3 within `LUSHA_SCAN_MAX_CREDITS` (default 25). Set `LUSHA_AUTO_ENRICH_NEW_PROJECTS=false` to disable the paid step. Broader enrichment of the whole database remains the explicit "Enrich contacts" action.
+- A dated scan (start/end date) reports only new projects announced inside that window. Updates to older projects and undated inventory observations are kept as lineage, not shown as results.
 
 ## Architecture
 

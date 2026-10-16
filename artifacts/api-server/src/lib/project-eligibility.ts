@@ -144,29 +144,42 @@ export function summarizeScanLineage(lineage: readonly ScanProjectLineage[], opt
   updatedProjects: number;
   inventoryObservedCount: number;
 } {
-  const uniqueProjects = new Map<number, { eventType: ScanProjectEventType; effectiveDate: string | null; inventoryObservation: boolean }>();
-  const rank: Record<ScanProjectEventType, number> = { inventory_observed: 0, updated: 1, new: 2 };
+  const perProject = new Map<number, {
+    newEvent: boolean; datedNew: boolean; datedUpdate: boolean;
+    announcedInWindow: boolean; updated: boolean; inventory: boolean;
+  }>();
   for (const relation of lineage) {
     const eventType = classifyScanProjectEvent(relation);
-    const prior = uniqueProjects.get(relation.projectId);
-    const inventoryObservation = eventType === "inventory_observed" || relation.dateEvidence === "altenergy_inventory_observation";
-    if (!prior || rank[eventType] > rank[prior.eventType]) {
-      uniqueProjects.set(relation.projectId, { eventType, effectiveDate: relation.effectiveDate ?? null, inventoryObservation });
-    } else if (inventoryObservation && !prior.inventoryObservation) {
-      uniqueProjects.set(relation.projectId, { ...prior, inventoryObservation: true });
-    }
+    const dated = relation.effectiveDate != null;
+    const flags = perProject.get(relation.projectId) ?? {
+      newEvent: false, datedNew: false, datedUpdate: false, announcedInWindow: false, updated: false, inventory: false,
+    };
+    if (eventType === "new") flags.newEvent = true;
+    if (eventType === "new" && dated && relation.dateEvidence !== "altenergy_inventory_observation") flags.datedNew = true;
+    if (eventType === "updated") flags.updated = true;
+    if (eventType === "updated" && dated) flags.datedUpdate = true;
+    if (relation.dateEvidence === "persisted_announcement" && dated) flags.announcedInWindow = true;
+    if (eventType === "inventory_observed" || relation.dateEvidence === "altenergy_inventory_observation") flags.inventory = true;
+    perProject.set(relation.projectId, flags);
   }
 
-  const values = [...uniqueProjects.values()];
-  const inventoryObservedCount = values.filter((item) => item.inventoryObservation).length;
-  const periodResults = options.bounded
-    ? values.filter((item) => item.eventType !== "inventory_observed" && item.effectiveDate != null)
-    : values;
-
+  const values = [...perProject.values()];
+  const inventoryObservedCount = values.filter((item) => item.inventory).length;
+  if (!options.bounded) {
+    return {
+      projectsFound: values.length,
+      newProjects: values.filter((item) => item.newEvent).length,
+      updatedProjects: values.filter((item) => !item.newEvent && item.updated).length,
+      inventoryObservedCount,
+    };
+  }
+  // Dated scans count only new projects announced inside the window (the
+  // window itself was applied when each relation was linked).
+  const newInWindow = values.filter((item) => item.datedNew || item.announcedInWindow);
   return {
-    projectsFound: periodResults.length,
-    newProjects: periodResults.filter((item) => item.eventType === "new").length,
-    updatedProjects: periodResults.filter((item) => item.eventType === "updated").length,
+    projectsFound: newInWindow.length,
+    newProjects: values.filter((item) => item.datedNew).length,
+    updatedProjects: values.filter((item) => !item.datedNew && item.datedUpdate).length,
     inventoryObservedCount,
   };
 }

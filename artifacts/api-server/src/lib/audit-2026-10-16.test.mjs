@@ -31,3 +31,26 @@ test("completed scans persist the quality-gate rejection summary", () => {
 test("legacy token admin route with a hard-coded secret is removed", async () => {
   await assert.rejects(readFile(new URL("../routes/auth.ts", import.meta.url), "utf8"));
 });
+
+test("scan runs contact discovery for its new projects and never fails the scan on it", () => {
+  assert.match(runScan, /discoverNewProjectContacts\(rows,/);
+  assert.match(runScan, /relation\.isNew && \(!bounded \|\| isNewProjectInScanWindow\(relation, \{ startDate, endDate \}\)\)/);
+  assert.match(runScan, /New project contact discovery failed; scan results are unaffected/);
+  assert.match(runScan, /LUSHA_AUTO_ENRICH_NEW_PROJECTS/);
+});
+
+test("scan efficiency: batched last-seen writes and concurrent authenticated sources", () => {
+  assert.doesNotMatch(runScan, /set\(\{ lastSeenAt: new Date\(\) \}\)\.where\(eq\(projectsTable\.id, existingProjectId\)\)/);
+  assert.match(runScan, /await Promise\.all\(\[genericTask, altEnergyTask, luviTask\]\)/);
+});
+
+test("dated scan results endpoint returns only new in-window projects", async () => {
+  const scans = await readFile(new URL("../routes/scans.ts", import.meta.url), "utf8");
+  assert.match(scans, /relations\.filter\(\(relation\) => isNewProjectInScanWindow\(relation, window\)\)/);
+});
+
+test("Lusha calls use v3 endpoints only", async () => {
+  const all = scraper + await readFile(new URL("./lusha-v3.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(all, /api\.lusha\.com\/prospecting\//);
+  assert.doesNotMatch(all, /api\.lusha\.com\/v2\//);
+});

@@ -26,6 +26,8 @@ test("dry run cannot reach paid Lusha, Apify, or LinkedIn paths", async () => {
   assert.match(source, /const lushaCreditBudget = lushaOptions\.dryRun \? 0/);
   assert.match(source, /phaseTwo\.length > 0 && token && !lushaOptions\.dryRun/);
   assert.match(source, /phaseThree\.length > 0 && token && !lushaOptions\.dryRun/);
-  assert.match(source, /const co = companies\.find/);
-  assert.match(source, /isExactPersonMatch\(`\$\{best\.firstName\} \$\{best\.lastName\}`/);
+  // Company and person matching now live in the Lusha v3 client.
+  const lusha = await readFile(new URL("./lusha-v3.ts", import.meta.url), "utf8");
+  assert.match(lusha, /companyMatches\(item\.company, input\.companyName, domain\)/);
+  assert.match(lusha, /isExactPersonMatch\(`\$\{input\.firstName\} \$\{input\.lastName\}`/);
 });

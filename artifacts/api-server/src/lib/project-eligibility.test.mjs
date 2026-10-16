@@ -134,21 +134,23 @@ test("scan counters match unique eligible scan-detail results", () => {
   });
 });
 
-test("bounded scan summary counts unique dated new and updated events, while retaining inventory lineage separately", () => {
+test("bounded scan summary counts only new projects announced in the window, retaining other lineage separately", () => {
   const lineage = [
-    { projectId: 1, isNew: true, eventType: "new", effectiveDate: "2026-09-20" },
-    { projectId: 2, isNew: false, eventType: "updated", effectiveDate: "2026-09-21" },
-    { projectId: 2, isNew: false, eventType: "updated", effectiveDate: "2026-09-21" },
+    { projectId: 1, isNew: true, eventType: "new", effectiveDate: "2026-09-20", dateEvidence: "source_reported" },
+    { projectId: 2, isNew: false, eventType: "updated", effectiveDate: "2026-09-21", dateEvidence: "source_update" },
+    { projectId: 2, isNew: false, eventType: "updated", effectiveDate: "2026-09-21", dateEvidence: "source_update" },
     { projectId: 3, isNew: false, eventType: "inventory_observed", effectiveDate: null, dateEvidence: "altenergy_inventory_observation" },
     { projectId: 4, isNew: false, eventType: "inventory_observed", effectiveDate: null, dateEvidence: "altenergy_inventory_observation" },
     { projectId: 5, isNew: false, eventType: "updated", effectiveDate: null },
     { projectId: 6, isNew: true, eventType: "new", effectiveDate: null, dateEvidence: "altenergy_inventory_observation" },
+    // Stored by an earlier overlapping scan, announced inside this window.
+    { projectId: 7, isNew: false, eventType: "inventory_observed", effectiveDate: "2026-09-22", dateEvidence: "persisted_announcement" },
   ];
   assert.deepEqual(summarizeScanLineage(lineage, { bounded: true }), {
     projectsFound: 2,
     newProjects: 1,
     updatedProjects: 1,
-    inventoryObservedCount: 3,
+    inventoryObservedCount: 4,
   });
 });
 

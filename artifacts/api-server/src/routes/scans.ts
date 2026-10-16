@@ -3,7 +3,7 @@ import { asc, desc, eq, inArray } from "drizzle-orm";
 import { db, scansTable, projectsTable, scanProjectsTable, scanSourceHealthTable } from "@workspace/db";
 import { TriggerScanBody, GetScanParams } from "@workspace/api-zod";
 import { classifyScanProjectEvent, filterEligibleScanProjects } from "../lib/project-eligibility";
-import { filterRelationsForScanWindow } from "../lib/scan-date-window";
+import { filterRelationsForScanWindow, isNewProjectInScanWindow } from "../lib/scan-date-window";
 import { requireAdmin } from "../middlewares/supabase-auth";
 import { admitCostlyOperation } from "../lib/job-admission";
 
@@ -139,7 +139,12 @@ router.get("/scans/:id/projects", async (req, res): Promise<void> => {
 
   // 1. Try modern scan_projects table
   if (relations.length > 0) {
-    const inWindowRelations = filterRelationsForScanWindow(relations, { startDate: scan.startDate, endDate: scan.endDate });
+    const window = { startDate: scan.startDate, endDate: scan.endDate };
+    const bounded = Boolean(scan.startDate || scan.endDate);
+    // A dated scan returns only new projects announced inside its window.
+    const inWindowRelations = bounded
+      ? relations.filter((relation) => isNewProjectInScanWindow(relation, window))
+      : filterRelationsForScanWindow(relations, window);
     const projectIds = inWindowRelations.map((r) => r.projectId);
     if (projectIds.length === 0) { res.json([]); return; }
     const projects = await db
@@ -157,7 +162,7 @@ router.get("/scans/:id/projects", async (req, res): Promise<void> => {
           createdAt: p.createdAt.toISOString(),
           updatedAt: p.updatedAt.toISOString(),
           isNew: relation?.isNew ?? false,
-          eventType: classifyScanProjectEvent({
+          eventType: bounded ? "new" as const : classifyScanProjectEvent({
             isNew: relation?.isNew ?? false,
             dateEvidence: relation?.dateEvidence,
             eventType: relation?.eventType,
@@ -179,8 +184,11 @@ router.get("/scans/:id/projects", async (req, res): Promise<void> => {
     .from(projectsTable)
     .where(eq(projectsTable.scanId, id));
 
+  const historicalWindow = { startDate: scan.startDate, endDate: scan.endDate };
   res.json(
-    filterEligibleScanProjects(historicalProjects).map((p) => ({
+    filterEligibleScanProjects(historicalProjects)
+      .filter((p) => isNewProjectInScanWindow({ eventType: "new", effectiveDate: p.announcedDate, dateEvidence: "source_reported" }, historicalWindow))
+      .map((p) => ({
       ...p,
       capacityMw: p.capacityMw != null ? parseFloat(p.capacityMw) : null,
       createdAt: p.createdAt.toISOString(),
