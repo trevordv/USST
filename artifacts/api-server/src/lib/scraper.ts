@@ -20,7 +20,7 @@
  * paths first, then Firecrawl, Apify and Bright Data where explicitly allowed.
  */
 
-import { db, pool, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable, pvhContactsTable, type PvhContact } from "@workspace/db";
+import { db, pool, projectsTable, scansTable, scanProjectsTable, contactEnrichmentsTable, pvhContactsTable } from "@workspace/db";
 import { and, eq } from "drizzle-orm";
 import { logger } from "./logger";
 import {
@@ -28,6 +28,7 @@ import {
   hasSolarComponent,
   isEligibleScanProject,
   isWindProject,
+  ScanRejectionTally,
   summarizeScanLineage,
   type ScanProjectLineage,
 } from "./project-eligibility";
@@ -78,7 +79,7 @@ import {
 import { parseHtmlPage, parseRssFeed, parseRssFeedPage, type FeedPageResult } from "./news-parsers.ts";
 import { extractNamedProjectEvidence } from "./news-project-evidence.ts";
 import { classifyManagedZeroResult } from "./managed-source-extraction.ts";
-import { assignProjectIdentityUrls } from "./project-identity.ts";
+import { assignProjectIdentityUrls, canonicalProjectKey, capacitiesCompatible } from "./project-identity.ts";
 import { enrichProjectsFromArticles as enrichFromArticles } from "./article-enrichment.ts";
 import { parseSourceFallbackArray, sourceAcquisitionOutcome } from "./source-access-outcome";
 import { browseAiConfigurationProblem, runBrowseAiTask, type BrowseAiResult } from "./browse-ai-task";
@@ -89,7 +90,9 @@ import {
   FirecrawlAcquisitionError,
 } from "./firecrawl";
 import { apifySourceConfigured, fetchApprovedSourceWithApify } from "./apify-source";
-import { inferKnownDeveloperFromText, matchKnownContact, planMissingContactFieldUpdates, type KnownContact } from "./contact-fallback.ts";
+import { parseAltEnergyListing, parseWattNewsListing } from "./altenergy-listings.ts";
+import { capacityAppearsInContent, dateAppearsInContent } from "./ai-evidence.ts";
+import { inferKnownDeveloperFromText, matchKnownContact, matchPvhFallbackContact, planMissingContactFieldUpdates, type KnownContact } from "./contact-fallback.ts";
 import { fetchApprovedWithScrapling, planScraplingTargets, ScraplingResponseError } from "./scrapling.ts";
 import { parseScraplingNewsPage } from "./scrapling-news.ts";
 import {
@@ -808,69 +811,6 @@ async function fetchForSource(source: ScrapeSource, url: string): Promise<string
 // Dedicated AltEnergy scraper
 // ---------------------------------------------------------------------------
 
-const MONTH_MAP: Record<string, string> = {
-  january: "01", february: "02", march: "03", april: "04",
-  may: "05", june: "06", july: "07", august: "08",
-  september: "09", october: "10", november: "11", december: "12",
-};
-
-/**
- * Parse AltEnergy's date format: "Published Date: 2026-June-12, Friday"
- * Returns "YYYY-MM-DD" or today's date as fallback.
- */
-function parseAltEnergyDate(raw: string): string {
-  // Format: "2026-June-12"
-  const m = raw.match(/(\d{4})-([A-Za-z]+)-(\d{1,2})/);
-  if (m) {
-    const month = MONTH_MAP[m[2].toLowerCase()];
-    if (month) {
-      return `${m[1]}-${month}-${m[3].padStart(2, "0")}`;
-    }
-  }
-  // Fallback: try JS Date parse
-  try {
-    const d = new Date(raw);
-    if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
-  } catch { /* ignore */ }
-  return new Date().toISOString().slice(0, 10);
-}
-
-/**
- * Parse the AltEnergy news listing page HTML.
- * Extracts article cards from `<div class="news-block-four">` blocks.
- * Returns a list of { title, url, date } entries.
- */
-function parseAltEnergyListing(html: string): Array<{ title: string; url: string; date: string }> {
-  const results: Array<{ title: string; url: string; date: string }> = [];
-
-  const blockRe = /<div[^>]*class="[^"]*news-block-four[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/gi;
-
-  for (const block of html.matchAll(blockRe)) {
-    const inner = block[1];
-
-    // Extract URL from the first <a href> in the block
-    const linkMatch = inner.match(/href="(https?:\/\/altenergy\.com\.au\/newsandviews\/show\/[^"]+)"/i);
-    if (!linkMatch) continue;
-    const url = linkMatch[1];
-
-    // Extract title from <h3> or <h2>
-    const titleMatch = inner.match(/<h[23][^>]*>([\s\S]*?)<\/h[23]>/i);
-    const title = (titleMatch?.[1] ?? "")
-      .replace(/<[^>]+>/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (!title) continue;
-
-    // Extract date from "Published Date: 2026-June-12"
-    const dateMatch = inner.match(/Published\s+Date:\s*([\d]+-[A-Za-z]+-[\d]+)/i);
-    const date = dateMatch ? parseAltEnergyDate(dateMatch[1]) : new Date().toISOString().slice(0, 10);
-
-    results.push({ title, url, date });
-  }
-
-  return results;
-}
-
 /**
  * Fetch an individual AltEnergy article and extract its full body text.
  */
@@ -931,59 +871,6 @@ function parseAltEnergyProjectDb(html: string): AltEnergyProjectRecord[] {
 }
 
 /**
- * Parse the watt_news listing page to extract newsletter article URLs.
- * Returns { url, date } pairs where date is parsed from the title.
- * Uses multiple fallback strategies to handle AltEnergy HTML structure changes.
- */
-function parseWattNewsListing(html: string): Array<{ url: string; date: string }> {
-  const seen = new Set<string>();
-  const results: Array<{ url: string; date: string }> = [];
-
-  const addResult = (url: string, dateStr: string) => {
-    if (seen.has(url)) return;
-    seen.add(url);
-    results.push({ url, date: dateStr });
-  };
-
-  // Strategy 1: Original pdf-block-watts-new div structure
-  const blockRe = /<div[^>]*class="[^"]*pdf-block-watts-new[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/gi;
-  for (const block of html.matchAll(blockRe)) {
-    const inner = block[1];
-    const linkMatch = inner.match(/href="(https?:\/\/altenergy\.com\.au\/watt_news\/show\/[^"]+)"/i);
-    if (!linkMatch) continue;
-    const url = linkMatch[1];
-    const titleMatch = inner.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
-    const title = titleMatch?.[1]?.replace(/<[^>]+>/g, "").trim() ?? "";
-    const dateMatch = title.match(/(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/);
-    let date = new Date().toISOString().slice(0, 10);
-    if (dateMatch) {
-      const month = MONTH_MAP[dateMatch[2].toLowerCase()];
-      if (month) date = `${dateMatch[3]}-${month}-${dateMatch[1].padStart(2, "0")}`;
-    }
-    addResult(url, date);
-  }
-
-  // Strategy 2: Any href to /watt_news/show/ anywhere on the page, with nearby date text
-  const allLinkRe = /href="(https?:\/\/altenergy\.com\.au\/watt_news\/show\/[^"]+)"/gi;
-  for (const linkMatch of html.matchAll(allLinkRe)) {
-    const url = linkMatch[1];
-    if (seen.has(url)) continue;
-    // Look for a date within 500 chars around the link
-    const idx = linkMatch.index ?? 0;
-    const context = html.slice(Math.max(0, idx - 200), idx + 300).replace(/<[^>]+>/g, " ");
-    const dateMatch = context.match(/(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/);
-    let date = new Date().toISOString().slice(0, 10);
-    if (dateMatch) {
-      const month = MONTH_MAP[dateMatch[2].toLowerCase()];
-      if (month) date = `${dateMatch[3]}-${month}-${dateMatch[1].padStart(2, "0")}`;
-    }
-    addResult(url, date);
-  }
-
-  return results;
-}
-
-/**
  * Fetch a Watts News article and extract its full HTML body text.
  * The content is in the main article section.
  */
@@ -1033,8 +920,11 @@ export async function scrapeAltEnergy(
 
     const eligibleCards = cards.filter((card) => {
       if (seenUrls.has(card.url)) return false;
-      if (startDate && card.date < startDate) return false;
-      if (endDate && card.date > endDate) return false;
+      // Undated cards stay undated: bounded scans exclude them, unbounded
+      // scans store a null announcement date (Scan-Date-Window-Policy.md).
+      if ((startDate || endDate) && !card.date) return false;
+      if (startDate && card.date && card.date < startDate) return false;
+      if (endDate && card.date && card.date > endDate) return false;
       const titleLower = card.title.toLowerCase();
       if (!SOLAR_TITLE_KEYWORDS.some((kw) => titleLower.includes(kw))) return false;
       // Newsandviews titles are article headlines — only keep ones that look like project names
@@ -1068,6 +958,7 @@ export async function scrapeAltEnergy(
         sourceUrl: card.url,
         sourceName: "AltEnergy Australia",
         announcedDate: card.date,
+        announcedDateEvidence: card.date ? "source_reported" : "unknown",
         contactName: null,
         contactEmail: null,
         contactPhone: null,
@@ -1130,7 +1021,15 @@ export async function scrapeAltEnergy(
     const newsletters = parseWattNewsListing(html);
     logger.info({ newsletters: newsletters.length }, "AltEnergy watt_news listing parsed");
 
-    for (const newsletter of newsletters) {
+    for (const listed of newsletters) {
+      // A Watts News item is a dated event. An issue whose date cannot be read
+      // is skipped rather than stamped with the scan day, which previously made
+      // old issues look current and spent AI repair calls on them.
+      if (!listed.date) {
+        logger.warn({ url: listed.url }, "AltEnergy watt_news issue skipped: issue date not readable");
+        continue;
+      }
+      const newsletter = { url: listed.url, date: listed.date };
       if (startDate && newsletter.date < startDate) continue;
       if (endDate && newsletter.date > endDate) continue;
       if (seenUrls.has(newsletter.url)) continue;
@@ -2006,7 +1905,7 @@ ${text.slice(0, 12000)}`;
       operation: "watt_news_extract", sourceName: "AltEnergy – Watts News",
       sourceUrl: newsletterUrl, sourceIdentifier: newsletterDate,
     }, request: model => gpt.responses.create({
-      model, tools: [] as { type: string }[], input: prompt, max_output_tokens: 4096,
+      model, tools: [] as { type: string }[], input: prompt, max_output_tokens: 4096, reasoning: { effort: "low" },
     }), validate: response => {
       let raw = response.output_text ?? "";
       if (!raw && Array.isArray(response.output)) {
@@ -2153,68 +2052,6 @@ function isEmailDomainRelated(email: string, companyName: string | null | undefi
   if (acronym.length >= 2 && domain.includes(acronym)) return true;
 
   return false;
-}
-
-/**
- * Match a developer/company name against the PVH contacts list.
- * Returns the best-matching contact (by organization name) or null.
- * Matching is case-insensitive and tolerates common suffixes (Pty, Ltd, Energy, etc.).
- */
-function matchFallbackContact(
-  developer: string | null,
-  contacts: PvhContact[]
-): { name: string; email: string } | null {
-  if (!developer || contacts.length === 0) return null;
-
-  const normalize = (s: string) =>
-    s.toLowerCase()
-      .replace(/\b(pty|ltd|limited|group|holdings|inc|corp|co|company|australia|energy|solar|power|renewables|renewable|green|clean|au|nz)\b/g, "")
-      .replace(/[^a-z0-9]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-
-  const devNorm = normalize(developer);
-  if (!devNorm) return null;
-
-  let bestContact: PvhContact | null = null;
-  let bestScore = 0;
-
-  for (const c of contacts) {
-    if (!c.organizationName || !c.email1) continue;
-    const orgNorm = normalize(c.organizationName);
-    if (!orgNorm) continue;
-
-    let score = 0;
-
-    // Exact normalized match — highest score
-    if (devNorm === orgNorm) {
-      score = 100;
-    } else if (devNorm.includes(orgNorm) || orgNorm.includes(devNorm)) {
-      // One contains the other
-      score = 80;
-    } else {
-      // Word-overlap scoring
-      const devWords = devNorm.split(" ").filter(w => w.length >= 3);
-      const orgWords = new Set(orgNorm.split(" ").filter(w => w.length >= 3));
-      const overlap = devWords.filter(w => orgWords.has(w)).length;
-      if (overlap > 0) {
-        score = (overlap / Math.max(devWords.length, orgWords.size)) * 60;
-      }
-    }
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestContact = c;
-    }
-  }
-
-  // Require at least a reasonable match threshold
-  if (bestScore < 40 || !bestContact?.email1) return null;
-
-  const nameParts = [bestContact.firstName, bestContact.lastName].filter(Boolean);
-  const name = nameParts.length > 0 ? nameParts.join(" ") : (bestContact.organizationName ?? "");
-
-  return { name, email: bestContact.email1 };
 }
 
 function extractEmailsFromHtml(html: string): Array<{ email: string; context: string }> {
@@ -3184,6 +3021,7 @@ type GptScraperOpenAI = {
       tools: { type: string }[];
       input: string;
       max_output_tokens: number;
+      reasoning?: { effort: "low" | "medium" | "high" };
     }) => Promise<{ output_text?: string; output?: { type: string; text?: string }[] }>;
   };
 };
@@ -3219,6 +3057,7 @@ async function scrapeWithChatGpt(
       throw new Error("Source normalisation requires acquired source content");
     }
     const today = new Date().toISOString().slice(0, 10);
+    const promptContent = acquiredContent.slice(0, 60_000);
     const officialHosts = [...new Set(strategy.officialUrls.map((url) => new URL(url).hostname))];
 
     const dateClause = startDate || endDate
@@ -3249,7 +3088,7 @@ Rules:
 - Return [] when no valid projects are found
 
 ACQUIRED SOURCE CONTENT (bounded):
-${acquiredContent.slice(0, 60_000)}`;
+${promptContent}`;
 
     const model = "gpt-5.6-luna";
     let cacheHit = false;
@@ -3274,7 +3113,9 @@ ${acquiredContent.slice(0, 60_000)}`;
           sourceUrl: source.searchUrl,
           metadata: { contentHash, startDate, endDate },
         }, request: attemptModel => gpt.responses.create({
-          model: attemptModel, tools: [], input: prompt, max_output_tokens: 2500,
+          // Low reasoning effort keeps the hidden reasoning inside the output
+          // cap; a truncated reply would otherwise escalate to Terra/Sol.
+          model: attemptModel, tools: [], input: prompt, max_output_tokens: 2500, reasoning: { effort: "low" },
         }), validate: response => {
           let text = response.output_text ?? "";
           if (!text && Array.isArray(response.output)) {
@@ -3302,6 +3143,15 @@ ${acquiredContent.slice(0, 60_000)}`;
     }, parsed.length);
 
     const results: ScrapedProject[] = [];
+    let unverifiedValues = 0;
+    // A capacity the model returned that is not written in the acquired
+    // content is unknown; the shared gate then drops it as missing-capacity.
+    const verifiedCapacity = (capacityMw: number | null): number | null => {
+      if (capacityMw == null) return null;
+      if (capacityAppearsInContent(capacityMw, promptContent)) return capacityMw;
+      unverifiedValues++;
+      return null;
+    };
     for (const r of parsed) {
       if (!r.name) continue;
       if (r.country !== "AU" && r.country !== "NZ") continue;
@@ -3325,9 +3175,13 @@ ${acquiredContent.slice(0, 60_000)}`;
       // missing date stays unknown rather than becoming today's date
       // (docs/Scan-Date-Window-Policy.md); bounded scans then exclude it.
       const reportedDate = typeof r.announced_date === "string" ? r.announced_date.trim() : "";
-      const announcedDate = /^\d{4}-\d{2}-\d{2}$/.test(reportedDate) && !Number.isNaN(Date.parse(`${reportedDate}T00:00:00Z`))
+      // It must also be written in the acquired content: a model-supplied
+      // date that the source does not show is treated as unknown.
+      const announcedDate = /^\d{4}-\d{2}-\d{2}$/.test(reportedDate) && !Number.isNaN(Date.parse(`${reportedDate}T00:00:00Z`)) &&
+        dateAppearsInContent(reportedDate, promptContent)
         ? reportedDate
         : null;
+      if (reportedDate && !announcedDate) unverifiedValues++;
       if ((startDate || endDate) && !announcedDate) continue;
       if (startDate && announcedDate && announcedDate < startDate) continue;
       if (endDate && announcedDate && announcedDate > endDate) continue;
@@ -3335,7 +3189,7 @@ ${acquiredContent.slice(0, 60_000)}`;
         results.push({
           name: candidate.name,
           description: r.description ?? r.name,
-          capacityMw: candidate.capacityMw ?? structuredCapacity,
+          capacityMw: verifiedCapacity(candidate.capacityMw ?? structuredCapacity),
           developer: r.developer ?? null,
           location: candidate.location ?? r.location ?? null,
           country: candidate.country,
@@ -3351,7 +3205,7 @@ ${acquiredContent.slice(0, 60_000)}`;
     }
 
     const eligibleResults = results.filter(isEligibleScanProject);
-    logger.info({ source: source.name, found: eligibleResults.length }, "ChatGPT fallback complete");
+    logger.info({ source: source.name, found: eligibleResults.length, unverifiedValues }, "ChatGPT fallback complete");
     return eligibleResults;
   } catch (err) {
     logger.warn({ err, source: source.name }, "ChatGPT fallback failed");
@@ -4183,6 +4037,25 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       contactPhone: projectsTable.contactPhone,
     }).from(projectsTable);
     const existingProjectById = new Map(existingRows.map((row) => [row.id, row]));
+    // Cross-source identity: the same farm reported by LUVI, AltEnergy and a
+    // news source must resolve to one project rather than three rows.
+    const crossSourceIndex = new Map<string, Array<{ id: number; sourceName: string | null; capacityMw: string | number | null }>>();
+    const indexCrossSource = (id: number, name: string, country: string | null, sourceName: string | null, capacityMw: string | number | null) => {
+      const key = canonicalProjectKey(name, country);
+      if (!key) return;
+      const entries = crossSourceIndex.get(key) ?? [];
+      entries.push({ id, sourceName, capacityMw });
+      crossSourceIndex.set(key, entries);
+    };
+    const findCrossSourceMatch = (candidate: ScrapedProject): number | undefined => {
+      const key = canonicalProjectKey(candidate.name, candidate.country);
+      if (!key) return undefined;
+      const matches = (crossSourceIndex.get(key) ?? []).filter((entry) =>
+        entry.sourceName !== candidate.sourceName && capacitiesCompatible(entry.capacityMw, candidate.capacityMw));
+      const ids = [...new Set(matches.map((entry) => entry.id))];
+      return ids.length === 1 ? ids[0] : undefined; // ambiguous → do not guess
+    };
+    for (const r of existingRows) indexCrossSource(r.id, r.name, r.country, r.sourceName, r.capacityMw);
     for (const r of existingRows) {
       existingDateById.set(r.id, r.announcedDate);
       if (r.sourceUrl) {
@@ -4225,6 +4098,9 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       rejectedStatusTechnology: 0,
     };
 
+    const rejections = new ScanRejectionTally();
+    const insertedThisScan = new Set<number>();
+
     // Insert / record every project found by this scan (deduplicate by sourceUrl)
     for (const project of allScraped) {
       // If the parser did not populate a developer, use only a deterministic
@@ -4259,7 +4135,19 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
       const nameMatchedProjectId = urlMatchedProjectId == null && !project.wattsNewsEvidence && project.sourceUrl?.includes("#")
         ? existingByNameKey.get(`${project.sourceName}|${normalizeProjectName(project.name)}`)
         : undefined;
-      let existingProjectId = wattsMatch?.project.id ?? urlMatchedProjectId ?? nameMatchedProjectId ?? null;
+      const crossSourceMatchedProjectId = wattsMatch == null && urlMatchedProjectId == null && nameMatchedProjectId == null
+        ? findCrossSourceMatch(project)
+        : undefined;
+      if (crossSourceMatchedProjectId != null) {
+        // A dated report from another source is an update to the known
+        // project; it must not rewrite the canonical announcement date.
+        if (!project.sourceEventDate && project.announcedDate) {
+          project.sourceEventDate = project.announcedDate;
+          project.sourceEventEvidence = "source_update";
+        }
+        logger.info({ project: project.name, source: project.sourceName, projectId: crossSourceMatchedProjectId }, "Cross-source duplicate linked to existing project");
+      }
+      let existingProjectId = wattsMatch?.project.id ?? urlMatchedProjectId ?? nameMatchedProjectId ?? crossSourceMatchedProjectId ?? null;
       if (wattsMatch) {
         wattsPersistenceDiagnostics.canonicalUpdatesMatched++;
         if (project.capacityMw == null) project.capacityMw = Number(wattsMatch.project.capacityMw);
@@ -4271,10 +4159,12 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
 
       // Pre-insert quality gate — skip noise
       if (isNoisyProjectName(project.name)) {
+        rejections.record("noisy-name", project.sourceName);
         continue;
       }
       const ineligibilityReason = getProjectIneligibilityReason(project);
       if (ineligibilityReason) {
+        rejections.record(ineligibilityReason, project.sourceName);
         if (project.sourceName === "AltEnergy – Watts News") {
           if (ineligibilityReason === "missing-capacity" || ineligibilityReason === "below-minimum-capacity") {
             wattsPersistenceDiagnostics.rejectedMissingCapacity++;
@@ -4361,7 +4251,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
             let contactPhone = project.contactPhone;
 
             if (!contactEmail && project.developer) {
-              const fallback = knownContact ?? matchFallbackContact(project.developer, pvhContacts);
+              const fallback = knownContact ?? matchPvhFallbackContact(project.developer, pvhContacts);
               if (fallback) {
                 contactName = fallback.name ?? contactName;
                 contactEmail = fallback.email;
@@ -4398,7 +4288,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
             const existing = existingProjectById.get(persistedProjectId);
             if (existing) {
               const fallback = project.developer
-                ? knownContact ?? matchFallbackContact(project.developer, pvhContacts)
+                ? knownContact ?? matchPvhFallbackContact(project.developer, pvhContacts)
                 : null;
               const updates: Partial<typeof projectsTable.$inferInsert> = planMissingContactFieldUpdates(
                 existing,
@@ -4435,7 +4325,9 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
           };
           if (linkedProjectIds.has(persistedProjectId)) {
             if (project.sourceName === "AltEnergy – Watts News") wattsPersistenceDiagnostics.duplicateMatches++;
-            if (eventType === "updated") {
+            // Never downgrade a project inserted by this scan from "new" when a
+            // second source (or the same URL again) reports it in the same run.
+            if (eventType === "updated" && !insertedThisScan.has(persistedProjectId)) {
               await tx.update(scanProjectsTable).set(relationValues).where(and(
                 eq(scanProjectsTable.scanId, scanId),
                 eq(scanProjectsTable.projectId, persistedProjectId),
@@ -4460,11 +4352,15 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         if (project.inventoryObservation) wattsPersistenceDiagnostics.inventoryObservations++;
         if (isNew && project.sourceUrl) existingByUrl.set(project.sourceUrl, projectId);
         if (isNew) existingByNameKey.set(`${project.sourceName}|${normalizeProjectName(project.name)}`, projectId);
+        if (isNew) indexCrossSource(projectId, project.name, project.country, project.sourceName, project.capacityMw);
+        if (isNew) insertedThisScan.add(projectId);
       } catch (err) {
         logger.warn({ err, project: project.name }, "Failed to insert project or scan relationship");
       }
     }
 
+    const rejectionSummary = rejections.summary();
+    logger.info({ scanId, ...rejectionSummary }, "Scan quality-gate rejection summary");
     const { projectsFound, newProjects, updatedProjects, inventoryObservedCount } = summarizeScanLineage(
       persistedLineage,
       { bounded: Boolean(startDate || endDate) },
@@ -4478,6 +4374,7 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
         sourcesScanned,
         projectsFound,
         newProjects,
+        rejectionSummary: rejectionSummary,
       })
       .where(eq(scansTable.id, scanId));
 

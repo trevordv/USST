@@ -29,5 +29,7 @@ jobs:
         run: pnpm typecheck
       - name: API tests
         run: pnpm --filter @workspace/api-server test
+      - name: Frontend tests
+        run: pnpm --filter @workspace/solar-tracker test
       - name: Production build
         run: pnpm build

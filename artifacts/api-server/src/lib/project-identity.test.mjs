@@ -35,3 +35,19 @@ test("existing fragments (AEMO sites, Watts News sections) are preserved", () =>
   const rows = assignProjectIdentityUrls([], [{ name: "X Solar", sourceUrl: "https://a.example/w.xlsx#site=X" }]);
   assert.equal(rows[0].sourceUrl, "https://a.example/w.xlsx#site=X");
 });
+
+test("cross-source key merges naming variants of one project only", async () => {
+  const { canonicalProjectKey, capacitiesCompatible } = await import("./project-identity.ts");
+  const key = canonicalProjectKey("Corop Solar Farm", "AU");
+  assert.equal(key, "AU|corop solar");
+  assert.equal(canonicalProjectKey("Corop Solar Project", "AU"), key);
+  assert.equal(canonicalProjectKey("Corop Solar & BESS Project", "AU"), key);
+  assert.equal(canonicalProjectKey("Corop Solar Farm", "NZ"), "NZ|corop solar");
+  assert.notEqual(canonicalProjectKey("Corop Solar Farm Stage 2", "AU"), key);
+  assert.notEqual(canonicalProjectKey("Corop East Solar Farm", "AU"), key);
+  assert.equal(canonicalProjectKey("Solar Farm", "AU"), null);
+  assert.equal(canonicalProjectKey("Ayr Solar Farm", "AU"), null);
+  assert.equal(capacitiesCompatible(440, 400), true);
+  assert.equal(capacitiesCompatible(440, null), true);
+  assert.equal(capacitiesCompatible(440, 100), false);
+});

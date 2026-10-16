@@ -183,6 +183,52 @@ failures block live comparison and browser/container verification. See
   External restriction may remain and requires publisher permission/allowlisting.
 - Rollback: Revert the PR; no migration or stored-data remediation.
 
+### 2026-10-16 — Audit remediation: contacts, dates, duplicates, eligibility, AI evidence
+
+- Observed problem: A code audit of `migration/railway-supabase` @ 4d76357 found:
+  (1) the scan-time PVH contact fallback matched companies by substring/word
+  overlap, attaching e.g. Ark Energy's contact to "Spark Renewables", "Clarke
+  Energy" and "Parkes Solar Farm", and BP's to "Lightsource bp"; (2) AltEnergy
+  newsandviews cards and Watts News issues with an unreadable date were stamped
+  with the scan day, passing bounded windows and persisting a false
+  announcement date; (3) projects were deduplicated only within one source, so
+  the same farm from LUVI, AltEnergy and news became separate rows; (4) the
+  shared gate accepted standalone BESS whose text mentioned a nearby solar farm
+  or "pv magazine", and rejected solar farms whose description mentioned any
+  turbine; (5) AI fallback capacity/dates were accepted without appearing in the
+  acquired content, and default reasoning effort could exhaust the 2,500-token
+  cap and escalate to Terra/Sol; (6) `scans.rejection_summary` (schema, API, UI)
+  was never written; (7) unused `routes/auth.ts` retained a hard-coded admin
+  secret fallback in a public repo; frontend tests were not run in CI.
+- Evidence / metric: Reproduced each with fixture tests (contact matcher probe,
+  listing fixtures, eligibility cases, AI harness). No production DB access, so
+  the number of affected stored rows is unmeasured.
+- Simplest attempted fix: Deterministic code only.
+- Decision: Exact normalised company match for PVH fallback; undated AltEnergy
+  cards stay undated (bounded scans exclude) and undated Watts News issues are
+  skipped; conservative cross-source key (country + name without generic asset
+  suffixes, capacities within 35%, unique match only, different source) links
+  reports to one project as an update; standalone-storage and turbine rules
+  tightened, reported under the existing `no-solar-component`/`wind-project`
+  reasons (no contract change); AI capacity/date kept only when written in the
+  acquired content; `reasoning.effort: "low"` on source fallback and Watts News
+  extraction; rejection summary tallied and stored on completion; same-scan
+  inserts are never downgraded from "new"; `routes/auth.ts` deleted; CI runs
+  frontend tests. Two operator scripts: `audit-pvh-contacts` (dry-run by
+  default, `--apply` clears flagged contacts) and `report-duplicate-projects`
+  (read-only).
+- Security / privacy impact: Removes a hard-coded secret fallback; stops
+  attaching third-party contacts to unrelated companies. No new sources,
+  providers or credentials.
+- Token / cost impact: Lower expected escalation from truncated Luna replies;
+  undated Watts News issues no longer trigger AI repair. No new AI calls.
+- Deployment impact: Draft PR against `migration/railway-supabase`. No schema
+  migration. After deploy, run `audit-pvh-contacts` (review, then `--apply`)
+  and `report-duplicate-projects`, then a bounded scan; confirm the scan page
+  shows the quality-gate panel and logs show "Cross-source duplicate linked".
+- Rollback / exit path: Revert the PR. Cleared contacts are listed by the
+  script's dry-run output; keep that output before `--apply`.
+
 ### YYYY-MM-DD — Decision title
 
 - Observed problem:

@@ -7,6 +7,7 @@ import { parseSourceFallbackArray } from "./source-access-outcome.ts";
 import { getSourceRepairStrategy } from "./source-repair-strategies.ts";
 import { hashSourceContent } from "./ai-source-cache.ts";
 import { extractNamedProjectEvidence } from "./news-project-evidence.ts";
+import { capacityAppearsInContent, dateAppearsInContent } from "./ai-evidence.ts";
 
 // Execute the production fallback body, substituting only its SDK import.
 // This avoids importing the DB-backed scanner or making paid/network requests.
@@ -27,11 +28,14 @@ const project = {
   announced_date: "2026-08-15",
 };
 
-async function extract(rows, selectedSource = source, outputText = JSON.stringify(rows), cacheResults) {
+const capturedContent = "River Solar Farm: a proposed 50 MW solar farm, announced 15 August 2026.";
+
+async function extract(rows, selectedSource = source, outputText, cacheResults, content = capturedContent) {
+  outputText ??= JSON.stringify(rows);
   const requests = [];
   const gated = [];
   let responded = false;
-  const fallback = new Function("cachedSourceFallback", "pool", "hashSourceContent", "loadOpenAi", "process", "logger", "logScanSourceOutcome", "getSourceRepairStrategy", "parseSourceFallbackArray", "isEligibleScanProject", "extractNamedProjectEvidence", "runOpenAiEscalation", "OpenAiQualityError", "recordOpenAiCacheHit",
+  const fallback = new Function("cachedSourceFallback", "pool", "hashSourceContent", "loadOpenAi", "process", "logger", "logScanSourceOutcome", "getSourceRepairStrategy", "parseSourceFallbackArray", "isEligibleScanProject", "extractNamedProjectEvidence", "runOpenAiEscalation", "OpenAiQualityError", "recordOpenAiCacheHit", "capacityAppearsInContent", "dateAppearsInContent",
     `${compiled}\nreturn scrapeWithChatGpt;`)(
     async (_pool, _key, load, validate) => validate(cacheResults === undefined ? await load() : cacheResults),
     {}, hashSourceContent,
@@ -46,8 +50,9 @@ async function extract(rows, selectedSource = source, outputText = JSON.stringif
     async options => options.validate(await options.request("gpt-5.6-luna", 1), "gpt-5.6-luna"),
     class OpenAiQualityError extends Error { constructor(reason, message) { super(message); this.reason = reason; } },
     async () => {},
+    capacityAppearsInContent, dateAppearsInContent,
   );
-  const results = await fallback(selectedSource, "2026-08-01", "2026-08-31", hashSourceContent("captured source"), true, "Captured approved-source project content");
+  const results = await fallback(selectedSource, "2026-08-01", "2026-08-31", hashSourceContent("captured source"), true, content);
   return { results, requests, gated };
 }
 
@@ -57,6 +62,7 @@ test("source normalisation requests Luna with no web search and the compact JSON
   assert.equal(requests[0].model, "gpt-5.6-luna");
   assert.deepEqual(requests[0].tools, []);
   assert.equal(requests[0].max_output_tokens, 2500);
+  assert.deepEqual(requests[0].reasoning, { effort: "low" });
   assert.match(requests[0].input, /Return ONLY a valid compact JSON array/);
   assert.match(requests[0].input, /No prose, no markdown fences, no chain-of-thought or reasoning/);
   assert.match(requests[0].input, /Include only these parser fields: name, description, capacity_mw, developer, location, country, status, source_url, announced_date\./);
@@ -84,7 +90,8 @@ test("source fallback rejects AI capacities below 5 MW", async () => {
   for (const capacity_mw of [0, 1, 4.99]) {
     assert.deepEqual((await extract([{ ...project, capacity_mw }])).results, []);
   }
-  assert.equal((await extract([{ ...project, capacity_mw: 5 }])).results.length, 1);
+  const fiveMwContent = "River Solar Farm: a proposed 5 MW solar farm, announced 15 August 2026.";
+  assert.equal((await extract([{ ...project, capacity_mw: 5 }], source, undefined, undefined, fiveMwContent)).results.length, 1);
 });
 
 test("source fallback rejects invalid or missing AI countries instead of coercing to AU", async () => {
@@ -155,4 +162,15 @@ test("cached empty AI result needs no SDK call", async () => {
   const { requests, results } = await extract([], source, "", []);
   assert.deepEqual(results, []);
   assert.equal(requests.length, 0);
+});
+
+test("audit 2026-10-16: AI capacity and date must be written in the acquired content", async () => {
+  // Capacity not in the content -> unknown -> dropped by the shared gate.
+  assert.deepEqual((await extract([{ ...project, capacity_mw: 80, description: "Proposed utility-scale solar farm" }])).results, []);
+  // Date not in the content -> unknown -> excluded from a bounded scan.
+  assert.deepEqual((await extract([{ ...project, announced_date: "2026-08-20" }])).results, []);
+  // Both present in the content -> accepted unchanged.
+  const { results } = await extract([project]);
+  assert.equal(results[0].capacityMw, 50);
+  assert.equal(results[0].announcedDate, "2026-08-15");
 });
