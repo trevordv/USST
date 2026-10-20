@@ -47,6 +47,7 @@ export default function IndustryNews() {
   const [error, setError] = useState<string | null>(null);
   const [isStartingScan, setIsStartingScan] = useState(false);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     if (!token) return;
@@ -80,7 +81,38 @@ export default function IndustryNews() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [token, scanId, search, country, contentType, startDate, endDate]);
+  }, [token, scanId, search, country, contentType, startDate, endDate, refreshKey]);
+
+  useEffect(() => {
+    if (!token || !scanId) return;
+
+    let cancelled = false;
+    const checkStatus = async () => {
+      try {
+        const response = await fetch(`/api/scans/${scanId}`, {
+          headers: { Authorization: "Bearer " + token },
+        });
+        if (!response.ok || cancelled) return;
+        const scan = await response.json() as { status: string; errorMessage?: string | null };
+
+        if (scan.status === "completed") {
+          setScanMessage(`RUN-${scanId.padStart(4, "0")} completed.`);
+          setRefreshKey((value) => value + 1);
+          return;
+        }
+        if (scan.status === "failed") {
+          setScanMessage(scan.errorMessage || `RUN-${scanId.padStart(4, "0")} failed.`);
+          return;
+        }
+        if (!cancelled) window.setTimeout(checkStatus, 3000);
+      } catch {
+        if (!cancelled) window.setTimeout(checkStatus, 3000);
+      }
+    };
+
+    void checkStatus();
+    return () => { cancelled = true; };
+  }, [token, scanId]);
 
   async function handleRunScan() {
     if (!token || isStartingScan) return;
@@ -110,7 +142,7 @@ export default function IndustryNews() {
       }
 
       const scan = await response.json() as { id: number };
-      setScanMessage(`RUN-${scan.id.toString().padStart(4, "0")} started. Industry News will refresh when the scan completes.`);
+      setScanMessage(`RUN-${scan.id.toString().padStart(4, "0")} started. Scanning Industry News and Projects...`);
       navigate(`/industry-news?scanId=${scan.id}`);
     } catch (err) {
       setScanMessage(err instanceof Error ? err.message : "Unable to start scan");
