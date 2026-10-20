@@ -50,16 +50,29 @@ router.post("/scans", requireAdmin, async (req, res): Promise<void> => {
     throw err;
   }
 
-  // Load the scanner only when explicitly requested, then run it in the background.
-  void import("../lib/scraper").then(({ runScan }) => runScan(
-    scan.id,
-    parsed.data.startDate ?? undefined,
-    parsed.data.endDate ?? undefined,
-  )).catch(
-    (err: Error) => {
+  // Run market-intelligence discovery first so a scan is not marked complete
+  // until both the Industry News and Projects sections have been refreshed.
+  void import("../lib/industry-news")
+    .then(({ scanIndustryNews }) => scanIndustryNews(
+      scan.id,
+      parsed.data.startDate ?? undefined,
+      parsed.data.endDate ?? undefined,
+    ))
+    .catch((err: Error) => {
+      // Industry News is additive. A provider failure must not prevent the
+      // strict project scan from completing.
+      req.log?.error({ err, scanId: scan.id }, "Industry news scan failed");
+    })
+    .then(() => import("../lib/scraper"))
+    .then(({ runScan }) => runScan(
+      scan.id,
+      parsed.data.startDate ?? undefined,
+      parsed.data.endDate ?? undefined,
+    ))
+    .catch((err: Error) => {
       req.log?.error({ err, scanId: scan.id }, "Scan background task failed");
-    }
-  ).finally(admission.release);
+    })
+    .finally(admission.release);
 
   res.status(202).json({
     ...scan,
