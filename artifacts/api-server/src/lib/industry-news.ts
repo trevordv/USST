@@ -127,7 +127,7 @@ function sourceName(url: string, supplied?: unknown): string {
 function classifyContentType(url: string, author: string | null, hint?: ContentType): ContentType {
   const host = hostOf(url);
   if (host === "linkedin.com" || host.endsWith(".linkedin.com")) return "linkedin";
-  if (GENERAL_MEDIA_HOSTS.has(ost) && author) return "journalist";
+  if (GENERAL_MEDIA_HOSTS.has(host) && author) return "journalist";
   if (INDUSTRY_HOSTS.has(host) || host.endsWith(".gov.au") || host.endsWith(".govt.nz")) return "industry";
   return hint === "linkedin" ? "linkedin" : author ? "journalist" : "news";
 }
@@ -145,7 +145,7 @@ function compactSummary(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const text = value
     .replace(/\[[^\]]*\]\([^)]*\)/g, " ")
-    .replace(/[#*`<]/g, " ")
+    .replace(/[#*_`<>]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (!text) return null;
@@ -206,72 +206,125 @@ function toCandidate(row: Record<string, unknown>, plan: SearchPlan, start: stri
     summary,
     sourceName: sourceName(url, row.sourceName ?? row.siteName),
     sourceUrl: url,
-    author,BÛÝ[N[ÛÝ[KÛÛ[\NÛ\ÜÚYPÛÛ[\J\]]Ü[[
-KX\ÚY]KNÂB\Þ[È[Ý[Û\XÜ]ÛÙX\Ú
-[ÎÙX\Ú[×KÝ\Ý[Ë[Ý[ÊNÛZ\ÙO]ÜÐØ[Y]V×OÂÛÛÝÙ^HHØÙ\ÜË[TPÔUÓÐTWÒÑVOË[J
-NÂY
-ZÙ^JHÝÈ]È\ÜTPÔUÓÐTWÒÑVH\ÈÝÛÛYÝ\YNÂÛÛÝ\Ý[Î]ÜÐØ[Y]V×HH×NÂÜ
-ÛÛÝ[Ù[ÊHÂÛÛÝ\ÜÛÙHH]ØZ]]Ú
-TPÔUÓÔÑPTÒÕTÂY]ÙÔÕXY\ÎÈ]]Ü^][ÛX\\	ÚÙ^_XÛÛ[U\H\XØ][ÛÚÛÛKÙNÓÓÝ[ÚYJÂ]Y\N[]Y\K[Z]LÛÝ\Ù\ÎÞÈ\N]ÜÈKÈ\NÙXWKØÜ\SÜ[ÛÎÈÜX]ÎÈX\ÙÝÛKÛSXZ[ÛÛ[YHKJKÚYÛ[XÜÚYÛ[[Y[Ý]
-WÌ
-KJNÂY
-\\ÜÛÙKÚÊHÝÈ]È\Ü\XÜ]ÛÙX\ÚZ[YÚ]	Ü\ÜÛÙKÝ]\ßX
-NÂÛÛÝÙHH]ØZ]\ÜÛÙKÛÛ
-H\È[ÛÝÛÂÜ
-ÛÛÝÝÈÙXYÝÜÊÙJJHÂÛÛÝØ[Y]HHÐØ[Y]JÝË[Ý\[
-NÂY
-Ø[Y]JH\Ý[Ë\Ú
-Ø[Y]JNÂBB]\\Ý[ÎÂB[\XÙH\YSÜØ[XÔ\Ý[Â]OÎÝ[ÎÂ\ÎÝ[ÎÂ\ØÜ\[ÛÎÝ[ÎÂ]OÎÝ[ÎÂX\ÚY]OÎÝ[ÎÂÛÝ\ÙOÎÝ[ÎÂB\Þ[È[Ý[Û\YTÙX\Ú
-[ÎÙX\Ú[×KÝ\Ý[Ë[Ý[ÊNÛZ\ÙO]ÜÐØ[Y]V×OÂÛÛÝÚÙ[HØÙ\ÜË[TQWÐTWÕÒÑSË[J
-NÂY
-]ÚÙ[HÝÈ]È\ÜTQWÐTWÕÒÑS\ÈÝÛÛYÝ\YNÂÛÛÝ\ÜÛÙHH]ØZ]]Ú
-	ÐTQWÑÓÓÑÓWÔÑPTÒÕTIÚÙ[IÙ[ÛÙUTPÛÛ\Û[
-ÚÙ[_XÂY]ÙÔÕXY\ÎÈÛÛ[U\H\XØ][ÛÚÛÛKÙNÓÓÝ[ÚYJÂ]Y\Y\Î[ËX\
+    author,
+    country: plan.country,
+    contentType: classifyContentType(url, author, plan.hint),
+    publishedDate,
+  };
+}
 
-
-HO]Y\JKÚ[K\Ý[Ô\YÙNLX^YÙ\Ô\]Y\NK[ÝXYÙPÛÙN[[Ø[T\Ý[Î[ÙKJKÚYÛ[XÜÚYÛ[[Y[Ý]
-LWÌ
-KJNÂY
-\\ÜÛÙKÚÊHÝÈ]È\Ü	Ð\YHÛÛÙÛHÙX\ÚZ[YÚ]	Ü\ÜÛÙKÝ]\ßX
-NÂÛÛÝÝÜÈH]ØZ]\ÜÛÙKÛÛ
-H\È\^OÈÙX\Ú]Y\OÎÈ\OÎÝ[ÈNÈÜØ[XÔ\Ý[ÏÎ\YSÜØ[XÔ\Ý[×HOÂÛÛÝ\Ý[Î]ÜÐØ[Y]V×HH×NÂÜ
-ÛÛÝÚ[^Ý×HÙÝÜË[Y\Ê
-JHÂÛÛÝ\HHÝËÙX\Ú]Y\OË\HÏÈÂÛÛÝ[H[Ë[
+async function firecrawlSearch(plans: SearchPlan[], start: string, end: string): Promise<NewsCandidate[]> {
+  const key = process.env.FIRECRAWL_API_KEY?.trim();
+  if (!key) throw new Error("FIRECRAWL_API_KEY is not configured");
 
-
-HO]Y\HOOH\JHÏÈ[ÖÓX]Z[[^[Ë[ÝHJWNÂY
-\[HÛÛ[YNÂÜ
-ÛÛÝ][HÙÝËÜØ[XÔ\Ý[ÈÏÈ×JHÂÛÛÝØ[Y]HHÐØ[Y]JÂ]N][K]K\][K\\ØÜ\[Û][K\ØÜ\[Û]N][K]HÏÈ][KX\ÚY]KÛÝ\ÙS[YN][KÛÝ\ÙKK[Ý\[
-NÂY
-Ø[Y]JH\Ý[Ë\Ú
-Ø[Y]JNÂBB]\\Ý[ÎÂB[Ý[ÛY\J][\Î]ÜÐØ[Y]V×JN]ÜÐØ[Y]V×HÂÛÛÝU\H]ÈX\Ý[Ë]ÜÐØ[Y]O
-NÂÜ
-ÛÛÝ][HÙ][\ÊHÂÛÛÝ^\Ý[ÈHU\Ù]
-][KÛÝ\ÙU\
-NÂY
-Y^\Ý[È
-][KÝ[[X\OË[ÝÏÈ
-H
-^\Ý[ËÝ[[X\OË[ÝÏÈ
-JHU\Ù]
-][KÛÝ\ÙU\][JNÂB]\ËU\[Y\Ê
-WKÛÜ
+  const results: NewsCandidate[] = [];
+  for (const plan of plans) {
+    const response = await fetch(FIRECRAWL_SEARCH_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: plan.query,
+        limit: 10,
+        sources: [{ type: "news" }, { type: "web" }],
+        scrapeOptions: { formats: ["markdown"], onlyMainContent: true },
+      }),
+      signal: AbortSignal.timeout(45_000),
+    });
+    if (!response.ok) throw new Error(`Firecrawl search failed with HTTP ${response.status}`);
+    const body = await response.json() as unknown;
+    for (const row of readRows(body)) {
+      const candidate = toCandidate(row, plan, start, end);
+      if (candidate) results.push(candidate);
+    }
+  }
+  return results;
+}
 
-KHOX\ÚY]KØØ[PÛÛ\\JKX\ÚY]JHK]KØØ[PÛÛ\\J]JB
-NÂB^Ü\Þ[È[Ý[ÛØØ[[\ÝS]ÜÊØØ[Y[X\Ý\]OÎÝ[Ë[]OÎÝ[ËNÛZ\ÙOÈÝ[[X\ÈÝY\\XÜ]Û\YHÈÝ\]NÝ[ÎÈ[]NÝ[ÈOÂÛÛÝÈÝ\[HHYXÝ]UÚ[ÝÊÝ\]K[]JNÂÛÛÝ[ÈHZ[[ÊÝ\]K[]JNÂ]ÝY\\XÜ]Û\YHH\XÜ]ÛÂ]][\Î]ÜÐØ[Y]V×HH×NÂHÂ][\ÈH]ØZ]\XÜ]ÛÙX\Ú
-[ËÝ\[
-NÂHØ]Ú
-\ÜHÂÙÙÙ\Ø\È\\ÜØØ[YK[\ÝH]ÜÈ\XÜ]ÛÙX\ÚZ[YÈZ[È\YHNÂBY
-][\Ë[ÝOOH
-HÂÝY\H\YHÂ][\ÈH]ØZ]\YTÙX\Ú
-[ËÝ\[
-NÂBÛÛÝ[\]YHHY\J][\ÊNÂ]ØZ][ØXÝ[Û\Þ[È
-
-HOÂ]ØZ][]J[\ÝS]ÜÕXJKÚ\J\J[\ÝS]ÜÕXKØØ[YØØ[Y
-JNÂY
-[\]YK[Ý
-HÂ]ØZ][Ù\
-[\ÝS]ÜÕXJK[Y\Ê[\]YKX\
+interface ApifyOrganicResult {
+  title?: string;
+  url?: string;
+  description?: string;
+  date?: string;
+  publishedDate?: string;
+  source?: string;
+}
 
-][JHO
-ÈØØ[Y][HJJJNÂBJNÂÙÙÙ\[ÊÈØØ[YÝ[[\]YK[ÝÝY\Ý\]NÝ\[]N[K[\ÝH]ÜÈØØ[ÛÛ\]HNÂ]\ÈÝ[[\]YK[ÝÝY\Ý\]NÝ\[]N[NÂB
+async function apifySearch(plans: SearchPlan[], start: string, end: string): Promise<NewsCandidate[]> {
+  const token = process.env.APIFY_API_TOKEN?.trim();
+  if (!token) throw new Error("APIFY_API_TOKEN is not configured");
+  const response = await fetch(`${APIFY_GOOGLE_SEARCH_URL}&token=${encodeURIComponent(token)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      queries: plans.map((p) => p.query).join("\n"),
+      resultsPerPage: 10,
+      maxPagesPerQuery: 1,
+      languageCode: "en",
+      mobileResults: false,
+    }),
+    signal: AbortSignal.timeout(125_000),
+  });
+  if (!response.ok) throw new Error(`Apify Google search failed with HTTP ${response.status}`);
+  const rows = await response.json() as Array<{ searchQuery?: { term?: string }; organicResults?: ApifyOrganicResult[] }>;
+  const results: NewsCandidate[] = [];
+  for (const [index, row] of rows.entries()) {
+    const term = row.searchQuery?.term ?? "";
+    const plan = plans.find((p) => p.query === term) ?? plans[Math.min(index, plans.length - 1)];
+    if (!plan) continue;
+    for (const item of row.organicResults ?? []) {
+      const candidate = toCandidate({
+        title: item.title,
+        url: item.url,
+        description: item.description,
+        date: item.date ?? item.publishedDate,
+        sourceName: item.source,
+      }, plan, start, end);
+      if (candidate) results.push(candidate);
+    }
+  }
+  return results;
+}
+
+function dedupe(items: NewsCandidate[]): NewsCandidate[] {
+  const byUrl = new Map<string, NewsCandidate>();
+  for (const item of items) {
+    const existing = byUrl.get(item.sourceUrl);
+    if (!existing || (item.summary?.length ?? 0) > (existing.summary?.length ?? 0)) byUrl.set(item.sourceUrl, item);
+  }
+  return [...byUrl.values()].sort((a, b) =>
+    b.publishedDate.localeCompare(a.publishedDate) || a.title.localeCompare(b.title)
+  );
+}
+
+export async function scanIndustryNews(
+  scanId: number,
+  startDate?: string,
+  endDate?: string,
+): Promise<{ found: number; provider: "firecrawl" | "apify"; startDate: string; endDate: string }> {
+  const { start, end } = effectiveWindow(startDate, endDate);
+  const plans = buildPlans(startDate, endDate);
+  let provider: "firecrawl" | "apify" = "firecrawl";
+  let items: NewsCandidate[] = [];
+
+  try {
+    items = await firecrawlSearch(plans, start, end);
+  } catch (error) {
+    logger.warn({ err: error, scanId }, "Industry news Firecrawl search failed; trying Apify");
+  }
+
+  if (items.length === 0) {
+    provider = "apify";
+    items = await apifySearch(plans, start, end);
+  }
+
+  const unique = dedupe(items);
+  await db.transaction(async (tx) => {
+    await tx.delete(industryNewsTable).where(eq(industryNewsTable.scanId, scanId));
+    if (unique.length) {
+      await tx.insert(industryNewsTable).values(unique.map((item) => ({ scanId, ...item })));
+    }
+  });
+
+  logger.info({ scanId, found: unique.length, provider, startDate: start, endDate: end }, "Industry news scan complete");
+  return { found: unique.length, provider, startDate: start, endDate: end };
+}
