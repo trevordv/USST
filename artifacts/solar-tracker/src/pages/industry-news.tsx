@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAuth } from "@/lib/auth-context";
 import { useSearch, useLocation } from "wouter";
-import { ExternalLink, Newspaper, Search, X } from "lucide-react";
+import { ExternalLink, Loader2, Newspaper, Play, Search, X } from "lucide-react";
 
 interface IndustryNewsItem {
   id: number;
@@ -45,6 +45,9 @@ export default function IndustryNews() {
   const [items, setItems] = useState<IndustryNewsItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isStartingScan, setIsStartingScan] = useState(false);
+  const [scanMessage, setScanMessage] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     if (!token) return;
@@ -78,7 +81,75 @@ export default function IndustryNews() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [token, scanId, search, country, contentType, startDate, endDate]);
+  }, [token, scanId, search, country, contentType, startDate, endDate, refreshKey]);
+
+  useEffect(() => {
+    if (!token || !scanId) return;
+
+    let cancelled = false;
+    const checkStatus = async () => {
+      try {
+        const response = await fetch(`/api/scans/${scanId}`, {
+          headers: { Authorization: "Bearer " + token },
+        });
+        if (!response.ok || cancelled) return;
+        const scan = await response.json() as { status: string; errorMessage?: string | null };
+
+        if (scan.status === "completed") {
+          setScanMessage(`RUN-${scanId.padStart(4, "0")} completed.`);
+          setRefreshKey((value) => value + 1);
+          return;
+        }
+        if (scan.status === "failed") {
+          setScanMessage(scan.errorMessage || `RUN-${scanId.padStart(4, "0")} failed.`);
+          return;
+        }
+        if (!cancelled) window.setTimeout(checkStatus, 3000);
+      } catch {
+        if (!cancelled) window.setTimeout(checkStatus, 3000);
+      }
+    };
+
+    void checkStatus();
+    return () => { cancelled = true; };
+  }, [token, scanId]);
+
+  async function handleRunScan() {
+    if (!token || isStartingScan) return;
+    if (startDate && endDate && startDate > endDate) {
+      setScanMessage("Published from date must be on or before Published to date.");
+      return;
+    }
+
+    setIsStartingScan(true);
+    setScanMessage(null);
+    try {
+      const response = await fetch("/api/scans", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + token,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ...(startDate ? { startDate } : {}),
+          ...(endDate ? { endDate } : {}),
+        }),
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { message?: string } | null;
+        throw new Error(body?.message || "Unable to start scan");
+      }
+
+      const scan = await response.json() as { id: number };
+      setScanMessage(`RUN-${scan.id.toString().padStart(4, "0")} started. Scanning Industry News and Projects...`);
+      navigate(`/industry-news?scanId=${scan.id}`);
+    } catch (err) {
+      setScanMessage(err instanceof Error ? err.message : "Unable to start scan");
+    } finally {
+      setIsStartingScan(false);
+    }
+  }
 
   const uniqueItems = useMemo(() => {
     const seen = new Set<string>();
@@ -150,12 +221,21 @@ export default function IndustryNews() {
             <label className="text-xs font-medium text-muted-foreground">Published to</label>
             <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
           </div>
+          <Button
+            onClick={handleRunScan}
+            disabled={isStartingScan}
+            className="gap-2"
+          >
+            {isStartingScan ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+            {isStartingScan ? "Starting..." : "Run News Scan"}
+          </Button>
         </div>
 
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-4">
           <p className="text-sm text-muted-foreground">
             {loading ? "Loading..." : uniqueItems.length + " items"}
           </p>
+          {scanMessage && <p className="text-sm text-muted-foreground">{scanMessage}</p>}
         </div>
 
         {error ? (
