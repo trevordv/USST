@@ -4,6 +4,7 @@ import accountRouter from "./account";
 import projectsRouter from "./projects";
 import scansRouter from "./scans";
 import epbcRouter from "./epbc";
+import industryNewsRouter from "./industry-news";
 import { requireAuth } from "../middlewares/supabase-auth";
 
 const router: IRouter = Router();
@@ -18,5 +19,6 @@ router.use(accountRouter);
 router.use(projectsRouter);
 router.use(scansRouter);
 router.use(epbcRouter);
+router.use(industryNewsRouter);
 
 export default router;

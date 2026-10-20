@@ -14,6 +14,7 @@ const ProjectDetail = lazy(() => import("./pages/project-detail"));
 const Scans = lazy(() => import("./pages/scans"));
 const ScanDetail = lazy(() => import("./pages/scan-detail"));
 const EpbcPage = lazy(() => import("./pages/epbc"));
+const IndustryNews = lazy(() => import("./pages/industry-news"));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -54,6 +55,7 @@ function AuthRouter() {
         <Route path="/scans" component={Scans} />
         <Route path="/scans/:id" component={ScanDetail} />
         <Route path="/epbc" component={EpbcPage} />
+        <Route path="/industry-news" component={IndustryNews} />
         <Route component={NotFound} />
       </Switch>
     </Suspense>

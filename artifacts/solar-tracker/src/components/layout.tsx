@@ -7,6 +7,7 @@ import {
   Activity,
   LogOut,
   FileSearch,
+  Newspaper,
 } from "lucide-react";
 
 export function Layout({ children }: { children: ReactNode }) {
@@ -16,6 +17,7 @@ export function Layout({ children }: { children: ReactNode }) {
   const navItems = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
     { href: "/projects", label: "Projects", icon: Database },
+    { href: "/industry-news", label: "Industry News", icon: Newspaper },
     { href: "/scans", label: "Scan History", icon: Activity },
     { href: "/epbc", label: "EPBC Projects", icon: FileSearch },
   ];
