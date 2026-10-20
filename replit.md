@@ -49,13 +49,13 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 - **Scan lineage tracking** — `projects.scan_id` ties every project to the scan that discovered it, enabling "View X new" per scan in the history UI.
 - **Permanent filters on the API** — The `GET /projects` endpoint always applies: no wind in name, AU/NZ only, must have a capacity value, and ≥5 MW. User filters (date, country, search, scanId, hasContact) are layered on top.
 - **Capacity gate at ingest** — Projects with no extractable capacity (`null` or `undefined` MW) are dropped during the scan and never inserted. The scraper logs this as a quality rejection.
-- **Strict source whitelist** — The scraper only scans the approved source list below. No broad Google Search, no developer page scraping, no unlisted sites. The `sourcesScanned` counter in the scan history reflects exactly these approved sources.
+- **Strict project source whitelist** — The Projects scraper only scans the approved source list below. No broad Google Search, no developer page scraping, no unlisted sites are allowed into the Projects pipeline. The `sourcesScanned` counter in the scan history reflects exactly these approved project sources.\n- **Separate Industry News discovery** — Industry News is a market-intelligence surface, not project ingestion. It may use bounded Firecrawl web/news search with Apify Google Search fallback to discover AU/NZ utility-scale solar news, journalist articles, industry publications and public LinkedIn posts inside the scan date window. These results are stored separately and never become project records.
 - **LUVI development pipeline** — LUVI's password-protected pipeline is decrypted server-side from its published encrypted JSON snapshot. Only Australian Energy records in Proposed, Approved, Committed, or Committed (FID) status with a solar component and ≥5 MW are imported.
 
 ## Product
 
 - **Dashboard** — Live overview showing total projects, aggregate capacity, country/status breakdown, and recent announcements (last 7 days).
-- **Projects Directory** — Filterable table with search, date range, country, scan lineage, and "has contact" filters. One-click CSV export.
+- **Projects Directory** — Filterable table with search, date range, country, scan lineage, and "has contact" filters. One-click CSV export.\n- **Industry News** — Separate scan-linked feed of current AU/NZ utility-scale solar market intelligence, including news articles, journalist writing, industry publications and public LinkedIn posts. Results follow the scan start/end dates and do not affect project eligibility.
 - **Scan History** — Lists every scan run with date, sources scanned, projects found, and new projects. Each completed scan shows a "View X new" button that jumps to the filtered projects page.
 - **Manual CRUD** — Add, edit, or delete individual projects. Useful for corrections or entries the scraper missed.
 - **Contact Enrichment** — Batch button on the projects page that attempts to find missing developer contact details (name, email, phone) via web scraping and Apify Google Search.
