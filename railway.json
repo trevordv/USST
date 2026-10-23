@@ -5,7 +5,9 @@
     "dockerfilePath": "Dockerfile.scrapling"
   },
   "deploy": {
-    "preDeployCommand": ["node /app/scripts/scrapling/validate.mjs"],
+    "preDeployCommand": [
+      "node /app/lib/db/scripts/verify-schema.mjs && node /app/scripts/scrapling/validate.mjs"
+    ],
     "startCommand": "node --enable-source-maps /app/artifacts/api-server/dist/index.mjs",
     "healthcheckPath": "/api/healthz",
     "healthcheckTimeout": 120,

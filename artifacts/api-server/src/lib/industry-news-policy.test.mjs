@@ -185,3 +185,26 @@ test("the existing scan action invokes the stricter workflow", async () => {
   assert.match(route, /import\("\.\.\/lib\/industry-news-workflow"\)/);
   assert.match(route, /scanIndustryNewsWorkflow/);
 });
+
+test("production deploys fail closed when the archive migration is missing", async () => {
+  const railway = JSON.parse(
+    await readFile(new URL("../../../../railway.json", import.meta.url), "utf8"),
+  );
+  const migration = await readFile(
+    new URL(
+      "../../../../supabase/migrations/20261023023415_add_industry_news_market_intelligence_archive.sql",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const gate = await readFile(
+    new URL("../../../../lib/db/scripts/verify-schema.mjs", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(railway.deploy.preDeployCommand.join(" "), /verify-schema/);
+  assert.match(migration, /add column if not exists canonical_key text/);
+  assert.match(migration, /create table if not exists public\.industry_news_source_coverage/);
+  assert.match(gate, /industry_news_source_coverage/);
+  assert.match(gate, /Database migration gate failed/);
+});
