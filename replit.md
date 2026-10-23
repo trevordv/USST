@@ -49,13 +49,13 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 - **Scan lineage tracking** — `projects.scan_id` ties every project to the scan that discovered it, enabling "View X new" per scan in the history UI.
 - **Permanent filters on the API** — The `GET /projects` endpoint always applies: no wind in name, AU/NZ only, must have a capacity value, and ≥5 MW. User filters (date, country, search, scanId, hasContact) are layered on top.
 - **Capacity gate at ingest** — Projects with no extractable capacity (`null` or `undefined` MW) are dropped during the scan and never inserted. The scraper logs this as a quality rejection.
-- **Strict source whitelist** — The scraper only scans the approved source list below. No broad Google Search, no developer page scraping, no unlisted sites. The `sourcesScanned` counter in the scan history reflects exactly these approved sources.
+- **Strict project source whitelist** — The Projects scraper only scans the approved source list below. No broad Google Search, no developer page scraping, no unlisted sites are allowed into the Projects pipeline. The `sourcesScanned` counter in the scan history reflects exactly these approved project sources.\n- **Separate Industry News discovery** — Industry News is a market-intelligence surface, not project ingestion. It may use bounded Firecrawl web/news search with Apify Google Search fallback to discover AU/NZ utility-scale solar news, journalist articles, industry publications and public LinkedIn posts inside the scan date window. These results are stored separately and never become project records.
 - **LUVI development pipeline** — LUVI's password-protected pipeline is decrypted server-side from its published encrypted JSON snapshot. Only Australian Energy records in Proposed, Approved, Committed, or Committed (FID) status with a solar component and ≥5 MW are imported.
 
 ## Product
 
 - **Dashboard** — Live overview showing total projects, aggregate capacity, country/status breakdown, and recent announcements (last 7 days).
-- **Projects Directory** — Filterable table with search, date range, country, scan lineage, and "has contact" filters. One-click CSV export.
+- **Projects Directory** — Filterable table with search, date range, country, scan lineage, and "has contact" filters. One-click CSV export.\n- **Industry News** — Separate scan-linked feed of current AU/NZ utility-scale solar market intelligence, including news articles, journalist writing, industry publications and public LinkedIn posts. Results follow the scan start/end dates and do not affect project eligibility.
 - **Scan History** — Lists every scan run with date, sources scanned, projects found, and new projects. Each completed scan shows a "View X new" button that jumps to the filtered projects page.
 - **Manual CRUD** — Add, edit, or delete individual projects. Useful for corrections or entries the scraper missed.
 - **Contact Enrichment** — Batch button on the projects page that attempts to find missing developer contact details (name, email, phone) via web scraping and Apify Google Search.
@@ -69,6 +69,17 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 | | AltEnergy – Watts News | https://altenergy.com.au/watt_news |
 | | RenewEconomy | https://reneweconomy.com.au |
 | | PV Magazine Australia | https://www.pv-magazine-australia.com |
+| | PV Magazine Global | https://www.pv-magazine.com |
+| | PV Tech | https://www.pv-tech.org |
+| | Energy-Storage.news | https://www.energy-storage.news |
+| | SolarQuarter | https://solarquarter.com |
+| | Energy Global | https://www.energyglobal.com |
+| | Green Review | https://greenreview.com.au |
+| | Renewables Now | https://www.renewablesnow.com |
+| | Power Technology | https://www.power-technology.com |
+| | Australian Mining | https://www.australianmining.com.au |
+| | Infrastructure Magazine | https://infrastructuremagazine.com.au |
+| | Energy News Bulletin | https://www.energynewsbulletin.net |
 | | EcoGeneration | https://www.ecogeneration.com.au |
 | | Utility Magazine | https://utilitymagazine.com.au |
 | | ESD News | https://esdnews.com.au |
@@ -100,6 +111,13 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 | | Clean Energy Council – Clean Energy Australia Report | https://cleanenergycouncil.org.au/news-resources/clean-energy-australia-report-2026 |
 | | Smart Energy Council | https://smartenergy.org.au |
 | **News** | Energy Magazine | https://www.energymagazine.com.au |
+| **NZ / Industry / Data** | Carbon News NZ | https://www.carbonnews.co.nz |
+| | Energy News NZ | https://www.energynews.co.nz |
+| | SEANZ Utility Solar | https://www.seanz.org.nz/utility-solar |
+| | MBIE Energy | https://www.mbie.govt.nz/building-and-energy/energy-and-natural-resources/energy-statistics-and-modelling/ |
+| | BusinessDesk NZ | https://businessdesk.co.nz |
+| | NZ Herald Business | https://www.nzherald.co.nz/business/ |
+| | EECA | https://www.eeca.govt.nz |
 | **NZ** | NZ Electricity Authority | https://www.ea.govt.nz |
 | | Transpower NZ | https://www.transpower.co.nz |
 | | NZ Fast-track Approvals (current regime) | https://www.fasttrack.govt.nz/projects/ |
@@ -125,9 +143,9 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 | `DATABASE_URL` | All — Postgres connection |
 | `ALTENERGY_USERNAME` / `ALTENERGY_PASSWORD` | AltEnergy authenticated scrape |
 | `LUVI_USERNAME` / `LUVI_PASSWORD` | LUVI development pipeline scrape (`LUVI_USERNAME` is retained for account identification; LUVI's current pipeline unlock uses the password) |
-| `APIFY_API_TOKEN` | Contact enrichment Phase 2 (Google Search) |
+| `APIFY_API_TOKEN` | Contact enrichment Phase 2 and bounded secondary scan acquisition for reviewed weak sources |
 | `LUSHA_API_KEY` | Contact enrichment Phase 2.5 (Lusha enrich + prospecting) |
-| `FIRECRAWL_API_KEY` | Scanning Firecrawl sources (EPBC, DCCEEW, Planning Alerts, CEC) |
+| `FIRECRAWL_API_KEY` | Bounded Firecrawl v2 fallback for reviewed weak sources in the existing 52-source registry |
 | `SESSION_SECRET` | Express session signing |
 
 ## Gotchas

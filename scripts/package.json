@@ -7,6 +7,8 @@
     "hello": "tsx ./src/hello.ts",
     "import-pvh-contacts": "tsx ./src/import-pvh-contacts.ts",
     "import-epbc": "tsx ./src/import-epbc.ts",
+    "audit-pvh-contacts": "tsx ./src/audit-pvh-contacts.ts",
+    "report-duplicate-projects": "tsx ./src/report-duplicate-projects.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
