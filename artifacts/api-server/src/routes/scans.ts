@@ -52,8 +52,8 @@ router.post("/scans", requireAdmin, async (req, res): Promise<void> => {
 
   // Run market-intelligence discovery first so a scan is not marked complete
   // until both the Industry News and Projects sections have been refreshed.
-  void import("../lib/industry-news")
-    .then(({ scanIndustryNews }) => scanIndustryNews(
+  void import("../lib/industry-news-workflow")
+    .then(({ scanIndustryNewsWorkflow }) => scanIndustryNewsWorkflow(
       scan.id,
       parsed.data.startDate ?? undefined,
       parsed.data.endDate ?? undefined,
