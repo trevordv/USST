@@ -2,6 +2,39 @@
 
 This log records material USST deviations from the generic Agentic App Template baseline.
 
+## 2026-10-23 — Integrate AU/NZ market-intelligence controls into Industry News
+
+**Observed problem:** The first Industry News slice used six broad provider
+queries, URL-only within-scan deduplication and one row per article. It did not
+prove the APAC workflow's named primary-source coverage, distinguish evidence
+strength or lifecycle, preserve corroborating sources, or identify the same
+event across scans.
+
+**Decision:** Keep the existing Industry News page, scan action, API response
+and `industry_news` archive. Replace its runtime discovery path with a bounded,
+registry-restricted workflow covering the approved APAC primary, specialist and
+public-commentary sources. Use Australia/Sydney inclusive-start/exclusive-end
+windows, deterministic eligibility/classification/capacity handling, event-level
+deduplication, primary-source canonical selection, evidence status, novelty
+status and append-only scan observations. Persist per-source coverage outcomes
+in `industry_news_source_coverage`; never report a failed search as checked.
+
+**Security / privacy:** Only public URLs on the explicit registry may become
+events. Provider results are untrusted and pass deterministic host, geography,
+date and relevance gates. No client data or new credential is introduced.
+
+**Token / cost:** No model call is added. Firecrawl is capped at ten results per
+targeted plan with concurrency three. A successful empty search stops; only a
+technical failure uses the existing single batched Apify fallback. With the
+current registry the upper bound is nine Firecrawl searches plus one Apify
+run per scan.
+
+**Deployment / rollback:** Railway's existing pre-deploy Drizzle push adds only
+nullable/defaulted archive columns and the coverage table before the new code
+starts. Revert the integration commit to restore the previous discovery path;
+the additive fields and coverage records may remain without affecting the old
+interface.
+
 ## 2026-10-01 — Opt-in local Scrapling transport
 
 **Request and problem:** The user requested Scrapling integration only for USST
