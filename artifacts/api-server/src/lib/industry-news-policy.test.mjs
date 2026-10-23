@@ -207,4 +207,5 @@ test("production deploys fail closed when the archive migration is missing", asy
   assert.match(migration, /create table if not exists public\.industry_news_source_coverage/);
   assert.match(gate, /industry_news_source_coverage/);
   assert.match(gate, /Database migration gate failed/);
+  assert.match(gate, /scripts\/scrapling\/validate\.mjs/);
 });
