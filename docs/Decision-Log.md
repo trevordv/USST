@@ -2,6 +2,23 @@
 
 This log records material USST deviations from the generic Agentic App Template baseline.
 
+## 2026-10-23 — Gate application deploys on the Industry News archive schema
+
+**Observed problem:** The AU/NZ market-intelligence application deployed while
+production Supabase still had the legacy `industry_news` shape. Railway's
+repository `railway.json` pre-deploy command took precedence over the dashboard
+command, so API reads failed on the first new archive column.
+
+**Decision:** Add a versioned, additive Supabase migration for the archive
+fields and source-coverage table, then make Railway verify the required table
+shape before running the existing Scrapling release checks.
+
+**Safety and rollback:** Legacy rows are preserved and receive only empty JSON
+and timestamp defaults. The new coverage table is backend-only with RLS enabled
+and public roles revoked. The existing `industry_news` RLS posture is not
+changed in this repair and remains a separate access-policy decision. Reverting
+application code does not require dropping the additive schema.
+
 ## 2026-10-23 — Integrate AU/NZ market-intelligence controls into Industry News
 
 **Observed problem:** The first Industry News slice used six broad provider
