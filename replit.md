@@ -62,6 +62,16 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 
 ## Approved sources (only these are scanned)
 
+The Projects scanner has 49 logical source slots. On 7 November 2026 the owner
+approved retiring SA Energy & Mining, WA EPA, NT Development Applications,
+Planning Alerts Australia, Clean Energy Council (including its extra URLs),
+and QLD Planning – Renewable Energy, and adding the three network/market sources
+below. Existing stored projects and historical scan lineage are retained.
+New endpoints use the generic HTML parser; reachability alone is not evidence
+of usable project extraction. Verify their yield with `check-sources` before
+relying on their coverage. Network infrastructure and operational-only news
+remain subject to the existing project exclusions.
+
 | Category | Source | URL |
 |----------|--------|-----|
 | **News** | AltEnergy – News & Views | https://altenergy.com.au/newsandviews |
@@ -98,17 +108,11 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 | | NSW Planning – Renewable Energy | https://www.planning.nsw.gov.au |
 | | Planning Victoria | https://www.planning.vic.gov.au |
 | | VIC DEECA – Environmental Assessments | https://www.planning.vic.gov.au/environmental-assessments/browse-projects |
-| | QLD Planning – Renewable Energy | https://www.planning.qld.gov.au/planning-issues-and-interests/renewable-energy |
 | | QLD Coordinator-General | https://www.coordinatorgeneral.qld.gov.au |
-| | SA – Energy & Mining | https://www.energymining.sa.gov.au |
-| | WA EPA | https://www.epa.wa.gov.au |
-| | NT Development Applications | https://www.ntlis.nt.gov.au |
 | | Tasmania EPA | https://epa.tas.gov.au |
-| **Industry / Data** | Planning Alerts Australia | https://www.planningalerts.org.au |
-| | Clean Energy Council – Large-scale Solar | https://cleanenergycouncil.org.au/advocacy/large-scale-solar |
-| | Clean Energy Council – Project Tracker | https://cleanenergycouncil.org.au/resources/project-tracker |
-| | Clean Energy Council – Industry Snapshot | https://cleanenergycouncil.org.au/advocacy/industry-snapshot |
-| | Clean Energy Council – Clean Energy Australia Report | https://cleanenergycouncil.org.au/news-resources/clean-energy-australia-report-2026 |
+| **Network / Market Data** | Open Electricity | https://openelectricity.org.au/facilities |
+| | NSW EnergyCo | https://www.energyco.nsw.gov.au/our-projects |
+| | VicGrid | https://www.vicgrid.com.au/ |
 | | Smart Energy Council | https://smartenergy.org.au |
 | **News** | Energy Magazine | https://www.energymagazine.com.au |
 | **NZ / Industry / Data** | Carbon News NZ | https://www.carbonnews.co.nz |
@@ -145,7 +149,7 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 | `LUVI_USERNAME` / `LUVI_PASSWORD` | LUVI development pipeline scrape (`LUVI_USERNAME` is retained for account identification; LUVI's current pipeline unlock uses the password) |
 | `APIFY_API_TOKEN` | Contact enrichment Phase 2 and bounded secondary scan acquisition for reviewed weak sources |
 | `LUSHA_API_KEY` | Contact enrichment Phase 2.5 (Lusha enrich + prospecting) |
-| `FIRECRAWL_API_KEY` | Bounded Firecrawl v2 fallback for reviewed weak sources in the existing 52-source registry |
+| `FIRECRAWL_API_KEY` | Bounded Firecrawl v2 fallback for reviewed weak sources in the existing 49-source registry |
 | `SESSION_SECRET` | Express session signing |
 
 ## Gotchas

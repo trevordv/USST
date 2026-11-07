@@ -1,6 +1,6 @@
 # Firecrawl scan acquisition
 
-Firecrawl is a bounded transport layer for reviewed weak sources in USST's existing 34-source registry. It does not discover new source domains, decide project eligibility, or replace deterministic parsers.
+Firecrawl is a bounded transport layer for reviewed weak sources in USST's approved 49-source registry. It does not discover new source domains, decide project eligibility, or replace deterministic parsers. The three sources added on 7 November 2026 use direct HTML and the existing failure-only OpenAI normalisation path; they are not approved for managed acquisition transports.
 
 ## Acquisition order
 

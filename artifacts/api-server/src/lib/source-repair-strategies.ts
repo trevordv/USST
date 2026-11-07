@@ -1,3 +1,5 @@
+export const APPROVED_PROJECT_SOURCE_COUNT = 49;
+
 export type SourceAccessMode =
   | "standard"
   | "structured-html"
@@ -44,19 +46,13 @@ export interface SourceRepairStrategy {
 /**
  * Registry-reviewed sources whose deterministic public acquisition has been
  * unreliable. Firecrawl is transport for these existing sources only; this
- * list never expands the approved 52-source registry.
+ * list never expands the approved 49-source registry.
  */
 const FIRECRAWL_TARGET_SOURCES = new Set([
   "NSW Planning Portal",
   "NSW Planning Renewable Energy",
   "Planning Victoria",
   "QLD Coordinator-General",
-  "QLD Planning – Renewable Energy",
-  "SA Energy & Mining",
-  "WA EPA",
-  "NT Development Applications",
-  "Planning Alerts Australia",
-  "Clean Energy Council",
   "NZ Electricity Authority",
   "NZ Fast-track",
   "NZ EPA – Fast-track Projects",
@@ -416,32 +412,6 @@ export const SOURCE_REPAIR_STRATEGIES: readonly SourceRepairStrategy[] = [
     parserTest: "scoped-openai",
   },
   {
-    name: "SA Energy & Mining",
-    auditGroup: "inaccessible",
-    mode: "openai-first",
-    officialUrls: [
-      "https://energymining.sa.gov.au/industry/hydrogen-and-renewable-energy/large-scale-generation-and-storage/solar-energy-projects",
-    ],
-    fallback: "openai",
-    parserTest: "scoped-openai",
-  },
-  {
-    name: "WA EPA",
-    auditGroup: "inaccessible",
-    mode: "openai-first",
-    officialUrls: ["https://www.epa.wa.gov.au/proposal-search"],
-    fallback: "openai",
-    parserTest: "scoped-openai",
-  },
-  {
-    name: "NT Development Applications",
-    auditGroup: "extraction-problematic",
-    mode: "openai-first",
-    officialUrls: ["https://www.ntlis.nt.gov.au/planning"],
-    fallback: "openai",
-    parserTest: "scoped-openai",
-  },
-  {
     name: "Tasmania EPA",
     auditGroup: "working",
     mode: "standard",
@@ -452,32 +422,28 @@ export const SOURCE_REPAIR_STRATEGIES: readonly SourceRepairStrategy[] = [
     parserTest: "html-empty",
   },
   {
-    name: "Planning Alerts Australia",
-    auditGroup: "extraction-problematic",
-    mode: "openai-first",
-    officialUrls: ["https://www.planningalerts.org.au/"],
+    name: "Open Electricity",
+    auditGroup: "working",
+    mode: "standard",
+    officialUrls: ["https://openelectricity.org.au/facilities"],
     fallback: "openai",
-    parserTest: "scoped-openai",
+    parserTest: "html",
   },
   {
-    name: "Clean Energy Council",
-    auditGroup: "extraction-problematic",
-    mode: "openai-first",
-    officialUrls: [
-      "https://cleanenergycouncil.org.au/advocacy/large-scale-solar",
-    ],
+    name: "NSW EnergyCo",
+    auditGroup: "working",
+    mode: "standard",
+    officialUrls: ["https://www.energyco.nsw.gov.au/our-projects"],
     fallback: "openai",
-    parserTest: "scoped-openai",
+    parserTest: "html",
   },
   {
-    name: "QLD Planning – Renewable Energy",
-    auditGroup: "inaccessible",
-    mode: "openai-first",
-    officialUrls: [
-      "https://www.planning.qld.gov.au/planning-framework/state-assessment-and-referral-agency/sara-submissions-portal",
-    ],
+    name: "VicGrid",
+    auditGroup: "working",
+    mode: "standard",
+    officialUrls: ["https://www.vicgrid.com.au/"],
     fallback: "openai",
-    parserTest: "scoped-openai",
+    parserTest: "html",
   },
   {
     name: "Smart Energy Council",
@@ -643,8 +609,8 @@ export function validateSourceRepairStrategies(
   const missing = [...configured].filter((name) => !strategies.has(name));
   const stale = [...strategies].filter((name) => !configured.has(name));
   if (
-    configuredNames.length !== 52 ||
-    configured.size !== 52 ||
+    configuredNames.length !== APPROVED_PROJECT_SOURCE_COUNT ||
+    configured.size !== APPROVED_PROJECT_SOURCE_COUNT ||
     missing.length ||
     stale.length
   ) {
