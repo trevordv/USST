@@ -3,23 +3,25 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   AEMO_GENERATION_WORKBOOK_URL,
+  APPROVED_PROJECT_SOURCE_COUNT,
   SOURCE_REPAIR_STRATEGIES,
   getSourceAcquisitionPlan,
   validateSourceRepairStrategies,
 } from "./source-repair-strategies.ts";
 
 const expectedGroups = {
-  working: 10,
-  inaccessible: 11,
-  "extraction-problematic": 29,
+  working: 13,
+  inaccessible: 8,
+  "extraction-problematic": 26,
   authenticated: 2,
 };
 
-test("the repair registry preserves exactly all 52 approved source slots", async () => {
-  assert.equal(SOURCE_REPAIR_STRATEGIES.length, 52);
+test("the repair registry preserves exactly all 49 approved source slots", async () => {
+  assert.equal(APPROVED_PROJECT_SOURCE_COUNT, 49);
+  assert.equal(SOURCE_REPAIR_STRATEGIES.length, 49);
   assert.equal(
     new Set(SOURCE_REPAIR_STRATEGIES.map(({ name }) => name)).size,
-    52,
+    49,
   );
 
   const counts = Object.fromEntries(
@@ -44,6 +46,33 @@ test("the repair registry preserves exactly all 52 approved source slots", async
   );
   configuredNames.push("AltEnergy Australia", "LUVI Project Tracker");
   assert.doesNotThrow(() => validateSourceRepairStrategies(configuredNames));
+  assert.match(scraper, /configuredSourceCount !== APPROVED_PROJECT_SOURCE_COUNT/);
+  assert.match(scraper, /expectedSourceCount: APPROVED_PROJECT_SOURCE_COUNT/);
+});
+
+test("retired project sources cannot resolve an acquisition plan", () => {
+  for (const name of [
+    "SA Energy & Mining", "WA EPA", "NT Development Applications",
+    "Planning Alerts Australia", "Clean Energy Council", "QLD Planning – Renewable Energy",
+  ]) {
+    assert.throws(() => getSourceAcquisitionPlan(name), /No source repair strategy/);
+  }
+  const urls = SOURCE_REPAIR_STRATEGIES.flatMap(({ officialUrls }) => officialUrls).join("\n");
+  assert.doesNotMatch(urls, /energymining\.sa\.gov\.au|epa\.wa\.gov\.au|ntlis\.nt\.gov\.au|planningalerts\.org\.au|cleanenergycouncil\.org\.au|planning\.qld\.gov\.au/);
+});
+
+test("approved network sources use exact URLs and no managed acquisition providers", () => {
+  for (const [name, url] of [
+    ["Open Electricity", "https://openelectricity.org.au/facilities"],
+    ["NSW EnergyCo", "https://www.energyco.nsw.gov.au/our-projects"],
+    ["VicGrid", "https://www.vicgrid.com.au/"],
+  ]) {
+    const strategy = SOURCE_REPAIR_STRATEGIES.find((entry) => entry.name === name);
+    assert.ok(strategy, name);
+    assert.deepEqual(strategy.officialUrls, [url]);
+    assert.equal(strategy.mode, "standard");
+    assert.deepEqual(getSourceAcquisitionPlan(name).methods, ["html", "openai-normalisation"]);
+  }
 });
 
 test("every approved source has an HTTPS official endpoint and a named parser contract", () => {
@@ -66,12 +95,12 @@ test("every approved source has an HTTPS official endpoint and a named parser co
   }
 });
 
-test("all 40 repaired sources have an explicit source-specific repair mode", async (t) => {
+test("all 34 repaired sources have an explicit source-specific repair mode", async (t) => {
   const repaired = SOURCE_REPAIR_STRATEGIES.filter(
     ({ auditGroup }) =>
       auditGroup === "inaccessible" || auditGroup === "extraction-problematic",
   );
-  assert.equal(repaired.length, 40);
+  assert.equal(repaired.length, 34);
   for (const strategy of repaired) {
     await t.test(strategy.name, () => {
       assert.notEqual(strategy.mode, "authenticated");

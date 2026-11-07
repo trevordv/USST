@@ -350,6 +350,39 @@ failures block live comparison and browser/container verification. See
 - Rollback / exit path: Set `LUSHA_AUTO_ENRICH_NEW_PROJECTS=false`, unset the
   new variable, or revert this change. No migration or data rewrite.
 
+### 2026-11-07 — Owner-approved project source registry revision (52 to 49)
+
+- Outcome and acceptance: Apply the owner's supplied six-source retirement and
+  three-source addition; keep the scraper, repair registry, runtime count,
+  whitelist documentation and tests aligned at exactly 49 unique logical slots.
+  Retired endpoints must receive no project-scan requests; existing data remains.
+- Evidence: The supplied patch reports a browser audit of source suitability and
+  reachability. That external audit is owner-supplied evidence, not independently
+  reproduced here. Page access does not establish extraction success or prove
+  that a source can never provide useful projects.
+- Decision: Retire SA Energy & Mining, WA EPA, NT Development Applications,
+  Planning Alerts Australia, Clean Energy Council and its additional URLs, and
+  QLD Planning – Renewable Energy from project acquisition. Add Open Electricity
+  (`https://openelectricity.org.au/facilities`), NSW EnergyCo
+  (`https://www.energyco.nsw.gov.au/our-projects`) and VicGrid
+  (`https://www.vicgrid.com.au/`) through the existing generic HTML path.
+  The supplied `working` audit-group labels are configuration, not runtime
+  certification. No dedicated parser is added in this slice.
+- Security/data: New hosts are explicitly approved by this request. Existing
+  AU/NZ, solar component, capacity, date and project-quality gates still apply.
+  No new provider, secret, schema change or historical record rewrite.
+- Cost: Retiring endpoints removes their acquisition work and possible fallback
+  calls. The legacy `openai-first` mode actually attempts deterministic parsing
+  first; it does not guarantee six paid AI calls per scan. New sources permit
+  existing bounded, cached, failure-only normalisation, without Firecrawl,
+  Apify or Bright Data. No measured monetary saving is claimed.
+- Release acceptance: Draft PR only. Before production coverage acceptance, run
+  `check-sources` after deployment and inspect actual candidates and qualifying
+  results for all three additions. Open Electricity may need a table parser;
+  EnergyCo/VicGrid may expose network-only records that must remain excluded.
+  Do not infer success from HTTP 200 or a zero candidate count alone.
+- Rollback: Revert this revision. No data migration is required.
+
 ### YYYY-MM-DD — Decision title
 
 - Observed problem:

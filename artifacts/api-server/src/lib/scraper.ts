@@ -11,8 +11,8 @@
  *  - News: Renew Economy, AltEnergy, PV Magazine Australia, EcoGeneration,
  *    Utility Magazine, ESD News, RenewMap
  *  - Government: ARENA, CER, AEMO, DCCEEW, EPBC Act, NSW Planning Portal,
- *    NSW Planning, Planning Victoria, QLD Coordinator-General, SA Energy & Mining,
- *    WA EPA, NT Development, Tasmania EPA
+ *    NSW Planning, Planning Victoria, QLD Coordinator-General, Tasmania EPA
+ *  - Network / Market: Open Electricity, NSW EnergyCo, VicGrid
  *  - NZ: Electricity Authority, Transpower, NZ Fast-track, NZ EPA
  *  - AltEnergy and LUVI are authenticated and handled separately
  *
@@ -54,6 +54,7 @@ import {
 import {
   AEMO_GENERATION_INFORMATION_PAGE,
   AEMO_GENERATION_WORKBOOK_URL,
+  APPROVED_PROJECT_SOURCE_COUNT,
   getSourceAcquisitionPlan,
   getSourceRepairStrategy,
   validateSourceRepairStrategies,
@@ -618,45 +619,30 @@ const SOURCES: ScrapeSource[] = [
     searchUrl: "https://www.coordinatorgeneral.qld.gov.au/projects/find-a-project/current-coordinated-projects",
   },
   {
-    name: "SA Energy & Mining",
-    country: "AU",
-    searchUrl: "https://www.energymining.sa.gov.au/industry/hydrogen-and-renewable-energy/large-scale-generation-and-storage/solar-energy-projects",
-  },
-  {
-    name: "WA EPA",
-    country: "AU",
-    searchUrl: "https://www.epa.wa.gov.au/proposal-search",
-  },
-  {
-    name: "NT Development Applications",
-    country: "AU",
-    searchUrl: "https://www.ntlis.nt.gov.au/planning",
-  },
-  {
     name: "Tasmania EPA",
     country: "AU",
     searchUrl: "https://epa.tas.gov.au/business-industry/assessment/proposals-assessed-by-the-epa",
   },
+  // ── Network & Market Data ────────────────────────────────────────────────
+  {
+    // Facility-level table; verify actual generic-parser yield with check-sources.
+    name: "Open Electricity",
+    country: "AU",
+    searchUrl: "https://openelectricity.org.au/facilities",
+  },
+  {
+    // NSW REZ delivery body; shared eligibility gates reject network-only items.
+    name: "NSW EnergyCo",
+    country: "AU",
+    searchUrl: "https://www.energyco.nsw.gov.au/our-projects",
+  },
+  {
+    // Victorian transmission-planning news; network-only items remain ineligible.
+    name: "VicGrid",
+    country: "AU",
+    searchUrl: "https://www.vicgrid.com.au/",
+  },
   // ── Industry / Data Platforms ─────────────────────────────────────────────
-  {
-    // Direct official HTML first; bounded managed acquisition is failure-only.
-    name: "Planning Alerts Australia",
-    country: "AU",
-    searchUrl: "https://www.planningalerts.org.au/",
-  },
-  {
-    // CEC pages may be JS-rendered or PDF-backed; retain direct first and use
-    // the reviewed bounded managed-acquisition hierarchy on a real failure.
-    name: "Clean Energy Council",
-    country: "AU",
-    searchUrl: "https://cleanenergycouncil.org.au/advocacy/large-scale-solar",
-  },
-  {
-    // JS-rendered government portal; direct remains first, Firecrawl is bounded fallback.
-    name: "QLD Planning – Renewable Energy",
-    country: "AU",
-    searchUrl: "https://www.planning.qld.gov.au/planning-framework/state-assessment-and-referral-agency/sara-submissions-portal",
-  },
   {
     name: "Smart Energy Council",
     country: "AU",
@@ -3675,9 +3661,9 @@ export async function runScan(scanId: number, startDate?: string, endDate?: stri
     { scanId, startDate, endDate, configuredSourceCount },
     "Starting scan",
   );
-  if (configuredSourceCount !== 34) {
+  if (configuredSourceCount !== APPROVED_PROJECT_SOURCE_COUNT) {
     logger.error(
-      { configuredSourceCount, expectedSourceCount: 34 },
+      { configuredSourceCount, expectedSourceCount: APPROVED_PROJECT_SOURCE_COUNT },
       "Scan source registry parity mismatch",
     );
   }
