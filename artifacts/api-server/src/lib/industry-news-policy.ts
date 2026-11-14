@@ -278,6 +278,16 @@ export const INDUSTRY_NEWS_SOURCES: SourceDefinition[] = [
     coverage: "Solar, storage, finance and EPC",
   },
   {
+    key: "pv-mag-global",
+    name: "PV Magazine Global",
+    url: "https://www.pv-magazine.com/",
+    hosts: ["pv-magazine.com", "www.pv-magazine.com"],
+    countries: ["AU", "NZ"],
+    geography: "Australia and New Zealand",
+    sourceClass: "secondary",
+    coverage: "Utility-scale solar and hybrid project reporting",
+  },
+  {
     key: "reneweconomy",
     name: "RenewEconomy",
     url: "https://reneweconomy.com.au/",
