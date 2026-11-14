@@ -90,6 +90,34 @@ test("only registry hosts can become candidates", () => {
   );
 });
 
+test("Industry News scans both PV Magazine editions and requires local evidence for the global edition", () => {
+  const plans = buildSearchPlans(window);
+  const australianEdition = sourceForUrl("https://www.pv-magazine-australia.com/news/item");
+  const globalEdition = sourceForUrl("https://www.pv-magazine.com/news/item");
+  assert.equal(australianEdition?.key, "pv-mag-au");
+  assert.equal(globalEdition?.key, "pv-mag-global");
+
+  const headlines = {
+    AU: "New South Wales approves 300 MW solar farm",
+    NZ: "Waikato approves 300 MW solar farm",
+  };
+  for (const [country, title] of Object.entries(headlines)) {
+    const countryPlans = plans.filter((plan) => plan.country === country);
+    assert.ok(countryPlans.some((plan) => plan.query.includes("site:pv-magazine-australia.com")));
+    const globalPlan = countryPlans.find((plan) => plan.sourceKeys.includes(globalEdition.key));
+    assert.ok(globalPlan?.query.includes("site:pv-magazine.com"));
+
+    const row = { title, url: globalEdition.url + "news/item", date: "2026-10-21" };
+    const result = candidateFromSearchRow(row, globalPlan, window);
+    assert.equal(result?.sourceName, "PV Magazine Global");
+    assert.equal(result?.country, country);
+    assert.equal(
+      candidateFromSearchRow({ ...row, title: "Michigan approves 300 MW solar farm" }, globalPlan, window),
+      null,
+    );
+  }
+});
+
 test("an exact publication timestamp after the scan boundary is excluded", () => {
   const rolling = resolveIndustryNewsWindow({
     previousEnd: new Date("2026-10-22T13:00:00Z"),
