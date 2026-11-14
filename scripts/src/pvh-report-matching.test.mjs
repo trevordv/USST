@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  classifyReportStatus, cleanOwner, dedupeReport, identityKey, matchToUsst, planEnrichment, splitReportName,
+  classifyReportStatus, cleanOwner, dedupeReport, findAmbiguousAdditions, identityKey, matchToUsst,
+  parseReportRows, planEnrichment, reportIneligibility, splitReportName,
 } from "./pvh-report-matching.ts";
 
 const usst = (over) => ({ id: 1, name: "Corop Solar Farm", description: "d", capacityMw: "440", developer: "BNRG Leeson",
@@ -57,4 +58,39 @@ test("developer comparison uses shared distinctive words", async () => {
   assert.equal(sameOwner("ACEN Australia", "ACEN Australia Pty Ltd"), true);
   assert.equal(sameOwner("Neoen Australia", "Ark Energy"), false);
   assert.equal(sameOwner("Australia Pty Ltd", "Group Australia"), false);
+});
+
+test("alias, stage and conflicting-MW rows are held for review before any are inserted", () => {
+  const baseProject = report({});
+  const alias = report({ name: "Different Name", altNames: ["Corop"] });
+  const stage = report({ name: splitReportName("Corop Solar Farm (Stage 2)").name });
+  const differentMw = report({ capacityMw: 100 });
+  const unrelated = report({ name: "Unrelated Solar Farm" });
+  const reportRows = dedupeReport([baseProject, alias, stage, differentMw, unrelated]);
+
+  assert.equal(reportRows.length, 5);
+  assert.equal(stage.name, "Corop Solar Farm Stage 2");
+  assert.deepEqual([...findAmbiguousAdditions(reportRows)], reportRows.slice(0, 4));
+});
+
+test("the import accepts Australian solar and excludes standalone storage and wind", () => {
+  const [solar, storage, hybrid, wind, overseas] = parseReportRows([{
+    name: "Development",
+    rows: [
+      [],
+      ["Project name", "State", "Capacity (MW)", "Development approval"],
+      ["Corop", "Victoria", 320, "Approved"],
+      ["Standalone BESS", "VIC", 100, "Approved"],
+      ["North Solar and BESS", "vic", 100, "Approved"],
+      ["South Solar (South Wind Farm)", "VIC", 100, "Approved"],
+      ["Overseas Solar", "California", 100, "Approved"],
+    ],
+  }]);
+
+  assert.equal(solar.state, "VIC");
+  assert.equal(reportIneligibility(solar), null);
+  assert.match(reportIneligibility(storage), /storage project/);
+  assert.equal(reportIneligibility(hybrid), null);
+  assert.equal(reportIneligibility(wind), "wind project");
+  assert.match(reportIneligibility(overseas), /outside Australian/);
 });

@@ -18,9 +18,9 @@
  */
 import path from "node:path";
 import XLSX from "xlsx";
-import { db, eq, projectsTable } from "@workspace/db";
+import { db, eq, projectsTable, sql } from "@workspace/db";
 import {
-  dedupeReport, identityKey, matchToUsst, newProjectValues, parseReportRows, planEnrichment,
+  dedupeReport, findAmbiguousAdditions, matchToUsst, newProjectValues, parseReportRows, planEnrichment,
   reportDifferences, reportIneligibility, reportLocation, REPORT_SOURCE_NAME,
   type ReportProject, type UsstProject,
 } from "./pvh-report-matching";
@@ -42,21 +42,7 @@ const sheets = workbook.SheetNames.map((name) => ({
 const parsed = parseReportRows(sheets);
 const reportProjects = dedupeReport(parsed);
 
-const usst: UsstProject[] = (await db.select({
-  id: projectsTable.id, name: projectsTable.name, description: projectsTable.description,
-  capacityMw: projectsTable.capacityMw, developer: projectsTable.developer, epc: projectsTable.epc,
-  location: projectsTable.location, country: projectsTable.country, status: projectsTable.status,
-  sourceName: projectsTable.sourceName,
-}).from(projectsTable)).map((row) => ({ ...row, country: row.country ?? "AU" }));
-
 type Row = Record<string, string | number | null>;
-const toAdd: Array<{ project: ReportProject; values: ReturnType<typeof newProjectValues> }> = [];
-const toEnrich: Array<{ project: ReportProject; usst: UsstProject; fields: ReturnType<typeof planEnrichment>; notes: string[] }> = [];
-const alreadyComplete: Row[] = [];
-const review: Row[] = [];
-const notImported: Row[] = [];
-const matchedIds = new Set<number>();
-
 const base = (project: ReportProject): Row => ({
   "Report sheet": project.sheet, "Project": project.name, "Also known as": project.altNames.join("; ") || null,
   "State": project.state, "MW": project.capacityMw, "Owner": project.owner, "Report status": project.reportStatus,
@@ -67,81 +53,95 @@ const usstCols = (row: UsstProject): Row => ({
   "USST location": row.location, "USST status": row.status, "USST source": row.sourceName,
 });
 
-for (const project of reportProjects) {
-  const match = matchToUsst(project, usst);
-  if (match.kind === "match") {
-    if (matchedIds.has(match.usst.id)) {
-      review.push({ ...base(project), "Reason": "another report row already matched this USST project", ...usstCols(match.usst) });
+async function planImport(database: Pick<typeof db, "select">) {
+  const usst: UsstProject[] = (await database.select({
+    id: projectsTable.id, name: projectsTable.name, description: projectsTable.description,
+    capacityMw: projectsTable.capacityMw, developer: projectsTable.developer, epc: projectsTable.epc,
+    location: projectsTable.location, country: projectsTable.country, status: projectsTable.status,
+    sourceName: projectsTable.sourceName,
+  }).from(projectsTable)).map((row) => ({ ...row, country: row.country ?? "AU" }));
+
+  const missing: ReportProject[] = [];
+  const toEnrich: Array<{ project: ReportProject; usst: UsstProject; fields: ReturnType<typeof planEnrichment>; notes: string[] }> = [];
+  const alreadyComplete: Row[] = [];
+  const review: Row[] = [];
+  const notImported: Row[] = [];
+  const matchedIds = new Set<number>();
+
+  for (const project of reportProjects) {
+    const match = matchToUsst(project, usst);
+    if (match.kind === "match") {
+      if (matchedIds.has(match.usst.id)) {
+        review.push({ ...base(project), "Reason": "another report row already matched this USST project", ...usstCols(match.usst) });
+        continue;
+      }
+      matchedIds.add(match.usst.id);
+      const fields = planEnrichment(match.usst, project);
+      const notes = reportDifferences(match.usst, project);
+      if (Object.keys(fields).length) toEnrich.push({ project, usst: match.usst, fields, notes });
+      else alreadyComplete.push({ ...base(project), ...usstCols(match.usst), "Notes (not changed)": notes.join("; ") || null });
       continue;
     }
-    matchedIds.add(match.usst.id);
-    const fields = planEnrichment(match.usst, project);
-    const notes = reportDifferences(match.usst, project);
-    if (Object.keys(fields).length) toEnrich.push({ project, usst: match.usst, fields, notes });
-    else alreadyComplete.push({ ...base(project), ...usstCols(match.usst), "Notes (not changed)": notes.join("; ") || null });
-    continue;
+    if (match.kind === "review") {
+      // Rows that would never be imported (operational, withdrawn...) are not review work.
+      const ineligibleReview = reportIneligibility(project);
+      if (ineligibleReview) { notImported.push({ ...base(project), "Reason": ineligibleReview }); continue; }
+      review.push({
+        ...base(project), "Reason": match.reason,
+        "Possible USST matches": match.candidates.slice(0, 5).map((row) => `#${row.id} ${row.name} (${Number(row.capacityMw)} MW, ${row.location ?? "?"})`).join(" | ") || null,
+      });
+      continue;
+    }
+    const ineligible = reportIneligibility(project);
+    if (ineligible) { notImported.push({ ...base(project), "Reason": ineligible }); continue; }
+    missing.push(project);
   }
-  if (match.kind === "review") {
-    // Rows that would never be imported (operational, withdrawn...) are not review work.
-    const ineligibleReview = reportIneligibility(project);
-    if (ineligibleReview) { notImported.push({ ...base(project), "Reason": ineligibleReview }); continue; }
-    review.push({
-      ...base(project), "Reason": match.reason,
-      "Possible USST matches": match.candidates.slice(0, 5).map((row) => `#${row.id} ${row.name} (${Number(row.capacityMw)} MW, ${row.location ?? "?"})`).join(" | ") || null,
-    });
-    continue;
-  }
-  const ineligible = reportIneligibility(project);
-  if (ineligible) { notImported.push({ ...base(project), "Reason": ineligible }); continue; }
-  toAdd.push({ project, values: newProjectValues(project) });
-}
 
-// The report itself sometimes lists one name twice with very different MW
-// (separate stages, or a re-listing). Inserting both could duplicate a
-// project, so such groups go to review instead.
-{
-  const groups = new Map<string, typeof toAdd>();
-  for (const entry of toAdd) {
-    const key = `${entry.project.state ?? ""}|${identityKey(entry.project.name) ?? entry.project.name.toLowerCase()}`;
-    groups.set(key, [...(groups.get(key) ?? []), entry]);
-  }
-  for (const group of groups.values()) {
-    if (group.length < 2) continue;
-    for (const entry of group) {
-      review.push({ ...base(entry.project), "Reason": "report lists this name more than once with different MW",
-        "Possible USST matches": null });
-      toAdd.splice(toAdd.indexOf(entry), 1);
+  const ambiguous = findAmbiguousAdditions(reportProjects);
+  const toAdd = [];
+  for (const project of missing) {
+    if (ambiguous.has(project)) {
+      review.push({ ...base(project), "Reason": "report contains an overlapping name, alias or stage" });
+    } else {
+      toAdd.push({ project, values: newProjectValues(project) });
     }
   }
+
+  return { usstCount: usst.length, toAdd, toEnrich, alreadyComplete, review, notImported };
 }
 
-let added = 0;
-let enriched = 0;
-if (apply) {
-  await db.transaction(async (tx) => {
+async function applyImport() {
+  return db.transaction(async (tx) => {
+    // Plan under the same lock as the writes so another import or project writer
+    // cannot invalidate the duplicate checks or fill a blank field mid-import.
+    await tx.execute(sql`set local lock_timeout = '5s'`);
+    await tx.execute(sql`lock table ${projectsTable} in share row exclusive mode`);
+    const plan = await planImport(tx);
     const now = new Date();
-    for (const { values } of toAdd) {
+    for (const { values } of plan.toAdd) {
       await tx.insert(projectsTable).values({ ...values, lastSeenAt: now });
-      added++;
     }
-    for (const { usst: row, fields } of toEnrich) {
+    for (const { usst: row, fields } of plan.toEnrich) {
       await tx.update(projectsTable).set({ ...fields, updatedAt: now }).where(eq(projectsTable.id, row.id));
-      enriched++;
     }
-  });
+    return plan;
+  }, { isolationLevel: "read committed" });
 }
+
+const { usstCount, toAdd, toEnrich, alreadyComplete, review, notImported } =
+  await (apply ? applyImport() : planImport(db));
 
 const out = XLSX.utils.book_new();
 const summary = [
   ["USST import of PVH Q2 report", apply ? "APPLIED" : "DRY RUN — nothing written"],
   ["Report rows read", parsed.length],
   ["After merging duplicates inside the report", reportProjects.length],
-  ["USST projects before import", usst.length],
+  ["USST projects before import", usstCount],
   ["Missing pipeline projects " + (apply ? "added" : "to add"), toAdd.length],
   ["Existing USST projects " + (apply ? "enriched" : "to enrich (blank fields only)"), toEnrich.length],
   ["Already in USST, nothing to add", alreadyComplete.length],
   ["Needs review (not imported)", review.length],
-  ["Not imported (operational / withdrawn / not active / rejected / no MW)", notImported.length],
+  ["Not imported (status or eligibility)", notImported.length],
   ["New projects' source name", REPORT_SOURCE_NAME],
 ];
 XLSX.utils.book_append_sheet(out, XLSX.utils.aoa_to_sheet(summary), "Summary");
@@ -156,10 +156,17 @@ XLSX.utils.book_append_sheet(out, XLSX.utils.json_to_sheet(toEnrich.map(({ proje
 XLSX.utils.book_append_sheet(out, XLSX.utils.json_to_sheet(review), "Review");
 XLSX.utils.book_append_sheet(out, XLSX.utils.json_to_sheet(alreadyComplete), "Already complete");
 XLSX.utils.book_append_sheet(out, XLSX.utils.json_to_sheet(notImported), "Not imported");
-XLSX.writeFile(out, reportPath);
+try {
+  XLSX.writeFile(out, reportPath);
+} catch (error) {
+  if (apply) {
+    console.error(`Database changes committed: ${toAdd.length} added and ${toEnrich.length} enriched. Could not write the report.`);
+  }
+  throw error;
+}
 
 console.log(summary.map(([label, value]) => `${label}: ${value}`).join("\n"));
-if (apply) console.log(`\nWrote ${added} new and ${enriched} enriched projects.`);
+if (apply) console.log(`\nWrote ${toAdd.length} new and ${toEnrich.length} enriched projects.`);
 else console.log("\nDry run only. Review the report, then re-run with --apply.");
 console.log(`Report: ${reportPath}`);
 process.exit(0);

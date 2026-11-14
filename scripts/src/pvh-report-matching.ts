@@ -82,7 +82,8 @@ export function splitReportName(raw: string): { name: string; altNames: string[]
   const altNames: string[] = [];
   name = name.replace(/\(([^)]+)\)/g, (_, inner: string) => {
     const alt = inner.trim();
-    if (alt && !/^(hybrid|stage \d+|expansion|solar|pv|bess)$/i.test(alt)) altNames.push(alt);
+    if (/^(stage\s+\w+|expansion)$/i.test(alt)) return ` ${alt} `;
+    if (alt && !/^(hybrid|solar|pv|bess)$/i.test(alt)) altNames.push(alt);
     return " ";
   }).replace(/\s+/g, " ").trim();
   if (name === name.toUpperCase()) name = name.toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase());
@@ -145,13 +146,15 @@ export function parseReportRows(sheets: Array<{ name: string; rows: unknown[][] 
       const { name, altNames } = splitReportName(rawName);
       const status = classifyReportStatus(row[iStatus]);
       const capacity = Number(row[iCap]);
+      const state = clean(row[iState]);
+      const stateCode = state?.toUpperCase();
       const batteryDetail = iBattery >= 0 ? clean(row[iBattery]) : null;
       const batteryFlag = iBatteryFlag >= 0 ? clean(row[iBatteryFlag]) : null;
       out.push({
         sheet: sheet.name,
         name,
         altNames,
-        state: clean(row[iState]),
+        state: stateCode && AU_STATES.includes(stateCode) ? stateCode : STATE_WORDS[state?.toLowerCase() ?? ""] ?? state,
         owner: cleanOwner(row[iOwner]),
         locality: clean(row[iLocality]),
         epc: iEpc >= 0 ? clean(row[iEpc]) : null,
@@ -171,7 +174,11 @@ export function reportIneligibility(project: ReportProject): string | null {
   if (!project.pipeline) return `status: ${project.reportStatus}`;
   if (project.capacityMw == null) return "capacity not stated";
   if (project.capacityMw < 5) return "below 5 MW";
-  if (/wind\b/i.test(project.name)) return "wind project";
+  if (project.state && !AU_STATES.includes(project.state)) return "outside Australian states and territories";
+  const names = [project.name, ...project.altNames];
+  if (names.some((name) => /wind\b/i.test(name))) return "wind project";
+  if (/\b(?:bess|batter(?:y|ies)|storage)\b/i.test(project.name) &&
+      !/\b(?:solar|photovoltaic|pv)\b/i.test(project.name)) return "storage project without a solar component";
   return null;
 }
 
@@ -197,9 +204,34 @@ export type MatchOutcome =
   | { kind: "review"; reason: string; candidates: UsstProject[] }
   | { kind: "missing" };
 
+function reportNameKeys(project: ReportProject): string[] {
+  return [project.name, ...project.altNames].map(identityKey).filter((key): key is string => Boolean(key));
+}
+
+function isVariantName(key: string, other: string): boolean {
+  return key.length >= 6 && (other.startsWith(`${key} `) || key.startsWith(`${other} `));
+}
+
+/** Flag report rows whose names, aliases or stage names overlap within one import. */
+export function findAmbiguousAdditions(projects: readonly ReportProject[]): Set<ReportProject> {
+  const ambiguous = new Set<ReportProject>();
+  const names = projects.map(reportNameKeys);
+  for (const [index, project] of projects.entries()) {
+    for (let other = index + 1; other < projects.length; other++) {
+      if (names[index].some((key) => names[other].some((candidate) =>
+        key === candidate || isVariantName(key, candidate) || isVariantName(candidate, key)
+      ))) {
+        ambiguous.add(project);
+        ambiguous.add(projects[other]);
+      }
+    }
+  }
+  return ambiguous;
+}
+
 /** Find the USST project a report row refers to. Uncertain results go to review, never to insert. */
 export function matchToUsst(project: ReportProject, usst: readonly UsstProject[]): MatchOutcome {
-  const keys = [project.name, ...project.altNames].map(identityKey).filter((key): key is string => Boolean(key));
+  const keys = reportNameKeys(project);
   if (keys.length === 0) return { kind: "review", reason: "name too generic to match safely", candidates: [] };
   const sameName = usst.filter((row) => row.country === "AU" && keys.includes(identityKey(row.name) ?? "\u0000"));
   const sameState = sameName.filter((row) => !project.state || !stateOf(row.location) || stateOf(row.location) === project.state);
@@ -215,7 +247,7 @@ export function matchToUsst(project: ReportProject, usst: readonly UsstProject[]
   // Containment: "Bridle Track" vs "Bridle Track Solar & BESS Stage 1" — never auto-matched.
   const contains = usst.filter((row) => {
     const other = identityKey(row.name);
-    return row.country === "AU" && other && keys.some((key) => key.length >= 6 && (other.startsWith(`${key} `) || key.startsWith(`${other} `)));
+    return row.country === "AU" && other && keys.some((key) => isVariantName(key, other));
   });
   if (contains.length > 0) return { kind: "review", reason: "similar name (possible stage or variant)", candidates: contains };
   return { kind: "missing" };
