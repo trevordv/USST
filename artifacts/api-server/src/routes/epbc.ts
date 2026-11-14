@@ -1,11 +1,18 @@
 import { Router, type IRouter } from "express";
 import { db, epbcProjectsTable, projectsTable } from "@workspace/db";
-import { eq, ilike, or, and, sql } from "drizzle-orm";
+import { eq, ilike, or, and, inArray, sql } from "drizzle-orm";
 import multer from "multer";
-import * as xlsx from "xlsx";
-import { fetchEpbcRecords } from "../lib/epbc-scraper";
-import { classifyEpbc, classifyApproval, extractMw } from "../lib/epbc-scraper";
+import {
+  classifyApproval,
+  classifyEpbc,
+  extractMw,
+  fetchEpbcRecords,
+  type EpbcRecord,
+} from "../lib/epbc-scraper";
 import { logger } from "../lib/logger";
+import { normalizeTimestamp } from "../lib/timestamp";
+import { requireAdmin } from "../middlewares/supabase-auth";
+import { admitCostlyOperation } from "../lib/job-admission";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -53,19 +60,16 @@ router.get("/epbc/projects", async (req, res): Promise<void> => {
 // ── GET /epbc/meta ────────────────────────────────────────────────────────────
 
 router.get("/epbc/meta", async (_req, res): Promise<void> => {
-  const [latest] = await db
-    .select({ scrapedAt: epbcProjectsTable.scrapedAt })
-    .from(epbcProjectsTable)
-    .orderBy(sql`${epbcProjectsTable.scrapedAt} DESC`)
-    .limit(1);
-
-  const [counts] = await db
-    .select({ total: sql<number>`count(*)` })
+  const [meta] = await db
+    .select({
+      lastScrapedAt: sql<Date | string | null>`max(${epbcProjectsTable.scrapedAt})`,
+      total: sql<number>`count(*)::int`,
+    })
     .from(epbcProjectsTable);
 
   res.json({
-    lastScrapedAt: latest?.scrapedAt?.toISOString() ?? null,
-    total: Number(counts?.total ?? 0),
+    lastScrapedAt: normalizeTimestamp(meta?.lastScrapedAt),
+    total: Number(meta?.total ?? 0),
   });
 });
 
@@ -114,11 +118,12 @@ function findCol(headers: string[], aliases: string[]): number {
   return -1;
 }
 
-router.post("/epbc/upload", upload.single("file") as unknown as Parameters<typeof router.post>[1], async (req, res): Promise<void> => {
+router.post("/epbc/upload", requireAdmin, upload.single("file") as unknown as Parameters<typeof router.post>[1], async (req, res): Promise<void> => {
   const file = (req as unknown as { file?: Express.Multer.File }).file;
   if (!file) { res.status(400).json({ error: "No file uploaded" }); return; }
 
-  let wb: xlsx.WorkBook;
+  const xlsx = await import("xlsx");
+  let wb: import("xlsx").WorkBook;
   try {
     wb = xlsx.read(file.buffer, { type: "buffer", cellDates: false });
   } catch {
@@ -198,7 +203,80 @@ router.post("/epbc/upload", upload.single("file") as unknown as Parameters<typeo
 
 // ── POST /epbc/sync ───────────────────────────────────────────────────────────
 
-router.post("/epbc/sync", async (req, res): Promise<void> => {
+const EPBC_UPSERT_BATCH_SIZE = 200;
+
+function toEpbcInsert(record: EpbcRecord) {
+  return {
+    ...record,
+    sizeMw: record.sizeMw != null ? String(record.sizeMw) : null,
+  };
+}
+
+async function upsertEpbcSyncRecords(records: EpbcRecord[]): Promise<{
+  newCount: number;
+  updatedCount: number;
+}> {
+  const uniqueRecords = [...new Map(records.map((record) => [record.epbcNumber, record])).values()];
+  const existingRows = uniqueRecords.length > 0
+    ? await db
+      .select({ epbcNumber: epbcProjectsTable.epbcNumber })
+      .from(epbcProjectsTable)
+      .where(inArray(epbcProjectsTable.epbcNumber, uniqueRecords.map((record) => record.epbcNumber)))
+    : [];
+  const existingNumbers = new Set(existingRows.map((row) => row.epbcNumber));
+
+  let newCount = 0;
+  let updatedCount = 0;
+
+  async function writeBatch(batch: EpbcRecord[]): Promise<void> {
+    const updatedAt = new Date();
+    await db
+      .insert(epbcProjectsTable)
+      .values(batch.map(toEpbcInsert))
+      .onConflictDoUpdate({
+        target: epbcProjectsTable.epbcNumber,
+        set: {
+          projectStatus: sql`excluded.project_status`,
+          decisionStatus: sql`excluded.decision_status`,
+          isApproved: sql`excluded.is_approved`,
+          rawDescription: sql`excluded.raw_description`,
+          updatedAt,
+        },
+      });
+  }
+
+  for (let offset = 0; offset < uniqueRecords.length; offset += EPBC_UPSERT_BATCH_SIZE) {
+    const batch = uniqueRecords.slice(offset, offset + EPBC_UPSERT_BATCH_SIZE);
+    try {
+      await writeBatch(batch);
+      for (const record of batch) {
+        if (existingNumbers.has(record.epbcNumber)) updatedCount++;
+        else newCount++;
+      }
+    } catch (batchError) {
+      logger.warn(
+        { err: batchError, offset, batchSize: batch.length },
+        "EPBC batch upsert failed; retrying records individually",
+      );
+      for (const record of batch) {
+        try {
+          await writeBatch([record]);
+          if (existingNumbers.has(record.epbcNumber)) updatedCount++;
+          else newCount++;
+        } catch (err) {
+          logger.warn({ err, epbcNumber: record.epbcNumber }, "Failed to upsert EPBC record");
+        }
+      }
+    }
+  }
+
+  return { newCount, updatedCount };
+}
+
+router.post("/epbc/sync", requireAdmin, async (req, res): Promise<void> => {
+  const admission = admitCostlyOperation("epbc-sync", res.locals.usstUser.id);
+  if (!admission) { req.log.warn({ operation: "epbc-sync" }, "Costly operation rejected"); res.status(429).json({ error: "Operation already running or recently started" }); return; }
+  try {
   const body = req.body as { startDate?: string; endDate?: string } | undefined;
   const startDate = body?.startDate || undefined;
   const endDate   = body?.endDate   || undefined;
@@ -214,49 +292,26 @@ router.post("/epbc/sync", async (req, res): Promise<void> => {
     return;
   }
 
-  let newCount = 0;
-  let updatedCount = 0;
+  const persistenceStartedAt = performance.now();
+  const { newCount, updatedCount } = await upsertEpbcSyncRecords(records);
 
-  for (const record of records) {
-    try {
-      const existing = await db
-        .select({ id: epbcProjectsTable.id })
-        .from(epbcProjectsTable)
-        .where(eq(epbcProjectsTable.epbcNumber, record.epbcNumber))
-        .limit(1);
-
-      if (existing.length === 0) {
-        await db.insert(epbcProjectsTable).values({
-          ...record,
-          sizeMw: record.sizeMw != null ? String(record.sizeMw) : null,
-        });
-        newCount++;
-      } else {
-        await db
-          .update(epbcProjectsTable)
-          .set({
-            projectStatus: record.projectStatus,
-            decisionStatus: record.decisionStatus,
-            isApproved: record.isApproved,
-            rawDescription: record.rawDescription,
-            updatedAt: new Date(),
-          })
-          .where(eq(epbcProjectsTable.epbcNumber, record.epbcNumber));
-        updatedCount++;
-      }
-    } catch (err) {
-      logger.warn({ err, epbcNumber: record.epbcNumber }, "Failed to upsert EPBC record");
-    }
-  }
-
-  req.log.info({ newCount, updatedCount }, "EPBC sync complete");
+  req.log.info(
+    {
+      newCount,
+      updatedCount,
+      persistenceDurationMs: Math.round(performance.now() - persistenceStartedAt),
+    },
+    "EPBC sync complete",
+  );
   res.json({ newCount, updatedCount, total: records.length });
+  } finally { admission.release(); }
 });
 
 // ── PATCH /epbc/projects/:id ──────────────────────────────────────────────────
 
-router.patch("/epbc/projects/:id", async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+router.patch("/epbc/projects/:id", requireAdmin, async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const id = parseInt(raw, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
 
   const allowed = ["relevanceStatus", "isSolar", "isApproved", "technologyType"];
@@ -283,8 +338,9 @@ router.patch("/epbc/projects/:id", async (req, res): Promise<void> => {
 
 // ── POST /epbc/projects/:id/import ────────────────────────────────────────────
 
-router.post("/epbc/projects/:id/import", async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+router.post("/epbc/projects/:id/import", requireAdmin, async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const id = parseInt(raw, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
 
   const [epbc] = await db.select().from(epbcProjectsTable).where(eq(epbcProjectsTable.id, id)).limit(1);

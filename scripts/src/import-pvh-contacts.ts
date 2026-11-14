@@ -1,7 +1,6 @@
 import { readFileSync } from "fs";
 import { join } from "path";
-import { db, pvhContactsTable } from "@workspace/db";
-import { sql } from "drizzle-orm";
+import { db, pvhContactsTable, sql } from "@workspace/db";
 
 const CSV_PATH = join(process.cwd(), "../../attached_assets/PVH_Contacts_1781492355787.CSV");
 

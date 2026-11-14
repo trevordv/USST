@@ -7,7 +7,11 @@
     "hello": "tsx ./src/hello.ts",
     "import-pvh-contacts": "tsx ./src/import-pvh-contacts.ts",
     "import-epbc": "tsx ./src/import-epbc.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "audit-pvh-contacts": "tsx ./src/audit-pvh-contacts.ts",
+    "report-duplicate-projects": "tsx ./src/report-duplicate-projects.ts",
+    "import-pvh-q2-report": "tsx ./src/import-pvh-q2-report.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test src/*.test.mjs"
   },
   "dependencies": {
     "@workspace/db": "workspace:*",

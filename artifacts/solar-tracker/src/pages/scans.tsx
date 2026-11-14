@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import { Play, Loader2, CheckCircle2, XCircle, AlertCircle, ExternalLink } from "lucide-react";
+import { Play, Loader2, CheckCircle2, XCircle, AlertCircle, ExternalLink, Newspaper } from "lucide-react";
 import { useLocation } from "wouter";
 import { format } from "date-fns";
 
@@ -43,7 +43,7 @@ export default function Scans() {
       onSuccess: () => {
         toast({
           title: "Scan Started",
-          description: "The intelligence engine is now scanning for new projects.",
+          description: "Scanning for new projects and AU/NZ utility-scale solar industry news.",
         });
         queryClient.invalidateQueries({ queryKey: getListScansQueryKey() });
         setStartDate("");
@@ -70,12 +70,12 @@ export default function Scans() {
         <Card className="border-primary/20">
           <CardHeader className="bg-muted/30">
             <CardTitle>Trigger New Scan</CardTitle>
-            <CardDescription>Manually start a data extraction job across all sources.</CardDescription>
+            <CardDescription>Search the selected date range for new projects and the latest industry news.</CardDescription>
           </CardHeader>
           <CardContent className="pt-6">
             <div className="flex flex-col sm:flex-row items-end gap-4">
               <div className="space-y-2 flex-1 max-w-xs">
-                <Label htmlFor="scan-start">Announced After (Optional)</Label>
+                <Label htmlFor="scan-start">Scan From (Optional)</Label>
                 <Input 
                   id="scan-start" 
                   type="date" 
@@ -84,7 +84,7 @@ export default function Scans() {
                 />
               </div>
               <div className="space-y-2 flex-1 max-w-xs">
-                <Label htmlFor="scan-end">Announced Before (Optional)</Label>
+                <Label htmlFor="scan-end">Scan To (Optional)</Label>
                 <Input 
                   id="scan-end" 
                   type="date" 
@@ -181,6 +181,17 @@ export default function Scans() {
                             >
                               <ExternalLink className="h-3 w-3" />
                               View {scan.newProjects} new
+                            </Button>
+                          )}
+                          {scan.status === 'completed' && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="gap-1.5 text-xs"
+                              onClick={() => navigate(`/industry-news?scanId=${scan.id}`)}
+                            >
+                              <Newspaper className="h-3 w-3" />
+                              Industry news
                             </Button>
                           )}
                         </div>
