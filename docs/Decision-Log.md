@@ -383,6 +383,36 @@ failures block live comparison and browser/container verification. See
   Do not infer success from HTTP 200 or a zero candidate count alone.
 - Rollback: Revert this revision. No data migration is required.
 
+### 2026-11-13 — One-off import of the PVH Q2 report (Green Energy Markets)
+
+- Request: Add projects from the PVH Q2 report that USST lacks, enrich those it
+  has, keep USST as the source of truth, and never duplicate a project.
+- Decision: Operator command `pnpm --filter @workspace/scripts run
+  import-pvh-q2-report -- --file=<xlsx> [--apply]`, run with production
+  credentials via `railway run`. Dry run by default; writes an Excel report
+  (To add / To enrich / Review / Already complete / Not imported).
+  - Imported statuses (product owner's choice): approved, yet to be approved,
+    under construction, in commissioning, PPA not committed, underwritten.
+    Operational, withdrawn, not active and rejected rows are not imported.
+  - Matching: same core name (generic asset words, state and "- Solar"
+    suffixes removed; bracketed names as aliases), same state, capacity within
+    35%. Ties broken by a shared developer word. Several candidates, same name
+    with different MW, stage/variant names, and names the report repeats with
+    different MW all go to Review and are never inserted.
+  - Enrichment fills blank developer, EPC (construction firm), location and
+    description only. Capacity, status and developer differences are listed,
+    never written.
+  - New rows: source name "PVH Q2 Report (Green Energy Markets)", unknown
+    announcement date, solar PV description so they pass the app's gates; later
+    scans link to them through the cross-source identity rule.
+- Evidence: Rehearsed end to end against a local Postgres built from
+  `supabase/migrations`: dry run wrote nothing; apply was one transaction; an
+  immediate re-run added 0 and enriched 0.
+- Data / privacy: The report is commercial data and is not committed; the
+  command reads it from a local path.
+- Rollback: `delete from projects where source_name = 'PVH Q2 Report (Green
+  Energy Markets)'`; enriched fields are listed in the applied report.
+
 ### YYYY-MM-DD — Decision title
 
 - Observed problem:
