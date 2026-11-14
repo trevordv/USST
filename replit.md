@@ -62,6 +62,10 @@ A sales intelligence tool for the Australian and New Zealand utility-scale solar
 
 ## Approved sources (only these are scanned)
 
+Industry News searches PV Magazine Global (`pv-magazine.com`) and PV Magazine
+Australia (`pv-magazine-australia.com`) as distinct sources for Australian and
+New Zealand utility-scale solar coverage.
+
 The Projects scanner has 49 logical source slots. On 7 November 2026 the owner
 approved retiring SA Energy & Mining, WA EPA, NT Development Applications,
 Planning Alerts Australia, Clean Energy Council (including its extra URLs),
